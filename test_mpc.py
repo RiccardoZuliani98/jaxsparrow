@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax
 jax.config.update("jax_enable_x64", True)
 
-horizon = 3
+horizon = 30
 
 A = jnp.array([[1,1],[0,1]])
 B = jnp.array([[0],[1]])

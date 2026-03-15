@@ -76,6 +76,7 @@ def setup_dense_solver(
         # Solve QP
         start = perf_counter()
         sol = solve_problem(prob, solver=options_parsed["solver"])
+        assert sol.found
         t_solve = perf_counter() - start
 
         # Recover primal/dual variables
@@ -87,7 +88,7 @@ def setup_dense_solver(
 
         # Determine active set: Gx − h >= tolerance
         start = perf_counter()
-        active = np.asarray(G_mat @ sol.x - g_vec >= options_parsed["jac_tol"]).reshape(-1)
+        active = np.asarray(np.abs(G_mat @ sol.x - g_vec) <= options_parsed["jac_tol"]).reshape(-1)
         t_active = perf_counter() - start
 
         print(

@@ -24,7 +24,7 @@ class SolverOptionsFull(TypedDict):
 DEFAULT_SOLVER_OPTIONS: Final[SolverOptionsFull] = {
     "jac_tol": 1e-8,
     "sparse": True,
-    "solver": "daqp",
+    "solver": "piqp",
     "dtype": jnp.float64
 }
 
