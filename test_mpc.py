@@ -68,14 +68,19 @@ solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 
 solve_mpc = lambda x_init: solver(P, q, Aeq, beq(x_init), G, h)
 
-x0 = jnp.array([-3,-1])
-dx0 = jnp.array([-0.5,0])
+x0 = jnp.array([-3.0,-1.0])
+dx0 = jnp.array([-0.15,0])
 
-sol = solve_mpc(x0)
+from jax import jvp
+
+sol, dsol = jvp(solve_mpc,(x0,),(dx0,))
 
 x_opt = sol["x"][:(horizon+1)*nx].reshape(-1,nx).T
 x1_opt, x2_opt = x_opt[0,:].squeeze(), x_opt[1,:].squeeze()
 u_opt = sol["x"][(horizon+1)*nx:]
+
+x_opt_approx = x_opt + dsol["x"][:(horizon+1)*nx].reshape(-1,nx).T
+x1_opt_approx, x2_opt_approx = x_opt_approx[0,:].squeeze(), x_opt_approx[1,:].squeeze()
 
 sol = solve_mpc(x0+dx0)
 
@@ -86,5 +91,6 @@ u_opt = sol["x"][(horizon+1)*nx:]
 import matplotlib.pyplot as plt
 plt.plot(x1_opt,x2_opt,label='Original')
 plt.plot(x1_opt_perturbed,x2_opt_perturbed,label='Perturbed')
+plt.plot(x1_opt_approx,x2_opt_approx,label='Approx')
 plt.legend()
 plt.show()

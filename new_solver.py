@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from time import perf_counter
 import numpy as np
 from qpsolvers import Problem, solve_problem
+import jax
 
 def _parse_options(options:Optional[SolverOptions]) -> SolverOptionsFull:
 
@@ -113,42 +114,26 @@ def setup_dense_solver(
         Q, q, F, f, G, g = primals
         dQ, dq, dF, df, dG, dg = tangents
 
+        print("Hi, I am kkt differentiator and I am running.")
+
         # Get primal/dual solution (forward eval)
         res = _solve_qp(Q, q, F, f, G, g)
         x = res["x"]
         lam = res["lam"]
         mu = res["mu"]
-        active = res["active"]
+        active = res["active"].astype(np.bool)
 
         # Stack constraints
-        H = np.vstack((F, G))  # (n_eq + n_ineq, n_var)
+        H = np.vstack((F, G[active,:]))  # (n_eq + n_ineq, n_var)
 
         # Derivative of Lagrangian:
-        #    dL = dQ @ x + dq + dFᵀ μ + dGᵀ λ
-        dL = dQ @ x + dq + dF.T @ mu + dG.T @ lam
+        dL = dQ @ x + dq + dF.T @ mu + dG[active,:].T @ lam[active]
 
         # RHS = concatenation of dL and constraint derivatives
-        rhs = np.concatenate(
-            [
-                dL,          # (n_var,)
-                dF @ x - df, # (n_eq,)
-                dG @ x - dg, # (n_ineq,)
-            ]
-        )
+        rhs = np.concatenate([dL, dF @ x - df, dG[active,:] @ x - dg[active]])
+        lhs = np.block([[Q, H.T],[H, np.zeros((H.shape[0],H.shape[0]))]])
 
-        # Build KKT matrix:
-        #
-        #   [ Q      Hᵀ ]
-        #   [ H      0  ]
-        #
-        lhs = np.block(
-            [
-                [Q, H.T],
-                [H, zeros_lhs],
-            ]
-        )
-
-        sol      = np.linalg.solve(lhs, rhs)
+        sol      = np.linalg.solve(lhs, -rhs)
         dx       = sol[:n_var]
         dmu      = sol[n_var : n_var + n_eq]
         dlam_a   = sol[n_var + n_eq :]
@@ -170,7 +155,7 @@ def setup_dense_solver(
             "x":      dx,
             "lam":    dlam,
             "mu":     dmu,
-            "active": np.zeros_like(active),  # boolean, no meaningful tangent
+            "active": np.zeros_like(active,dtype=jax.dtypes.float0),  # boolean, no meaningful tangent
         }
 
         return res, tangents_out
