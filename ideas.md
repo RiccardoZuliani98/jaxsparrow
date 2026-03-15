@@ -30,3 +30,6 @@ Problems we need to address:
 
 1. when differentiating, we may want to use numpy or scipy, but this should be done avoiding converting back and forth twice;
 2. if multiple RHS are passed when differentiating, this method runs the differentiator multiple times, wasting a lot of time. Can we somehow implement a custom vmap for the jvp (or vjp) so that multiple tangents are implemented as different columns in tangents?
+3. the custom jvp has to be implemented in pure jax or else we can't jit the process and there's no point even doing this because it's too slow.
+4. when running jit we can't allow the linear system to have a variable dimension, because jax has to preallocate. This means we either need to keep the inactive multipliers, or write a second pure callback for the linear solve. 
+

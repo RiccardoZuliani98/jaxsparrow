@@ -32,14 +32,22 @@ def setup_dense_solver(
     
     options_parsed = _parse_options(options)
     dtype = options_parsed['dtype']
-    result_spec = {
-        "x": ShapeDtypeStruct((n_var,), dtype),
-        "lam": ShapeDtypeStruct((n_ineq,), dtype),
-        "mu": ShapeDtypeStruct((n_eq,), dtype),
-        "active": ShapeDtypeStruct((n_ineq,), jnp.bool_),
+
+    _fwd_shapes = {
+        "x": jax.ShapeDtypeStruct((n_var,), jnp.float64),
+        "lam": jax.ShapeDtypeStruct((n_ineq,), jnp.float64),
+        "mu": jax.ShapeDtypeStruct((n_eq,), jnp.float64),
+        "active": jax.ShapeDtypeStruct((n_ineq,), jnp.bool_),
     }
-    zeros_lhs = np.zeros((n_eq + n_ineq, n_eq + n_ineq), dtype=dtype)
-    
+    _bwd_shapes = (
+        jax.ShapeDtypeStruct((n_var,),         jnp.float64),  # dx
+        jax.ShapeDtypeStruct((n_eq,),          jnp.float64),  # dmu
+        jax.ShapeDtypeStruct((n_ineq,),        jnp.float64),  # dlam
+        jax.ShapeDtypeStruct((n_ineq,),        jnp.bool_),    # active
+        _fwd_shapes,
+    )
+
+
     # =================================================================
     # SETUP SOLVER
     # =================================================================
@@ -102,7 +110,7 @@ def setup_dense_solver(
     def _solve_qp_callback(Q, q, F, f, G, g):
         return pure_callback(
             _solve_qp,
-            result_spec,
+            _fwd_shapes,
             Q, q, F, f, G, g,
         )
 
@@ -110,19 +118,37 @@ def setup_dense_solver(
     # SETUP DIFFERENTIATOR
     # =================================================================
 
-    def _kkt_diff(primals, tangents):
-
-        Q, q, F, f, G, g = primals
-        dQ, dq, dF, df, dG, dg = tangents
+    def _kkt_diff(Q, q, F, f, G, g, dQ, dq, dF, df, dG, dg):
 
         print("Hi, I am kkt differentiator and I am running.")
+
+        # Convert vectors
+        start = perf_counter()
+        q = np.asarray(q, dtype=dtype)
+        f = np.asarray(f, dtype=dtype)
+        g = np.asarray(g, dtype=dtype)
+        dq = np.asarray(dq, dtype=dtype)
+        df = np.asarray(df, dtype=dtype)
+        dg = np.asarray(dg, dtype=dtype)
+        t_to_numpy = perf_counter() - start
+
+        # Convert matrices
+        start = perf_counter()
+
+        Q = np.asarray(Q, dtype=dtype)
+        F = np.asarray(F, dtype=dtype)
+        G = np.asarray(G, dtype=dtype)
+        dQ = np.asarray(dQ, dtype=dtype)
+        dF = np.asarray(dF, dtype=dtype)
+        dG = np.asarray(dG, dtype=dtype)
+        t_convert = perf_counter() - start
 
         # Get primal/dual solution (forward eval)
         res = _solve_qp(Q, q, F, f, G, g)
         x = res["x"]
         lam = res["lam"]
         mu = res["mu"]
-        active = res["active"]
+        active = np.array(res["active"],dtype=np.bool_)
 
         # Stack constraints
         #TODO: this converts to numpy again, best to have a conversion utility
@@ -146,6 +172,14 @@ def setup_dense_solver(
 
         return dx, dmu, dlam, active, res
     
+    def _kkt_diff_callback(Q, q, F, f, G, g, dQ, dq, dF, df, dG, dg):
+        return pure_callback(
+            _kkt_diff,
+            _bwd_shapes,
+            Q, q, F, f, G, g, 
+            dQ, dq, dF, df, dG, dg
+        )
+
     @custom_jvp
     def solver(Q, q, F, f, G, g):
         return _solve_qp_callback(Q, q, F, f, G, g)
@@ -154,13 +188,13 @@ def setup_dense_solver(
     def solver_jvp(primals, tangents):
 
         #TODO: vectorize when multiple tangents are passed
-        dx, dmu, dlam, active, res = _kkt_diff(primals, tangents)
+        dx, dmu, dlam, active, res = _kkt_diff_callback(*primals, *tangents)
 
         tangents_out = {
             "x":      dx,
             "lam":    dlam,
             "mu":     dmu,
-            "active": np.zeros_like(active,dtype=jax.dtypes.float0),
+            "active": jnp.zeros_like(active,dtype=jax.dtypes.float0),
         }
 
         return res, tangents_out
