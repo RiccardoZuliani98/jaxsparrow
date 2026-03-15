@@ -23,3 +23,10 @@ First question: how can we implement a function "solver" with custom forward and
 I think we need to use "pure_callback" ([Pure callback in Jax](https://docs.jax.dev/en/latest/_autosummary/jax.pure_callback.html#jax.pure_callback)) since this is the only one that allows differentiation ([External-callbacks in Jax](https://docs.jax.dev/en/latest/external-callbacks.html)).
 
 This can also work with vmap and jit!
+
+---
+
+Problems we need to address:
+
+1. when differentiating, we may want to use numpy or scipy, but this should be done avoiding converting back and forth twice;
+2. if multiple RHS are passed when differentiating, this method runs the differentiator multiple times, wasting a lot of time. Can we somehow implement a custom vmap for the jvp (or vjp) so that multiple tangents are implemented as different columns in tangents?
