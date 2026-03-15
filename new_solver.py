@@ -121,9 +121,12 @@ def setup_dense_solver(
         x = res["x"]
         lam = res["lam"]
         mu = res["mu"]
-        active = res["active"].astype(np.bool)
+        active = res["active"]
 
         # Stack constraints
+        #TODO: this converts to numpy again, best to have a conversion utility
+        # before running _solve_qp and then pass numpy stuff to _solve_qp,
+        # then repeat this for the forward callback
         H = np.vstack((F, G[active,:]))  # (n_eq + n_ineq, n_var)
 
         # Derivative of Lagrangian:

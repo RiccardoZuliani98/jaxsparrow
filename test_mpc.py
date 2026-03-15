@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax
 jax.config.update("jax_enable_x64", True)
 
-horizon = 30
+horizon = 3
 
 A = jnp.array([[1,1],[0,1]])
 B = jnp.array([[0],[1]])
@@ -68,8 +68,10 @@ solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 
 solve_mpc = lambda x_init: solver(P, q, Aeq, beq(x_init), G, h)
 
+EPSILON = 1e-5
+
 x0 = jnp.array([-3.0,-1.0])
-dx0 = jnp.array([-0.15,0])
+dx0 = jnp.array([EPSILON,0])
 
 from jax import jvp
 
@@ -82,11 +84,21 @@ u_opt = sol["x"][(horizon+1)*nx:]
 x_opt_approx = x_opt + dsol["x"][:(horizon+1)*nx].reshape(-1,nx).T
 x1_opt_approx, x2_opt_approx = x_opt_approx[0,:].squeeze(), x_opt_approx[1,:].squeeze()
 
-sol = solve_mpc(x0+dx0)
+sol_perturbed = solve_mpc(x0+dx0)
 
-x_opt = sol["x"][:(horizon+1)*nx].reshape(-1,nx).T
+x_opt_perturbed = sol_perturbed["x"][:(horizon+1)*nx].reshape(-1,nx).T
 x1_opt_perturbed, x2_opt_perturbed = x_opt[0,:].squeeze(), x_opt[1,:].squeeze()
-u_opt = sol["x"][(horizon+1)*nx:]
+u_opt = sol_perturbed["x"][(horizon+1)*nx:]
+
+dx = dsol["x"] / EPSILON
+dx_fd = (sol_perturbed["x"]-sol["x"]) / EPSILON
+
+error = jnp.linalg.norm(dx-dx_fd) / jnp.linalg.norm(dx_fd)
+cos_sim = jnp.dot(dx,dx_fd) / (jnp.linalg.norm(dx_fd) * jnp.linalg.norm(dx))
+
+print(f"Relative error {error}, cosine similarity: {cos_sim}")
+
+raise Exception
 
 import matplotlib.pyplot as plt
 plt.plot(x1_opt,x2_opt,label='Original')
