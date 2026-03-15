@@ -152,14 +152,15 @@ def setup_dense_solver(
     
     @solver.defjvp
     def solver_jvp(primals, tangents):
-        
+
+        #TODO: vectorize when multiple tangents are passed
         dx, dmu, dlam, active, res = _kkt_diff(primals, tangents)
 
         tangents_out = {
             "x":      dx,
             "lam":    dlam,
             "mu":     dmu,
-            "active": np.zeros_like(active,dtype=jax.dtypes.float0),  # boolean, no meaningful tangent
+            "active": np.zeros_like(active,dtype=jax.dtypes.float0),
         }
 
         return res, tangents_out
