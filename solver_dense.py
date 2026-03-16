@@ -140,11 +140,11 @@ def setup_dense_solver(
     # extract dtype for simplicity
     dtype = options_parsed['dtype']
 
-    # # parse and process fixed elements if present
-    # if fixed_elements is not None:
-    #     fixed_elements_parsed = _parse_fixed_elements(fixed_elements)
-    # else:
-    #     fixed_elements_parsed = None
+    # parse and process fixed elements if present
+    if fixed_elements is not None:
+        fixed_elements_parsed = _parse_fixed_elements(fixed_elements)
+    else:
+        fixed_elements_parsed = None
 
     # form shapes of problem solution
     _fwd_shapes = {
