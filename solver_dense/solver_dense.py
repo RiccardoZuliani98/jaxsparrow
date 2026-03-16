@@ -9,9 +9,9 @@ from typing import Optional, cast
 from numpy import ndarray
 from jaxtyping import Float, Bool
 
-from parsing_utils import parse_options
-from solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
-from solver_dense_options import (
+from .parsing_utils import parse_options
+from .solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
+from .solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
 )
@@ -115,11 +115,11 @@ def setup_dense_solver(
     _required_keys_set = set(_required_keys)
     _dynamic_keys_set = set(_dynamic_keys)
 
-    logger.debug(
+    logger.info(
         f"Setting up QP with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
     )
-    logger.debug(f"Fixed variables: {set(_fixed.keys()) or 'none'}")
+    logger.info(f"Fixed variables: {set(_fixed.keys()) or 'none'}")
 
     # =================================================================
     # SETUP SOLVER
@@ -196,13 +196,13 @@ def setup_dense_solver(
         # Build qpsolvers Problem
         start = perf_counter()
         prob = Problem(**kwargs)
-        logger.debug(f"problem_setup: {perf_counter() - start}")
+        logger.info(f"problem_setup: {perf_counter() - start}")
 
         # Solve QP
         start = perf_counter()
         sol = solve_problem(prob, solver=_options_parsed["solver"])
         assert sol.found, "QP solver failed to find a solution."
-        logger.debug(f"solve: {perf_counter() - start}")
+        logger.info(f"solve: {perf_counter() - start}")
 
         # Recover primal / dual variables
         start = perf_counter()
@@ -224,7 +224,7 @@ def setup_dense_solver(
         else:
             lam = np.empty(0, dtype=_dtype)
 
-        logger.debug(f"retrieve: {perf_counter() - start}")
+        logger.info(f"retrieve: {perf_counter() - start}")
 
         # Determine active set: |Gx − h| <= tolerance
         start = perf_counter()
@@ -236,7 +236,7 @@ def setup_dense_solver(
             ).reshape(-1)
         else:
             active = np.empty(0, dtype=np.bool_)
-        logger.debug(f"active set determination: {perf_counter() - start}")
+        logger.info(f"active set determination: {perf_counter() - start}")
 
         return x, lam, mu, active
 
@@ -281,7 +281,7 @@ def setup_dense_solver(
             k: np.asarray(v, dtype=_dtype).squeeze()
             for k, v in kwargs.items()
         }
-        logger.debug(f"convert_to_numpy: {perf_counter() - start:.3e}s")
+        logger.info(f"convert_to_numpy: {perf_counter() - start:.3e}s")
 
         # ── Solve in numpy ───────────────────────────────────────────
         x_np, lam_np, mu_np, active_np = _solve_qp_numpy(**prob_np)
@@ -294,9 +294,9 @@ def setup_dense_solver(
             "mu":     jnp.array(mu_np, dtype=_dtype),       # (ne,)
             "active": jnp.array(active_np, dtype=jnp.bool_),  # (ni,)
         }
-        logger.debug(f"convert_to_jax: {perf_counter() - start:.3e}s")
+        logger.info(f"convert_to_jax: {perf_counter() - start:.3e}s")
 
-        logger.debug(f"DenseQP total: {perf_counter() - t_start:.3e}s")
+        logger.info(f"DenseQP total: {perf_counter() - t_start:.3e}s")
 
         return result
 
@@ -376,7 +376,7 @@ def setup_dense_solver(
             k: np.asarray(v, dtype=_dtype).squeeze()
             for k, v in primals.items()
         }
-        logger.debug(f"kkt_diff convert_primals: {perf_counter() - start:.3e}s")
+        logger.info(f"kkt_diff convert_primals: {perf_counter() - start:.3e}s")
 
         # ── Forward solve ────────────────────────────────────────────
         # x_np:      (nv,)
@@ -391,7 +391,7 @@ def setup_dense_solver(
             k: np.asarray(v, dtype=_dtype)
             for k, v in tangents.items()
         }
-        logger.debug(f"kkt_diff convert_tangents: {perf_counter() - start:.3e}s")
+        logger.info(f"kkt_diff convert_tangents: {perf_counter() - start:.3e}s")
 
         # ── Detect batching ──────────────────────────────────────────
         # Tangents have an extra leading dim when vmap expands them.
@@ -519,7 +519,7 @@ def setup_dense_solver(
             rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
             batch_size = 0
 
-        logger.debug(f"kkt_diff build_system: {perf_counter() - start:.3e}s")
+        logger.info(f"kkt_diff build_system: {perf_counter() - start:.3e}s")
 
         # ── Solve the linear system ──────────────────────────────────
         # lhs @ sol = -rhs
@@ -527,7 +527,7 @@ def setup_dense_solver(
         # Batched:   sol is (nv+nh, B)
         start = perf_counter()
         sol = np.linalg.solve(lhs, -rhs)
-        logger.debug(f"kkt_diff lin_solve: {perf_counter() - start:.3e}s")
+        logger.info(f"kkt_diff lin_solve: {perf_counter() - start:.3e}s")
 
         # ── Extract dx, dmu, dlam from the solution ──────────────────
         if batched:
@@ -581,7 +581,7 @@ def setup_dense_solver(
                 "mu":     jnp.array(mu_np, dtype=_dtype),       # (ne,)
                 "active": jnp.array(active_np, dtype=jnp.bool_),  # (ni,)
             }
-        logger.debug(f"kkt_diff convert_sol: {perf_counter() - start:.3e}s")
+        logger.info(f"kkt_diff convert_sol: {perf_counter() - start:.3e}s")
 
         # Active-set mask is not differentiable — zero tangent
         dactive = np.zeros(                                  # (ni,) | (B, ni)
