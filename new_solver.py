@@ -6,6 +6,11 @@ from time import perf_counter
 import numpy as np
 from qpsolvers import Problem, solve_problem
 import jax
+import logging
+
+#TODO: we should allow the user not to pass e.g. A,b, or G,h
+#TODO: add warmstart
+
 
 def _parse_options(options:Optional[SolverOptions]) -> SolverOptionsFull:
 
@@ -30,6 +35,8 @@ def setup_dense_solver(
     options: Optional[SolverOptions] = None,
 ):
     
+    logger = logging.getLogger(__name__)
+    
     options_parsed = _parse_options(options)
     dtype = options_parsed['dtype']
 
@@ -52,143 +59,228 @@ def setup_dense_solver(
     # SETUP SOLVER
     # =================================================================
 
-    def _solve_qp(Q, q, F, f, G, g):
+    def _convert_qp_ingredients_to_numpy(P, q, A, b, G, h):
 
         # Convert vectors
         start = perf_counter()
-        q_vec = np.asarray(q, dtype=dtype)
-        f_vec = np.asarray(f, dtype=dtype)
-        g_vec = np.asarray(g, dtype=dtype)
-        t_to_numpy = perf_counter() - start
+        q_np = np.asarray(q, dtype=dtype)
+        b_np = np.asarray(b, dtype=dtype)
+        h_np = np.asarray(h, dtype=dtype)
+        t_convert = {"convert_vectors": perf_counter() - start}
 
         # Convert matrices
         start = perf_counter()
+        P_np = np.asarray(P, dtype=dtype)
+        A_np = np.asarray(A, dtype=dtype)
+        G_np = np.asarray(G, dtype=dtype)
+        t_convert["convert_matrices"] = perf_counter() - start
 
-        Q_mat = np.asarray(Q, dtype=dtype)
-        F_mat = np.asarray(F, dtype=dtype)
-        G_mat = np.asarray(G, dtype=dtype)
+        return (
+            P_np, 
+            q_np, 
+            A_np, 
+            b_np, 
+            G_np, 
+            h_np, 
+            t_convert
+        )
 
+    def _convert_solution_to_jax(x, lam, mu, active):
+        start = perf_counter()
+        sol =  {
+            "x": jnp.array(x,dtype=dtype), 
+            "lam":jnp.array(lam,dtype=dtype),
+            "mu":jnp.array(mu,dtype=dtype),
+            "active":jnp.array(active,dtype=jnp.bool_)
+        }
         t_convert = perf_counter() - start
+        return sol, t_convert
+
+    def _solve_qp_numpy(P, q, A, b, G, h):
+
+        t_dict = {}
 
         # Build qpsolvers Problem
-        prob_dict = {
-            "P": Q_mat,
-            "q": q_vec,
-            "A": F_mat,
-            "b": f_vec,
-            "G": G_mat,
-            "h": g_vec,
-        }
+        start = perf_counter()
+        prob_dict = {"P": P,"q": q,"A": A,"b": b,"G": G,"h": h}
         prob = Problem(**prob_dict)
+        t_dict["problem_setup"] = perf_counter() - start
 
         # Solve QP
         start = perf_counter()
         sol = solve_problem(prob, solver=options_parsed["solver"])
         assert sol.found
-        t_solve = perf_counter() - start
+        t_dict["solve"] = perf_counter() - start
 
         # Recover primal/dual variables
         start = perf_counter()
         x = np.asarray(sol.x, dtype=dtype).reshape(-1)
         mu = np.asarray(sol.y, dtype=dtype).reshape(-1)
         lam = np.asarray(sol.z, dtype=dtype).reshape(-1)
-        t_retrieve = perf_counter() - start
+        t_dict["retrieve"] = perf_counter() - start
 
         # Determine active set: Gx − h >= tolerance
         start = perf_counter()
-        active = np.asarray(np.abs(G_mat @ sol.x - g_vec) <= options_parsed["jac_tol"]).reshape(-1)
-        t_active = perf_counter() - start
+        active = np.asarray(np.abs(G @ sol.x - h) <= options_parsed["jac_tol"], dtype=np.bool_).reshape(-1)
+        t_dict["active"] = perf_counter() - start
 
-        print(
-            f"DenseQP solve:  solve={t_solve:.3e}s  "
-            f"convert={t_convert:.3e}s  retrieve={t_retrieve:.3e}s  "
-            f"active={t_active:.3e}s  to_numpy={t_to_numpy:.3e}s"
-        )
+        return x, lam, mu, active, t_dict
 
-        return {"x": x, "lam": lam, "mu": mu, "active": active}
+    def _solve_qp(P, q, A, b, G, h):
 
-    def _solve_qp_callback(Q, q, F, f, G, g):
+        start = perf_counter()
+
+        P_np, q_np, A_np, b_np, G_np, h_np, t_dict_convert = _convert_qp_ingredients_to_numpy(P, q, A, b, G, h)
+
+        x_np, lam_np, mu_np, active_np, t_dict_solve = _solve_qp_numpy(P_np, q_np, A_np, b_np, G_np, h_np)
+
+        sol, t_sol_convert = _convert_solution_to_jax(x_np, lam_np, mu_np, active_np)
+
+        t_full = perf_counter() - start
+
+        if options_parsed["verbose"]:
+            logger.info(
+                f"DenseQP time {t_full:.3e}s -- "
+                f"solve={t_dict_solve["solve"]:.3e}s  "
+                f"active set={t_dict_solve["active"]:.3e}s  "
+                f"retrieve={t_dict_solve["retrieve"]:.3e}s  "
+                f"solve={t_dict_solve["solve"]:.3e}s  "
+                f"problem setup={t_dict_solve["problem_setup"]:.3e}s  "
+                f"conversion vectors={t_dict_convert["convert_vectors"]:.3e}s  "
+                f"conversion matrices={t_dict_convert["convert_matrices"]:.3e}s  "
+                f"conversion solution={t_sol_convert:.3e}"
+            )
+
+        return sol
+
+    def _solve_qp_callback(P, q, A, b, G, h):
         return pure_callback(
             _solve_qp,
             _fwd_shapes,
-            Q, q, F, f, G, g,
+            P, q, A, b, G, h,
         )
 
     # =================================================================
     # SETUP DIFFERENTIATOR
     # =================================================================
 
-    def _kkt_diff(Q, q, F, f, G, g, dQ, dq, dF, df, dG, dg):
+    def _kkt_diff(P, q, A, b, G, h, dP, dq, dA, db, dG, dh):
+
+        # this function takes in jax.numpy arrays and matrices,
+        # the tangent arguments dQ, dq, dF, df, dG, dg can be vectorized,
+        # in which case they are passed
 
         print("Hi, I am kkt differentiator and I am running.")
 
+        P_np, q_np, A_np, b_np, G_np, h_np, t_dict = _convert_qp_ingredients_to_numpy(P, q, A, b, G, h)
+
+        # Get primal/dual solution (forward eval)
+        x_np, lam_np, mu_np, active_np, t_dict_solve = _solve_qp_numpy(P_np, q_np, A_np, b_np, G_np, h_np)
+        t_dict.update(t_dict_solve)
+
         # Convert vectors
         start = perf_counter()
-        q = np.asarray(q, dtype=dtype)
-        f = np.asarray(f, dtype=dtype)
-        g = np.asarray(g, dtype=dtype)
-        dq = np.asarray(dq, dtype=dtype)
-        df = np.asarray(df, dtype=dtype)
-        dg = np.asarray(dg, dtype=dtype)
-        t_to_numpy = perf_counter() - start
+        dq_np = np.asarray(dq, dtype=dtype).squeeze()
+        db_np = np.asarray(db, dtype=dtype).squeeze()
+        dh_np = np.asarray(dh, dtype=dtype).squeeze()
+        t_dict["convert_vector_derivatives"] = perf_counter() - start
 
         # Convert matrices
         start = perf_counter()
-
-        Q = np.asarray(Q, dtype=dtype)
-        F = np.asarray(F, dtype=dtype)
-        G = np.asarray(G, dtype=dtype)
-        dQ = np.asarray(dQ, dtype=dtype)
-        dF = np.asarray(dF, dtype=dtype)
-        dG = np.asarray(dG, dtype=dtype)
-        t_convert = perf_counter() - start
-
-        # Get primal/dual solution (forward eval)
-        res = _solve_qp(Q, q, F, f, G, g)
-        x = res["x"]
-        lam = res["lam"]
-        mu = res["mu"]
-        active = np.array(res["active"],dtype=np.bool_)
+        dP_np = np.asarray(dP, dtype=dtype).squeeze()
+        dA_np = np.asarray(dA, dtype=dtype).squeeze()
+        dG_np = np.asarray(dG, dtype=dtype).squeeze()
+        t_dict["convert_matrix_derivatives"] = perf_counter() - start
 
         # Stack constraints
-        #TODO: this converts to numpy again, best to have a conversion utility
-        # before running _solve_qp and then pass numpy stuff to _solve_qp,
-        # then repeat this for the forward callback
-        H = np.vstack((F, G[active,:]))  # (n_eq + n_ineq, n_var)
+        H_np = np.vstack((A_np, G_np[active_np,:]))  # (n_eq + n_ineq, n_var)
 
         # Derivative of Lagrangian:
-        dL = dQ @ x + dq + dF.T @ mu + dG[active,:].T @ lam[active]
+        dL_np = dP_np @ x_np + dq_np + dA_np.T @ mu_np + dG_np[active_np,:].T @ lam_np[active_np]
 
         # RHS = concatenation of dL and constraint derivatives
-        rhs = np.concatenate([dL, dF @ x - df, dG[active,:] @ x - dg[active]])
-        lhs = np.block([[Q, H.T],[H, np.zeros((H.shape[0],H.shape[0]))]])
+        rhs = np.concatenate([dL_np, dA_np @ x_np - db_np, dG_np[active_np,:] @ x_np - dh_np[active_np]])
+        n_h = H_np.shape[0]
+        lhs = np.block([[P_np, H_np.T],[H_np, np.zeros((n_h,n_h))]])
 
-        sol      = np.linalg.solve(lhs, -rhs)
-        dx       = sol[:n_var]
-        dmu      = sol[n_var : n_var + n_eq]
-        dlam_a   = sol[n_var + n_eq :]
-        dlam          = np.zeros(n_ineq)
-        dlam[active]  = dlam_a
+        sol                 = np.linalg.solve(lhs, -rhs)
+        dx_np               = sol[:n_var]
+        dmu_np              = sol[n_var : n_var + n_eq]
+        dlam_a_np           = sol[n_var + n_eq :]
+        dlam_np             = np.zeros(n_ineq)
+        dlam_np[active_np]  = dlam_a_np
 
-        return dx, dmu, dlam, active, res
+        
+
+        return dx_np, dmu_np, dlam_np, active_np, res
     
-    def _kkt_diff_callback(Q, q, F, f, G, g, dQ, dq, dF, df, dG, dg):
+    def _kkt_diff_batched(P, q, A, b, G, h, dP, dq, dA, db, dG, dh):
+
+        # this function takes in jax.numpy arrays and matrices,
+        # the tangent arguments dQ, dq, dF, df, dG, dg can be vectorized,
+        # in which case they are passed
+
+        print("Hi, I am kkt differentiator and I am running.")
+
+        P_np, q_np, A_np, b_np, G_np, h_np, t_dict = _convert_qp_ingredients_to_numpy(P, q, A, b, G, h)
+
+        # Get primal/dual solution (forward eval)
+        x_np, lam_np, mu_np, active_np, t_dict_solve = _solve_qp_numpy(P_np, q_np, A_np, b_np, G_np, h_np)
+        t_dict.update(t_dict_solve)
+
+        # Convert vectors
+        start = perf_counter()
+        dq_np = np.asarray(dq, dtype=dtype).squeeze()
+        db_np = np.asarray(db, dtype=dtype).squeeze()
+        dh_np = np.asarray(dh, dtype=dtype).squeeze()
+        t_dict["convert_vector_derivatives"] = perf_counter() - start
+
+        # Convert matrices
+        start = perf_counter()
+        dP_np = np.asarray(dP, dtype=dtype).squeeze()
+        dA_np = np.asarray(dA, dtype=dtype).squeeze()
+        dG_np = np.asarray(dG, dtype=dtype).squeeze()
+        t_dict["convert_matrix_derivatives"] = perf_counter() - start
+
+        # Stack constraints
+        H_np = np.vstack((A_np, G_np[active_np,:]))  # (n_eq + n_ineq, n_var)
+
+        # Derivative of Lagrangian:
+        dL_np = dP_np @ x_np + dq_np + dA_np.T @ mu_np + dG_np[active_np,:].T @ lam_np[active_np]
+
+        # RHS = concatenation of dL and constraint derivatives
+        rhs = np.concatenate([dL_np, dA_np @ x_np - db_np, dG_np[active_np,:] @ x_np - dh_np[active_np]])
+        n_h = H_np.shape[0]
+        lhs = np.block([[P_np, H_np.T],[H_np, np.zeros((n_h,n_h))]])
+
+        sol                 = np.linalg.solve(lhs, -rhs)
+        dx_np               = sol[:n_var]
+        dmu_np              = sol[n_var : n_var + n_eq]
+        dlam_a_np           = sol[n_var + n_eq :]
+        dlam_np             = np.zeros(n_ineq)
+        dlam_np[active_np]  = dlam_a_np
+
+        res = {"x": np.expand_dims(x_np,0),"mu": np.expand_dims(mu_np,0),"lam": np.expand_dims(lam_np,0),"active": np.expand_dims(active_np,0)}
+
+        return np.expand_dims(dx_np,0), np.expand_dims(dmu_np,0), np.expand_dims(dlam_np,0), np.expand_dims(active_np,0), res
+    
+    def _kkt_diff_callback(primals, tangents):
         return pure_callback(
             _kkt_diff,
             _bwd_shapes,
-            Q, q, F, f, G, g, 
-            dQ, dq, dF, df, dG, dg
+            *primals, 
+            *tangents,
+            vmap_method="expand_dims"
         )
 
     @custom_jvp
-    def solver(Q, q, F, f, G, g):
-        return _solve_qp_callback(Q, q, F, f, G, g)
+    def solver(P, q, A, b, G, h):
+        return _solve_qp_callback(P, q, A, b, G, h)
     
     @solver.defjvp
     def solver_jvp(primals, tangents):
 
-        #TODO: vectorize when multiple tangents are passed
-        dx, dmu, dlam, active, res = _kkt_diff_callback(*primals, *tangents)
+        dx, dmu, dlam, active, res = _kkt_diff_callback(primals, tangents)
 
         tangents_out = {
             "x":      dx,

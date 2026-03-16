@@ -12,6 +12,7 @@ class SolverOptions(TypedDict, total=False):
     sparse: bool
     solver: str
     dtype: jnp.dtype
+    verbose: bool
 
 
 class SolverOptionsFull(TypedDict):
@@ -19,13 +20,15 @@ class SolverOptionsFull(TypedDict):
     sparse: bool
     solver: str
     dtype: jnp.dtype
+    verbose: bool
 
 
 DEFAULT_SOLVER_OPTIONS: Final[SolverOptionsFull] = {
     "jac_tol": 1e-8,
     "sparse": True,
     "solver": "piqp",
-    "dtype": jnp.float64
+    "dtype": jnp.float64,
+    "verbose": True
 }
 
 #: Global sparsity pattern in NumPy indexing format (row indices, column indices).
