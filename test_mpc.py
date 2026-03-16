@@ -62,20 +62,29 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from new_solver import setup_dense_solver
+from solver_dense.solver_dense import setup_dense_solver
+
+epsilon = 0.1
+
+x0 = jnp.array([-3.0,-1.0])
+dx0 = jnp.array([epsilon,0])
 
 solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 
-solve_mpc = lambda x_init: solver(P, q, Aeq, beq(x_init), G, h)
-
-EPSILON = 1.0
-
-x0 = jnp.array([-3.0,-1.0])
-dx0 = jnp.array([EPSILON,0])
+solve_mpc = lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+sol1 = solve_mpc(x0)
+sol2 = solve_mpc(x0+dx0)
 
 from jax import jvp
-
 sol, dsol = jvp(solve_mpc,(x0,),(dx0,))
+
+## SECOND SOLVER: some stuff fixed at setup
+solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
+sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
+sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
+solver2 = lambda x_init: solver_fixed(A=Aeq, b=beq(x_init), G=G, h=h)
+
+sol, dsol = jvp(solver2,(x0,),(dx0,))
 
 x_opt = sol["x"][:(horizon+1)*nx].reshape(-1,nx).T
 x1_opt, x2_opt = x_opt[0,:].squeeze(), x_opt[1,:].squeeze()
@@ -90,8 +99,8 @@ x_opt_perturbed = sol_perturbed["x"][:(horizon+1)*nx].reshape(-1,nx).T
 x1_opt_perturbed, x2_opt_perturbed = x_opt_perturbed[0,:].squeeze(), x_opt_perturbed[1,:].squeeze()
 u_opt = sol_perturbed["x"][(horizon+1)*nx:]
 
-dx = dsol["x"] / EPSILON
-dx_fd = (sol_perturbed["x"]-sol["x"]) / EPSILON
+dx = dsol["x"] / epsilon
+dx_fd = (sol_perturbed["x"]-sol["x"]) / epsilon
 
 error = jnp.linalg.norm(dx-dx_fd) / jnp.linalg.norm(dx_fd)
 cos_sim = jnp.dot(dx,dx_fd) / (jnp.linalg.norm(dx_fd) * jnp.linalg.norm(dx))

@@ -1,31 +1,21 @@
-from jax import custom_jvp, ShapeDtypeStruct, pure_callback, Array
+from jax import custom_jvp, pure_callback
 import jax.numpy as jnp
 from time import perf_counter
 import numpy as np
 from qpsolvers import Problem, solve_problem
 import jax
 import logging
-from typing import (
-    Final, 
-    TypedDict, 
-    Dict, 
-    Tuple, 
-    TypeAlias, 
-    Optional, 
-    cast
-)
-from jax.experimental.sparse import BCOO
+from typing import Optional, cast
 from numpy import ndarray
 
 from parsing_utils import parse_options
 from solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
 from solver_dense_options import (
-
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
-    SolverOptionsFull
 )
 
+# This function allows overwriting arguments 
 
 #TODO: add dimensions and annotate dimensions in array?
 #TODO: we should allow the user not to pass e.g. A,b, or G,h
@@ -70,13 +60,13 @@ def setup_dense_solver(
     }
 
     # form shapes of jvp
-    _jvp_shapes = {
-        "dx":       jax.ShapeDtypeStruct((n_var,),   _dtype),
-        "dmu":      jax.ShapeDtypeStruct((n_ineq,),  _dtype),
-        "dlam":     jax.ShapeDtypeStruct((n_eq,),    _dtype),
-        "dactive":  jax.ShapeDtypeStruct((n_ineq,),  jax.dtypes.float0),
-        "sol":      _fwd_shapes,
-    }
+    _jvp_shapes = (
+        jax.ShapeDtypeStruct((n_var,),      _dtype),
+        jax.ShapeDtypeStruct((n_ineq,),     _dtype),
+        jax.ShapeDtypeStruct((n_eq,),       _dtype),
+        jax.ShapeDtypeStruct((n_ineq,),     jax.dtypes.float0),
+        _fwd_shapes,
+    )
     
     # gather requires keys
     _required_keys = ("P", "q")
@@ -92,8 +82,8 @@ def setup_dense_solver(
     _required_keys_set = set(_required_keys)
     _dynamic_keys_set = set(_dynamic_keys)
 
-    logger.info(f"Setting up QP with {n_var} variables, {n_eq} equalities, {n_ineq} inequalities.")
-    logger.info(f"Fixed variables: {set(_fixed.keys()) or 'none'}")
+    logger.debug(f"Setting up QP with {n_var} variables, {n_eq} equalities, {n_ineq} inequalities.")
+    logger.debug(f"Fixed variables: {set(_fixed.keys()) or 'none'}")
 
 
     # =================================================================
@@ -157,13 +147,13 @@ def setup_dense_solver(
         # Build qpsolvers Problem
         start = perf_counter()
         prob = Problem(**kwargs)
-        logger.info(f"problem_setup: {perf_counter() - start}")
+        logger.debug(f"problem_setup: {perf_counter() - start}")
 
         # Solve QP
         start = perf_counter()
         sol = solve_problem(prob, solver=_options_parsed["solver"])
         assert sol.found, "QP solver failed to find a solution."
-        logger.info(f"solve: {perf_counter() - start}")
+        logger.debug(f"solve: {perf_counter() - start}")
 
         # Recover primal / dual variables
         start = perf_counter()
@@ -179,7 +169,7 @@ def setup_dense_solver(
         else:
             lam = np.empty(0, dtype=_dtype)
 
-        logger.info(f"retrieve: {perf_counter() - start}")
+        logger.debug(f"retrieve: {perf_counter() - start}")
 
         # Determine active set: |Gx − h| <= tolerance
         start = perf_counter()
@@ -191,7 +181,7 @@ def setup_dense_solver(
             ).reshape(-1)
         else:
             active = np.empty(0, dtype=np.bool_)
-        logger.info(f"active set determination: {perf_counter() - start}")
+        logger.debug(f"active set determination: {perf_counter() - start}")
 
         return x, lam, mu, active
     
@@ -249,7 +239,7 @@ def setup_dense_solver(
         }
         logger.debug(f"convert_to_jax: {perf_counter() - start:.3e}s")
 
-        logger.info(f"DenseQP total: {perf_counter() - t_start:.3e}s")
+        logger.debug(f"DenseQP total: {perf_counter() - t_start:.3e}s")
 
         return result
 
@@ -261,248 +251,236 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+    def _kkt_diff(*args: ndarray) -> tuple[
+        ndarray, ndarray, ndarray, ndarray, dict[str, jax.Array]
+    ]:
+        """Implicit differentiation of the KKT conditions.
 
-    def _kkt_diff(P, q, A, b, G, h, dP, dq, dA, db, dG, dh):
+        Solves the QP forward, then differentiates through the KKT
+        optimality conditions by solving a linear system whose structure
+        depends on the active set of inequality constraints.
 
-        # detect batching
-        batched = P[0].ndim == 2
+        The function receives all primals followed by all tangents as
+        positional numpy arrays, both ordered according to
+        ``_required_keys`` (i.e. P, q, [A, b,] [G, h]).
 
-        # this function takes in jax.numpy arrays and matrices,
-        # the tangent arguments dQ, dq, dF, df, dG, dg can be vectorized,
-        # in which case they are passed
+        Batching is detected automatically: when the tangent arrays
+        carry an extra leading dimension compared to the primals, the
+        linear system is solved for every tangent vector simultaneously
+        via a matrix RHS.
 
-        logger.info("Hi, I am kkt differentiator and I am running.")
+        Args:
+            *args: ``2 * len(_required_keys)`` numpy arrays. The first
+                half are primals, the second half are tangents, both in
+                ``_required_keys`` order.
 
-        if batched:
+        Returns:
+            A tuple ``(dx, dmu, dlam, dactive, sol)`` where:
+                dx: Tangent of the primal solution.
+                dmu: Tangent of the inequality duals.
+                dlam: Tangent of the equality duals.
+                dactive: Zero tangent for the active-set mask
+                    (non-differentiable), dtype ``float0``.
+                sol: Primal / dual solution dict (``x``, ``lam``,
+                    ``mu``, ``active``) as JAX arrays, used by the
+                    JVP rule as the primal output.
+        """
+        t_start = perf_counter()
+        n_keys = len(_required_keys)
 
-            assert set(elem.shape[0] for elem in (P, q, A, b, G, h)) == {1}
-            
-            assert P.shape[1:] == (n_var,n_var)
-            assert q.shape[1:] == (n_var,)
-            assert A.shape[1:] == (n_eq,n_var)
-            assert b.shape[1:] == (n_eq,)
-            assert G.shape[1:] == (n_ineq,n_var)
-            assert h.shape[1:] == (n_ineq,)
+        # ── Split positional args into primals and tangents ──────────
+        primal_vals = args[:n_keys]
+        tangent_vals = args[n_keys:]
+        primals = dict(zip(_required_keys, primal_vals))
+        tangents = dict(zip(_required_keys, tangent_vals))
 
-            assert set(elem.ndim for elem in (dP, dA, dG)) == {3}
-            assert set(elem.ndim for elem in (dq, db, dh)) == {2}
-            
-            assert dP.shape[1:] == (n_var,n_var)
-            assert dq.shape[1:] == (n_var,)
-            assert dA.shape[1:] == (n_eq,n_var)
-            assert db.shape[1:] == (n_eq,)
-            assert dG.shape[1:] == (n_ineq,n_var)
-            assert dh.shape[1:] == (n_ineq,)
-        
+        # ── Convert primals to numpy and squeeze batch-1 dims ────────
+        start = perf_counter()
+        prob_np = {
+            k: np.asarray(v, dtype=_dtype).squeeze()
+            for k, v in primals.items()
+        }
+        logger.debug(f"kkt_diff convert_primals: {perf_counter() - start:.3e}s")
+
+        # ── Forward solve ────────────────────────────────────────────
+        x_np, lam_np, mu_np, active_np = _solve_qp_numpy(**prob_np)
+
+        # ── Convert tangents to numpy (keep batch dimension) ─────────
+        start = perf_counter()
+        d_np = {
+            k: np.asarray(v, dtype=_dtype)
+            for k, v in tangents.items()
+        }
+        logger.debug(f"kkt_diff convert_tangents: {perf_counter() - start:.3e}s")
+
+        # ── Detect batching ──────────────────────────────────────────
+        # Tangents have an extra leading dim when vmap expands them.
+        batched = d_np["P"].ndim == 3
+
+        # ── Retrieve numpy arrays (with short aliases) ───────────────
+        P_np = prob_np["P"]
+        A_np = prob_np.get("A", np.empty((0, n_var), dtype=_dtype))
+        G_np = prob_np.get("G", np.empty((0, n_var), dtype=_dtype))
+
+        dP_np = d_np["P"]
+        dq_np = d_np["q"]
+        dA_np = d_np.get("A", np.empty((0, n_var), dtype=_dtype) if not batched
+                         else np.empty((1, 0, n_var), dtype=_dtype))
+        db_np = d_np.get("b", np.empty((0,), dtype=_dtype) if not batched
+                         else np.empty((1, 0), dtype=_dtype))
+        dG_np = d_np.get("G", np.empty((0, n_var), dtype=_dtype) if not batched
+                         else np.empty((1, 0, n_var), dtype=_dtype))
+        dh_np = d_np.get("h", np.empty((0,), dtype=_dtype) if not batched
+                         else np.empty((1, 0), dtype=_dtype))
+
+        # ── Build KKT system LHS (same for batched and unbatched) ────
+        start = perf_counter()
+
+        # Stack equality and active inequality constraint rows
+        n_active = int(np.sum(active_np))
+        H_parts = []
+        if n_eq > 0:
+            H_parts.append(A_np)
+        if n_ineq > 0 and n_active > 0:
+            H_parts.append(G_np[active_np, :])
+
+        if H_parts:
+            H_np = np.vstack(H_parts)                      # (n_eq + n_active, n_var)
         else:
+            H_np = np.empty((0, n_var), dtype=_dtype)
 
-            assert P.shape == (n_var,n_var)
-            assert q.shape == (n_var,)
-            assert A.shape == (n_eq,n_var)
-            assert b.shape == (n_eq,)
-            assert G.shape == (n_ineq,n_var)
-            assert h.shape == (n_ineq,)
+        n_h = H_np.shape[0]
+        lhs = np.block([
+            [P_np,  H_np.T],
+            [H_np,  np.zeros((n_h, n_h), dtype=_dtype)],
+        ])
 
-            assert dP.shape == (n_var,n_var)
-            assert dq.shape == (n_var,)
-            assert dA.shape == (n_eq,n_var)
-            assert db.shape == (n_eq,)
-            assert dG.shape == (n_ineq,n_var)
-            assert dh.shape == (n_ineq,)
-
-        start = perf_counter()
-
-        # convert to numpy and squeeze any additional dimension
-        P_np, q_np, A_np, b_np, G_np, h_np, t_dict = _convert_qp_ingredients_to_numpy(P, q, A, b, G, h)
-
-        # extra shape must be removed here
-        assert P_np.shape == (n_var,n_var)
-        assert q_np.shape == (n_var,)
-        assert A_np.shape == (n_eq,n_var)
-        assert b_np.shape == (n_eq,)
-        assert G_np.shape == (n_ineq,n_var)
-        assert h_np.shape == (n_ineq,)
-        
-        # Get primal/dual solution (forward eval)
-        x_np, lam_np, mu_np, active_np, t_dict_solve = _solve_qp_numpy(P_np, q_np, A_np, b_np, G_np, h_np)
-
-        assert x_np.shape == (n_var,)
-        assert mu_np.shape == (n_eq,)
-        assert lam_np.shape == (n_ineq,)
-        assert active_np.shape == (n_ineq,)
-
-        # Convert vectors
-        start = perf_counter()
-        dq_np = np.asarray(dq, dtype=dtype)
-        db_np = np.asarray(db, dtype=dtype)
-        dh_np = np.asarray(dh, dtype=dtype)
-        t_dict["convert_vector_derivatives"] = perf_counter() - start
-
-        # Convert matrices
-        start = perf_counter()
-        dP_np = np.asarray(dP, dtype=dtype)
-        dA_np = np.asarray(dA, dtype=dtype)
-        dG_np = np.asarray(dG, dtype=dtype)
-        t_dict["convert_matrix_derivatives"] = perf_counter() - start
-        
+        # ── Build RHS (differs between batched and unbatched) ────────
         if batched:
+            # Tangents: (batch, ...), primals/duals: unbatched.
+            # dL = dP x + dq + dA^T mu + dG_active^T lam_active
+            dL_np = dP_np @ x_np + dq_np
+            if n_eq > 0:
+                dL_np = dL_np + dA_np.transpose(0, 2, 1) @ mu_np
+            if n_ineq > 0 and n_active > 0:
+                dL_np = dL_np + (dG_np[:, active_np, :]
+                                 .transpose(0, 2, 1) @ lam_np[active_np])
 
-            assert set(elem.ndim for elem in (dP, dA, dG)) == {3}
-            assert set(elem.ndim for elem in (dq, db, dh)) == {2}
-            
-            assert dP_np.shape[1:] == (n_var,n_var)
-            assert dq_np.shape[1:] == (n_var,)
-            assert dA_np.shape[1:] == (n_eq,n_var)
-            assert db_np.shape[1:] == (n_eq,)
-            assert dG_np.shape[1:] == (n_ineq,n_var)
-            assert dh_np.shape[1:] == (n_ineq,)
-        
-        else:
+            # Collect rhs pieces: each is (batch_i, n_i)
+            rhs_pieces = [dL_np]
+            if n_eq > 0:
+                rhs_pieces.append(dA_np @ x_np - db_np)
+            if n_ineq > 0 and n_active > 0:
+                rhs_pieces.append(
+                    dG_np[:, active_np, :] @ x_np - dh_np[:, active_np]
+                )
 
-            assert dP_np.shape == (n_var,n_var)
-            assert dq_np.shape == (n_var,)
-            assert dA_np.shape == (n_eq,n_var)
-            assert db_np.shape == (n_eq,)
-            assert dG_np.shape == (n_ineq,n_var)
-            assert dh_np.shape == (n_ineq,)
-
-        # differentiate
-        start = perf_counter()
-
-        # H_np = np.vstack((A_np, G_np[active_np,:]))  # (n_eq + n_ineq, n_var)
-        # dL_np = dP_np @ x_np + dq_np + dA_np.T @ mu_np + dG_np[active_np,:].T @ lam_np[active_np]
-        # rhs = np.concatenate([dL_np, dA_np @ x_np - db_np, dG_np[active_np,:] @ x_np - dh_np[active_np]])
-        # n_h = H_np.shape[0]
-        # lhs = np.block([[P_np, H_np.T],[H_np, np.zeros((n_h,n_h))]])
-        
-        H_np = np.vstack((A_np, G_np[active_np, :]))   # (n_eq + n_active, n_var)
-        n_h  = H_np.shape[0]
-        lhs  = np.block([[P_np, H_np.T], [H_np, np.zeros((n_h, n_h))]])
-
-        if batched:
-
-            # expected dimensions
-            # dP_np.shape = (batch,n_var,n_var)
-            # dq_np.shape == (batch,n_var,) 
-            # dA_np.shape == (batch,n_eq,n_var)
-            # db_np.shape == (batch,n_eq,)
-            # dG_np.shape == (batch,n_ineq,n_var)
-            # dh_np.shape == (batch,n_ineq,)
-            # x_np.shape == (n_var,)
-            # mu_np.shape == (n_eq,)
-            # lam_np.shape == (n_ineq,)
-            # active_np.shape == (n_ineq,)
-            
-            # note that batch dimension of each element may differ,
-            # but that's not a problem, numpy will correctly broadcast
-            # to the correct output dimension
-
-            # all elements here are (batch, n_var)
-            dL_np = (dP_np @ x_np
-                     + dq_np
-                     + dA_np.transpose(0, 2, 1) @ mu_np
-                     + dG_np[:, active_np, :].transpose(0, 2, 1) @ lam_np[active_np])
-
-            rhs_pieces = [
-                dL_np,
-                dA_np @ x_np - db_np,
-                dG_np[:, active_np, :] @ x_np - dh_np[:, active_np],
-            ]
-
-            # determine batch size
+            # Broadcast to common batch size and concatenate
             batch_size = max(p.shape[0] for p in rhs_pieces)
-
-            # form rhs
             rhs = np.concatenate([
-                np.broadcast_to(p, (batch_size, p.shape[1])) if p.shape[0] == 1 else p
+                np.broadcast_to(p, (batch_size, p.shape[1]))
+                if p.shape[0] == 1 else p
                 for p in rhs_pieces
-            ], axis=1).T
+            ], axis=1).T                                    # (n_var + n_h, batch)
 
-            assert rhs.shape == (n_var + n_eq + int(np.sum(active_np)), batch_size)
-        
         else:
-            
-            # expected dimensions
-            # dP_np.shape = (n_var,n_var)
-            # dq_np.shape == (n_var,) 
-            # dA_np.shape == (n_eq,n_var)
-            # db_np.shape == (n_eq,)
-            # dG_np.shape == (n_ineq,n_var)
-            # dh_np.shape == (n_ineq,)
-            # x_np.shape == (n_var,)
-            # mu_np.shape == (n_eq,)
-            # lam_np.shape == (n_ineq,)
-            # active_np.shape == (n_ineq,)
+            # dL = dP x + dq + dA^T mu + dG_active^T lam_active
+            dL_np = dP_np @ x_np + dq_np
+            if n_eq > 0:
+                dL_np = dL_np + dA_np.T @ mu_np
+            if n_ineq > 0 and n_active > 0:
+                dL_np = dL_np + (dG_np[active_np, :].T
+                                 @ lam_np[active_np])
 
-            dL_np = dP_np @ x_np + dq_np + dA_np.T @ mu_np + dG_np[active_np, :].T @ lam_np[active_np]
-
-            assert dL_np.shape == (n_var,)
-
-            rhs = np.hstack((dL_np, dA_np @ x_np - db_np, dG_np[active_np, :] @ x_np - dh_np[active_np]))
-
-            assert rhs.shape == (n_var + n_eq + int(np.sum(active_np)), )
-
+            rhs_parts = [dL_np]
+            if n_eq > 0:
+                rhs_parts.append(dA_np @ x_np - db_np)
+            if n_ineq > 0 and n_active > 0:
+                rhs_parts.append(
+                    dG_np[active_np, :] @ x_np - dh_np[active_np]
+                )
+            rhs = np.hstack(rhs_parts)                     # (n_var + n_h,)
             batch_size = 0
 
-        t_dict["diff_setup"] = perf_counter() - start
+        logger.debug(f"kkt_diff build_system: {perf_counter() - start:.3e}s")
+
+        # ── Solve the linear system ──────────────────────────────────
         start = perf_counter()
         sol = np.linalg.solve(lhs, -rhs)
-        
+        logger.debug(f"kkt_diff lin_solve: {perf_counter() - start:.3e}s")
+
+        # ── Extract dx, dmu, dlam from the solution ──────────────────
         if batched:
-            dx_np              = sol[:n_var, :].T             # (B, n_var)
-            dmu_np             = sol[n_var : n_var + n_eq, :].T  # (B, n_eq)
-            dlam_np            = np.zeros((batch_size, n_ineq))
-            dlam_np[:, active_np] = sol[n_var + n_eq :, :].T  # (B, n_active)
-
-            assert dx_np.shape == (batch_size,n_var)
-            assert dmu_np.shape == (batch_size,n_eq)
-            assert dlam_np.shape == (batch_size,n_ineq)
-
+            dx_np  = sol[:n_var, :].T                       # (B, n_var)
+            dmu_np = (sol[n_var:n_var + n_eq, :].T
+                      if n_eq > 0
+                      else np.empty((batch_size, 0), dtype=_dtype))
+            dlam_np = np.zeros((batch_size, n_ineq), dtype=_dtype)
+            if n_ineq > 0 and n_active > 0:
+                dlam_np[:, active_np] = sol[n_var + n_eq:, :].T
         else:
-            dx_np               = sol[:n_var]
-            dmu_np              = sol[n_var : n_var + n_eq]
-            dlam_np             = np.zeros(n_ineq)
-            dlam_np[active_np]  = sol[n_var + n_eq :]
+            dx_np  = sol[:n_var]                            # (n_var,)
+            dmu_np = (sol[n_var:n_var + n_eq]
+                      if n_eq > 0
+                      else np.empty(0, dtype=_dtype))
+            dlam_np = np.zeros(n_ineq, dtype=_dtype)
+            if n_ineq > 0 and n_active > 0:
+                dlam_np[active_np] = sol[n_var + n_eq:]
 
-            assert dx_np.shape == (n_var,)
-            assert dmu_np.shape == (n_eq,)
-            assert dlam_np.shape == (n_ineq,)
+        # ── Convert primal/dual solution to JAX ──────────────────────
+        start = perf_counter()
+        if batch_size > 0:
+            res = {
+                "x":      jnp.broadcast_to(jnp.array(x_np, dtype=_dtype),        (batch_size, n_var)),
+                "lam":    jnp.broadcast_to(jnp.array(lam_np, dtype=_dtype),       (batch_size, n_ineq)),
+                "mu":     jnp.broadcast_to(jnp.array(mu_np, dtype=_dtype),        (batch_size, n_eq)),
+                "active": jnp.broadcast_to(jnp.array(active_np, dtype=jnp.bool_), (batch_size, n_ineq)),
+            }
+        else:
+            res = {
+                "x":      jnp.array(x_np, dtype=_dtype),
+                "lam":    jnp.array(lam_np, dtype=_dtype),
+                "mu":     jnp.array(mu_np, dtype=_dtype),
+                "active": jnp.array(active_np, dtype=jnp.bool_),
+            }
+        logger.debug(f"kkt_diff convert_sol: {perf_counter() - start:.3e}s")
 
-        t_dict["diff_lin_solve"] = perf_counter() - start
+        # Active-set mask is not differentiable
+        dactive = np.zeros(
+            res["active"].shape, dtype=jax.dtypes.float0
+        )
 
-        # convert to jax and add extra first dimension if in batched mode
-        res, t_sol_convert = _convert_solution_to_jax(x_np, lam_np, mu_np, active_np, batch_size, n_var, n_eq, n_ineq)
+        logger.info(f"kkt_diff total: {perf_counter() - t_start:.3e}s")
 
-        t_full = perf_counter() - start
-
-        if _options_parsed["verbose"]:
-            logger.info(
-                f"DenseQP jvp time {t_full:.3e}s -- "
-                f"solve={t_dict_solve["solve"]:.3e}s  "
-                f"active set={t_dict_solve["active"]:.3e}s  "
-                f"retrieve={t_dict_solve["retrieve"]:.3e}s  "
-                f"solve={t_dict_solve["solve"]:.3e}s  "
-                f"problem setup={t_dict_solve["problem_setup"]:.3e}s  "
-                f"conversion vectors={t_dict["convert_vectors"]:.3e}s  "
-                f"conversion vector derivatives={t_dict["convert_vector_derivatives"]:.3e}s  "
-                f"conversion matrices={t_dict["convert_matrices"]:.3e}s  "
-                f"conversion matrix derivatives={t_dict["convert_matrix_derivatives"]:.3e}s  "
-                f"conversion solution={t_sol_convert:.3e}"
-                f"derivative setup={t_dict["diff_setup"]:.3e}"
-                f"derivative linear solve={t_dict["diff_lin_solve"]:.3e}"
-            )
-
-        return dx_np, dmu_np, dlam_np, np.zeros(res["active"].shape, dtype=jax.dtypes.float0), res
+        return dx_np, dlam_np, dmu_np, dactive, res
     
-    def _kkt_diff_callback(primals, tangents):
+    def _kkt_diff_callback(primals_dict, tangents_dict):
+        """Wrap ``_kkt_diff`` in a ``pure_callback`` for use inside JAX traces.
+
+        Converts the named dicts back to positional args in
+        ``_required_keys`` order (primals first, then tangents) as
+        expected by ``_kkt_diff``.
+
+        Args:
+            primals_dict: Dict mapping ``_required_keys`` to primal
+                JAX arrays.
+            tangents_dict: Dict mapping ``_required_keys`` to tangent
+                JAX arrays.
+
+        Returns:
+            The output of ``_kkt_diff``: a tuple
+            ``(dx, dmu, dlam, dactive, sol)``.
+        """
+        primal_vals = tuple(primals_dict[k] for k in _required_keys)
+        tangent_vals = tuple(tangents_dict[k] for k in _required_keys)
         return pure_callback(
             _kkt_diff,
             _jvp_shapes,
-            *primals, 
-            *tangents,
-            vmap_method="expand_dims"
+            *primal_vals,
+            *tangent_vals,
+            vmap_method="expand_dims",
         )
-    
+
     #endregion
 
     # =================================================================
@@ -565,7 +543,7 @@ def setup_dense_solver(
         tangents_dict : dict[str, jax.Array] = dict(zip(_required_keys, tangents))
 
         # Differentiate via KKT implicit differentiation
-        dx, dmu, dlam, dactive, res = _kkt_diff_callback(primals_dict, tangents_dict)
+        dx, dlam, dmu, dactive, res = _kkt_diff_callback(primals_dict, tangents_dict)
 
         tangents_out: dict[str, jax.Array] = {
             "x":      dx,
@@ -714,7 +692,13 @@ if __name__ == "__main__":
     sol1 = solve_mpc(x0)
     sol2 = solve_mpc(x0+dx0)
 
+    from jax import jvp
+    sol, dsol = jvp(solve_mpc,(x0,),(dx0,))
+
     ## SECOND SOLVER: some stuff fixed at setup
     solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
     sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
     sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
+    solver2 = lambda x_init: solver_fixed(A=Aeq, b=beq(x_init), G=G, h=h)
+
+    sol, dsol = jvp(solver2,(x0,),(dx0,))
