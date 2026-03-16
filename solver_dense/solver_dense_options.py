@@ -48,6 +48,6 @@ DEFAULT_SOLVER_OPTIONS: Final[SolverOptionsFull] = {
     "solver": "piqp",
     "dtype": jnp.float64,
     "bool_dtype": jnp.bool_,
-    "cst_tol": 1e-12,
+    "cst_tol": 1e-8,
     "verbose": True
 }

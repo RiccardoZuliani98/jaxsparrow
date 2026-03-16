@@ -8,9 +8,9 @@ import logging
 from typing import Optional, cast
 from numpy import ndarray
 
-from parsing_utils import parse_options
-from solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
-from solver_dense_options import (
+from solver_dense.parsing_utils import parse_options
+from solver_dense.solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
+from solver_dense.solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
 )
@@ -614,91 +614,3 @@ def setup_dense_solver(
     # =================================================================
 
     return solver
-
-
-if __name__ == "__main__":
-
-    jax.config.update("jax_enable_x64", True)
-
-    epsilon = 1.0
-
-    horizon = 30
-
-    A = jnp.array([[1,1],[0,1]])
-    B = jnp.array([[0],[1]])
-
-    xmax = 5
-    xmin = -5
-    umax = 0.5
-    umin = -0.5
-
-    cost_state = 1
-    cost_input = 0.1
-
-    nx,nu = B.shape
-    N = horizon
-
-    nz = (N+1)*nx + N*nu
-
-    # cost
-    P = jnp.diag(
-        jnp.hstack((
-            jnp.ones((N+1)*nx) * cost_state,
-            jnp.ones(N*nu) * cost_input
-        ))
-    )
-
-    q = jnp.zeros(nz)
-
-    # inequality constraints
-    G = jnp.vstack((jnp.eye(nz), -jnp.eye(nz)))
-
-    h = jnp.hstack((
-        jnp.ones((N+1)*nx)*xmax,
-        jnp.ones(N*nu)*umax,
-        -jnp.ones((N+1)*nx)*xmin,
-        -jnp.ones(N*nu)*umin
-    ))
-
-    # subdiagonal shift matrix
-    S = jnp.diag(jnp.ones(N), -1)
-
-    # state part
-    Ax = jnp.kron(jnp.eye(N+1), jnp.eye(nx)) + jnp.kron(S, -A)
-
-    # input part
-    Su = jnp.vstack((jnp.zeros((1, N)), jnp.eye(N)))
-    Au = jnp.kron(Su, -B)
-
-    Aeq = jnp.hstack((Ax, Au))
-
-    # parameterized RHS
-    def beq(x_init):
-        return jnp.hstack((
-            x_init,
-            jnp.zeros(N*nx)
-        ))
-
-    neq = Aeq.shape[0]
-    nineq = G.shape[0]
-
-    x0 = jnp.array([-3.0,-1.0])
-    dx0 = jnp.array([epsilon,0])
-
-
-    ## FIRST SOLVER: everything passed at runtime
-    solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
-    solve_mpc = lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
-    sol1 = solve_mpc(x0)
-    sol2 = solve_mpc(x0+dx0)
-
-    from jax import jvp
-    sol, dsol = jvp(solve_mpc,(x0,),(dx0,))
-
-    ## SECOND SOLVER: some stuff fixed at setup
-    solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
-    sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
-    sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
-    solver2 = lambda x_init: solver_fixed(A=Aeq, b=beq(x_init), G=G, h=h)
-
-    sol, dsol = jvp(solver2,(x0,),(dx0,))
