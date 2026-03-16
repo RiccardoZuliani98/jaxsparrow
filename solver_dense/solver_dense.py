@@ -7,18 +7,24 @@ import jax
 import logging
 from typing import Optional, cast
 from numpy import ndarray
+from jaxtyping import Float, Bool
 
-from solver_dense.parsing_utils import parse_options
-from solver_dense.solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
-from solver_dense.solver_dense_options import (
+from parsing_utils import parse_options
+from solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
+from solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
 )
 
-# This function allows overwriting arguments 
+# Dimension key (used in jaxtyping annotations throughout):
+#
+#   nv  = n_var   — number of decision variables
+#   ne  = n_eq    — number of equality constraints
+#   ni  = n_ineq  — number of inequality constraints
+#   na  = n_active — number of active inequality constraints (runtime)
+#   B   = batch   — batch dimension (JVP vmap path only)
 
-#TODO: add dimensions and annotate dimensions in array?
-#TODO: we should allow the user not to pass e.g. A,b, or G,h
+
 #TODO: add warmstart
 #TODO: setup_dense_solver should allow passing some of the elements explicitly,
 # e.g. if the user passes P, q, then we should treat those as constant and possibly
@@ -34,17 +40,43 @@ def setup_dense_solver(
     fixed_elements: Optional[DenseProblemIngredients] = None,
     options: Optional[SolverOptions] = None,
 ):
+    """Set up a differentiable dense QP solver.
+
+    Creates and returns a ``solver(**runtime)`` callable that solves
+    quadratic programs of the form::
+
+        min  0.5 x^T P x + q^T x
+        s.t. A x  = b
+             G x <= h
+
+    The solver is compatible with ``jax.jvp`` and ``jax.grad`` via
+    implicit differentiation of the KKT conditions.
+
+    Args:
+        n_var: Number of decision variables.
+        n_ineq: Number of inequality constraints (may be 0).
+        n_eq: Number of equality constraints (may be 0).
+        fixed_elements: Optional dict of QP ingredients that remain
+            constant across calls. Valid keys are ``P``, ``q``, ``A``,
+            ``b``, ``G``, ``h``. Fixed elements act as defaults and
+            can be overridden at call time.
+        options: Optional solver configuration (backend solver name,
+            dtype, tolerances, etc.).
+
+    Returns:
+        A callable ``solver(**runtime) -> dict[str, jax.Array]``.
+    """
     # start logging
     logger = logging.getLogger(__name__)
 
     # parse user options
-    _options_parsed = parse_options(options,DEFAULT_SOLVER_OPTIONS)
+    _options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
 
     # extract dtype for simplicity
     _dtype = _options_parsed['dtype']
 
     # parse and process fixed elements if present
-    _fixed : DenseProblemIngredientsNP = {}
+    _fixed: DenseProblemIngredientsNP = {}
     if fixed_elements is not None:
         _fixed = cast(
             DenseProblemIngredientsNP,
@@ -59,16 +91,17 @@ def setup_dense_solver(
         "active":   jax.ShapeDtypeStruct((n_ineq,), jnp.bool_),
     }
 
-    # form shapes of jvp
+    # form shapes of jvp output — must be a tuple matching the
+    # return order of _kkt_diff: (dx, dlam, dmu, dactive, sol)
     _jvp_shapes = (
-        jax.ShapeDtypeStruct((n_var,),      _dtype),
-        jax.ShapeDtypeStruct((n_ineq,),     _dtype),
-        jax.ShapeDtypeStruct((n_eq,),       _dtype),
-        jax.ShapeDtypeStruct((n_ineq,),     jax.dtypes.float0),
-        _fwd_shapes,
+        jax.ShapeDtypeStruct((n_var,),  _dtype),             # dx
+        jax.ShapeDtypeStruct((n_ineq,), _dtype),             # dlam (inequality duals)
+        jax.ShapeDtypeStruct((n_eq,),   _dtype),             # dmu  (equality duals)
+        jax.ShapeDtypeStruct((n_ineq,), jax.dtypes.float0),  # dactive
+        _fwd_shapes,                                          # sol
     )
-    
-    # gather requires keys
+
+    # gather required keys
     _required_keys = ("P", "q")
     if n_eq > 0:
         _required_keys += ("A", "b")
@@ -82,9 +115,11 @@ def setup_dense_solver(
     _required_keys_set = set(_required_keys)
     _dynamic_keys_set = set(_dynamic_keys)
 
-    logger.debug(f"Setting up QP with {n_var} variables, {n_eq} equalities, {n_ineq} inequalities.")
+    logger.debug(
+        f"Setting up QP with {n_var} variables, "
+        f"{n_eq} equalities, {n_ineq} inequalities."
+    )
     logger.debug(f"Fixed variables: {set(_fixed.keys()) or 'none'}")
-
 
     # =================================================================
     # SETUP SOLVER
@@ -92,7 +127,12 @@ def setup_dense_solver(
 
     #region
 
-    def _solve_qp_numpy(**kwargs: ndarray) -> tuple[ndarray, ndarray, ndarray, ndarray]:
+    def _solve_qp_numpy(**kwargs: ndarray) -> tuple[
+        Float[ndarray, " nv"],    # x
+        Float[ndarray, " ni"],    # lam
+        Float[ndarray, " ne"],    # mu
+        Bool[ndarray, " ni"],     # active
+    ]:
         """Solve the QP in pure numpy via ``qpsolvers``.
 
         All required ingredients must be present in ``kwargs``; no merging
@@ -105,25 +145,34 @@ def setup_dense_solver(
         ``h``, ``lam``, and ``active`` are absent / empty.
 
         Args:
-            **kwargs: Numpy arrays for the QP ingredients. Required keys
-                are always ``P`` and ``q``. ``A`` and ``b`` are required
-                when ``n_eq > 0``; ``G`` and ``h`` when ``n_ineq > 0``.
+            **kwargs: Numpy arrays for the QP ingredients:
+
+                - ``P`` (nv, nv): Positive semi-definite cost matrix.
+                - ``q`` (nv,): Linear cost vector.
+                - ``A`` (ne, nv): Equality constraint matrix
+                  (required when ``n_eq > 0``).
+                - ``b`` (ne,): Equality constraint vector
+                  (required when ``n_eq > 0``).
+                - ``G`` (ni, nv): Inequality constraint matrix
+                  (required when ``n_ineq > 0``).
+                - ``h`` (ni,): Inequality constraint vector
+                  (required when ``n_ineq > 0``).
 
         Returns:
-            A tuple ``(x, lam, mu, active, t_dict)`` where:
-                x: Primal solution, shape ``(n_var,)``.
-                lam: Dual variables for inequality constraints,
-                    shape ``(n_ineq,)``. Empty when ``n_ineq == 0``.
-                mu: Dual variables for equality constraints,
-                    shape ``(n_eq,)``. Empty when ``n_eq == 0``.
-                active: Boolean mask of active inequality constraints,
-                    shape ``(n_ineq,)``. Empty when ``n_ineq == 0``.
+            A tuple ``(x, lam, mu, active)`` where:
+
+                - ``x`` (nv,): Primal solution.
+                - ``lam`` (ni,): Dual variables for inequality
+                  constraints. Empty when ``n_ineq == 0``.
+                - ``mu`` (ne,): Dual variables for equality
+                  constraints. Empty when ``n_eq == 0``.
+                - ``active`` (ni,): Boolean mask of active inequality
+                  constraints. Empty when ``n_ineq == 0``.
 
         Raises:
             ValueError: If any required ingredient is missing.
-            AssertionError: If the solver fails to find a solution or
-                array shapes are inconsistent with the declared problem
-                dimensions.
+            AssertionError: If the solver fails or array shapes are
+                inconsistent with declared problem dimensions.
         """
         # Safety check — all required keys should already be present
         missing = _required_keys_set - set(kwargs)
@@ -157,15 +206,21 @@ def setup_dense_solver(
 
         # Recover primal / dual variables
         start = perf_counter()
-        x = np.asarray(sol.x, dtype=_dtype).reshape(-1)
+        x: Float[ndarray, " nv"] = (
+            np.asarray(sol.x, dtype=_dtype).reshape(-1)
+        )
 
         if n_eq > 0:
-            mu = np.asarray(sol.y, dtype=_dtype).reshape(-1)
+            mu: Float[ndarray, " ne"] = (
+                np.asarray(sol.y, dtype=_dtype).reshape(-1)
+            )
         else:
             mu = np.empty(0, dtype=_dtype)
 
         if n_ineq > 0:
-            lam = np.asarray(sol.z, dtype=_dtype).reshape(-1)
+            lam: Float[ndarray, " ni"] = (
+                np.asarray(sol.z, dtype=_dtype).reshape(-1)
+            )
         else:
             lam = np.empty(0, dtype=_dtype)
 
@@ -174,7 +229,7 @@ def setup_dense_solver(
         # Determine active set: |Gx − h| <= tolerance
         start = perf_counter()
         if n_ineq > 0:
-            active = np.asarray(
+            active: Bool[ndarray, " ni"] = np.asarray(
                 np.abs(kwargs["G"] @ sol.x - kwargs["h"])
                 <= _options_parsed["cst_tol"],
                 dtype=np.bool_,
@@ -184,7 +239,7 @@ def setup_dense_solver(
         logger.debug(f"active set determination: {perf_counter() - start}")
 
         return x, lam, mu, active
-    
+
     def _solve_qp(*vals: jax.Array) -> dict[str, jax.Array]:
         """Bridge between JAX ``pure_callback`` and the numpy QP solver.
 
@@ -208,10 +263,12 @@ def setup_dense_solver(
                 order (i.e. P, q, [A, b,] [G, h]).
 
         Returns:
-            Solution dict with keys ``x``, ``lam``, ``mu``, ``active``
-            as JAX arrays. ``lam`` and ``active`` have shape ``(0,)``
-            when ``n_ineq == 0``; ``mu`` has shape ``(0,)`` when
-            ``n_eq == 0``.
+            Solution dict with JAX arrays:
+
+                - ``x``      (nv,):  Primal solution.
+                - ``lam``    (ni,):  Inequality duals.
+                - ``mu``     (ne,):  Equality duals.
+                - ``active`` (ni,):  Active-set boolean mask.
         """
         t_start = perf_counter()
 
@@ -231,18 +288,17 @@ def setup_dense_solver(
 
         # ── Convert solution back to JAX ─────────────────────────────
         start = perf_counter()
-        result = {
-            "x":      jnp.array(x_np, dtype=_dtype),
-            "lam":    jnp.array(lam_np, dtype=_dtype),
-            "mu":     jnp.array(mu_np, dtype=_dtype),
-            "active": jnp.array(active_np, dtype=jnp.bool_),
+        result: dict[str, jax.Array] = {
+            "x":      jnp.array(x_np, dtype=_dtype),       # (nv,)
+            "lam":    jnp.array(lam_np, dtype=_dtype),      # (ni,)
+            "mu":     jnp.array(mu_np, dtype=_dtype),       # (ne,)
+            "active": jnp.array(active_np, dtype=jnp.bool_),  # (ni,)
         }
         logger.debug(f"convert_to_jax: {perf_counter() - start:.3e}s")
 
         logger.debug(f"DenseQP total: {perf_counter() - t_start:.3e}s")
 
         return result
-
 
     #endregion
 
@@ -252,7 +308,11 @@ def setup_dense_solver(
 
     #region
     def _kkt_diff(*args: ndarray) -> tuple[
-        ndarray, ndarray, ndarray, ndarray, dict[str, jax.Array]
+        Float[ndarray, " nv"],                          # dx
+        Float[ndarray, " ni"],                          # dlam
+        Float[ndarray, " ne"],                          # dmu
+        ndarray,                                        # dactive (float0)
+        dict[str, jax.Array],                           # sol
     ]:
         """Implicit differentiation of the KKT conditions.
 
@@ -261,7 +321,7 @@ def setup_dense_solver(
         depends on the active set of inequality constraints.
 
         The function receives all primals followed by all tangents as
-        positional numpy arrays, both ordered according to
+        positional arrays, both ordered according to
         ``_required_keys`` (i.e. P, q, [A, b,] [G, h]).
 
         Batching is detected automatically: when the tangent arrays
@@ -270,20 +330,36 @@ def setup_dense_solver(
         via a matrix RHS.
 
         Args:
-            *args: ``2 * len(_required_keys)`` numpy arrays. The first
+            *args: ``2 * len(_required_keys)`` arrays. The first
                 half are primals, the second half are tangents, both in
                 ``_required_keys`` order.
 
+                Primals (squeezed to remove batch-1 dims):
+
+                    - ``P``  (nv, nv): Cost matrix.
+                    - ``q``  (nv,):    Linear cost.
+                    - ``A``  (ne, nv): Equality constraint matrix.
+                    - ``b``  (ne,):    Equality RHS.
+                    - ``G``  (ni, nv): Inequality constraint matrix.
+                    - ``h``  (ni,):    Inequality RHS.
+
+                Tangents (unbatched or batched with leading ``B`` dim):
+
+                    - ``dP`` (nv, nv) | (B, nv, nv)
+                    - ``dq`` (nv,)    | (B, nv)
+                    - ``dA`` (ne, nv) | (B, ne, nv)
+                    - ``db`` (ne,)    | (B, ne)
+                    - ``dG`` (ni, nv) | (B, ni, nv)
+                    - ``dh`` (ni,)    | (B, ni)
+
         Returns:
-            A tuple ``(dx, dmu, dlam, dactive, sol)`` where:
-                dx: Tangent of the primal solution.
-                dmu: Tangent of the inequality duals.
-                dlam: Tangent of the equality duals.
-                dactive: Zero tangent for the active-set mask
-                    (non-differentiable), dtype ``float0``.
-                sol: Primal / dual solution dict (``x``, ``lam``,
-                    ``mu``, ``active``) as JAX arrays, used by the
-                    JVP rule as the primal output.
+            A tuple ``(dx, dlam, dmu, dactive, sol)`` where:
+
+                - ``dx``      (nv,) | (B, nv):   Tangent of primal.
+                - ``dlam``    (ni,) | (B, ni):   Tangent of ineq duals.
+                - ``dmu``     (ne,) | (B, ne):   Tangent of eq duals.
+                - ``dactive`` (ni,) | (B, ni):   Zero tangent (float0).
+                - ``sol``: Primal / dual solution dict as JAX arrays.
         """
         t_start = perf_counter()
         n_keys = len(_required_keys)
@@ -296,18 +372,22 @@ def setup_dense_solver(
 
         # ── Convert primals to numpy and squeeze batch-1 dims ────────
         start = perf_counter()
-        prob_np = {
+        prob_np: dict[str, ndarray] = {
             k: np.asarray(v, dtype=_dtype).squeeze()
             for k, v in primals.items()
         }
         logger.debug(f"kkt_diff convert_primals: {perf_counter() - start:.3e}s")
 
         # ── Forward solve ────────────────────────────────────────────
+        # x_np:      (nv,)
+        # lam_np:    (ni,)
+        # mu_np:     (ne,)
+        # active_np: (ni,)  bool
         x_np, lam_np, mu_np, active_np = _solve_qp_numpy(**prob_np)
 
         # ── Convert tangents to numpy (keep batch dimension) ─────────
         start = perf_counter()
-        d_np = {
+        d_np: dict[str, ndarray] = {
             k: np.asarray(v, dtype=_dtype)
             for k, v in tangents.items()
         }
@@ -317,144 +397,211 @@ def setup_dense_solver(
         # Tangents have an extra leading dim when vmap expands them.
         batched = d_np["P"].ndim == 3
 
-        # ── Retrieve numpy arrays (with short aliases) ───────────────
-        P_np = prob_np["P"]
-        A_np = prob_np.get("A", np.empty((0, n_var), dtype=_dtype))
-        G_np = prob_np.get("G", np.empty((0, n_var), dtype=_dtype))
+        # ── Retrieve numpy arrays with short aliases ─────────────────
+        P_np: Float[ndarray, "nv nv"] = prob_np["P"]
+        A_np: Float[ndarray, "ne nv"] = prob_np.get(
+            "A", np.empty((0, n_var), dtype=_dtype)
+        )
+        G_np: Float[ndarray, "ni nv"] = prob_np.get(
+            "G", np.empty((0, n_var), dtype=_dtype)
+        )
 
-        dP_np = d_np["P"]
-        dq_np = d_np["q"]
-        dA_np = d_np.get("A", np.empty((0, n_var), dtype=_dtype) if not batched
-                         else np.empty((1, 0, n_var), dtype=_dtype))
-        db_np = d_np.get("b", np.empty((0,), dtype=_dtype) if not batched
-                         else np.empty((1, 0), dtype=_dtype))
-        dG_np = d_np.get("G", np.empty((0, n_var), dtype=_dtype) if not batched
-                         else np.empty((1, 0, n_var), dtype=_dtype))
-        dh_np = d_np.get("h", np.empty((0,), dtype=_dtype) if not batched
-                         else np.empty((1, 0), dtype=_dtype))
+        # Tangent aliases — shape depends on batching
+        # Unbatched: same shape as primals
+        # Batched:   (B, ...) with leading batch dim
+        dP_np = d_np["P"]              # (nv,nv) | (B,nv,nv)
+        dq_np = d_np["q"]              # (nv,)   | (B,nv)
+        dA_np = d_np.get(              # (ne,nv) | (B,ne,nv)
+            "A",
+            np.empty((0, n_var), dtype=_dtype) if not batched
+            else np.empty((1, 0, n_var), dtype=_dtype),
+        )
+        db_np = d_np.get(              # (ne,)   | (B,ne)
+            "b",
+            np.empty((0,), dtype=_dtype) if not batched
+            else np.empty((1, 0), dtype=_dtype),
+        )
+        dG_np = d_np.get(              # (ni,nv) | (B,ni,nv)
+            "G",
+            np.empty((0, n_var), dtype=_dtype) if not batched
+            else np.empty((1, 0, n_var), dtype=_dtype),
+        )
+        dh_np = d_np.get(              # (ni,)   | (B,ni)
+            "h",
+            np.empty((0,), dtype=_dtype) if not batched
+            else np.empty((1, 0), dtype=_dtype),
+        )
 
         # ── Build KKT system LHS (same for batched and unbatched) ────
         start = perf_counter()
 
-        # Stack equality and active inequality constraint rows
+        # H stacks equality rows and active inequality rows
         n_active = int(np.sum(active_np))
-        H_parts = []
+        H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
-            H_parts.append(A_np)
+            H_parts.append(A_np)                            # (ne, nv)
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(G_np[active_np, :])
+            H_parts.append(G_np[active_np, :])              # (na, nv)
 
         if H_parts:
-            H_np = np.vstack(H_parts)                      # (n_eq + n_active, n_var)
+            H_np: Float[ndarray, "nh nv"] = np.vstack(H_parts)
         else:
             H_np = np.empty((0, n_var), dtype=_dtype)
 
-        n_h = H_np.shape[0]
-        lhs = np.block([
+        n_h = H_np.shape[0]                                # ne + na
+
+        # LHS: [ P    H^T ]   shape (nv+nh, nv+nh)
+        #      [ H    0   ]
+        lhs: Float[ndarray, "nv_nh nv_nh"] = np.block([
             [P_np,  H_np.T],
             [H_np,  np.zeros((n_h, n_h), dtype=_dtype)],
         ])
 
         # ── Build RHS (differs between batched and unbatched) ────────
         if batched:
-            # Tangents: (batch, ...), primals/duals: unbatched.
-            # dL = dP x + dq + dA^T mu + dG_active^T lam_active
-            dL_np = dP_np @ x_np + dq_np
+            # dL: (B, nv)
+            # dL = dP @ x + dq + dA^T @ mu + dG_active^T @ lam_active
+            dL_np: Float[ndarray, "B nv"] = dP_np @ x_np + dq_np
             if n_eq > 0:
+                # dA_np:           (B, ne, nv)
+                # dA^T @ mu:       (B, nv, ne) @ (ne,) -> (B, nv)
                 dL_np = dL_np + dA_np.transpose(0, 2, 1) @ mu_np
             if n_ineq > 0 and n_active > 0:
-                dL_np = dL_np + (dG_np[:, active_np, :]
-                                 .transpose(0, 2, 1) @ lam_np[active_np])
+                # dG[:, active, :]:       (B, na, nv)
+                # transposed @ lam_active: (B, nv, na) @ (na,) -> (B, nv)
+                dL_np = dL_np + (
+                    dG_np[:, active_np, :]
+                    .transpose(0, 2, 1) @ lam_np[active_np]
+                )
 
-            # Collect rhs pieces: each is (batch_i, n_i)
-            rhs_pieces = [dL_np]
+            # Collect RHS pieces, each (batch_i, n_i)
+            rhs_pieces: list[Float[ndarray, "_ _"]] = [dL_np]  # (B, nv)
             if n_eq > 0:
+                # dA @ x - db: (B, ne)
                 rhs_pieces.append(dA_np @ x_np - db_np)
             if n_ineq > 0 and n_active > 0:
+                # dG[:, active, :] @ x - dh[:, active]: (B, na)
                 rhs_pieces.append(
                     dG_np[:, active_np, :] @ x_np - dh_np[:, active_np]
                 )
 
             # Broadcast to common batch size and concatenate
             batch_size = max(p.shape[0] for p in rhs_pieces)
-            rhs = np.concatenate([
+            rhs: Float[ndarray, "nv_nh B"] = np.concatenate([
                 np.broadcast_to(p, (batch_size, p.shape[1]))
                 if p.shape[0] == 1 else p
                 for p in rhs_pieces
-            ], axis=1).T                                    # (n_var + n_h, batch)
+            ], axis=1).T                                    # (nv+nh, B)
 
         else:
-            # dL = dP x + dq + dA^T mu + dG_active^T lam_active
-            dL_np = dP_np @ x_np + dq_np
+            # dL: (nv,)
+            # dL = dP @ x + dq + dA^T @ mu + dG_active^T @ lam_active
+            dL_np: Float[ndarray, " nv"] = dP_np @ x_np + dq_np
             if n_eq > 0:
+                # dA^T @ mu: (nv, ne) @ (ne,) -> (nv,)
                 dL_np = dL_np + dA_np.T @ mu_np
             if n_ineq > 0 and n_active > 0:
-                dL_np = dL_np + (dG_np[active_np, :].T
-                                 @ lam_np[active_np])
+                # dG[active]^T @ lam[active]: (nv, na) @ (na,) -> (nv,)
+                dL_np = dL_np + (
+                    dG_np[active_np, :].T @ lam_np[active_np]
+                )
 
-            rhs_parts = [dL_np]
+            # Stack: [dL; dA @ x - db; dG_active @ x - dh_active]
+            rhs_parts: list[Float[ndarray, " _"]] = [dL_np]  # (nv,)
             if n_eq > 0:
+                # dA @ x - db: (ne,)
                 rhs_parts.append(dA_np @ x_np - db_np)
             if n_ineq > 0 and n_active > 0:
+                # dG[active] @ x - dh[active]: (na,)
                 rhs_parts.append(
                     dG_np[active_np, :] @ x_np - dh_np[active_np]
                 )
-            rhs = np.hstack(rhs_parts)                     # (n_var + n_h,)
+            rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
             batch_size = 0
 
         logger.debug(f"kkt_diff build_system: {perf_counter() - start:.3e}s")
 
         # ── Solve the linear system ──────────────────────────────────
+        # lhs @ sol = -rhs
+        # Unbatched: sol is (nv+nh,)
+        # Batched:   sol is (nv+nh, B)
         start = perf_counter()
         sol = np.linalg.solve(lhs, -rhs)
         logger.debug(f"kkt_diff lin_solve: {perf_counter() - start:.3e}s")
 
         # ── Extract dx, dmu, dlam from the solution ──────────────────
         if batched:
-            dx_np  = sol[:n_var, :].T                       # (B, n_var)
-            dmu_np = (sol[n_var:n_var + n_eq, :].T
-                      if n_eq > 0
-                      else np.empty((batch_size, 0), dtype=_dtype))
-            dlam_np = np.zeros((batch_size, n_ineq), dtype=_dtype)
+            dx_np: Float[ndarray, "B nv"] = sol[:n_var, :].T
+            dmu_np: Float[ndarray, "B ne"] = (
+                sol[n_var:n_var + n_eq, :].T
+                if n_eq > 0
+                else np.empty((batch_size, 0), dtype=_dtype)
+            )
+            dlam_np: Float[ndarray, "B ni"] = np.zeros(
+                (batch_size, n_ineq), dtype=_dtype
+            )
             if n_ineq > 0 and n_active > 0:
-                dlam_np[:, active_np] = sol[n_var + n_eq:, :].T
+                dlam_np[:, active_np] = sol[n_var + n_eq:, :].T  # (B, na)
         else:
-            dx_np  = sol[:n_var]                            # (n_var,)
-            dmu_np = (sol[n_var:n_var + n_eq]
-                      if n_eq > 0
-                      else np.empty(0, dtype=_dtype))
-            dlam_np = np.zeros(n_ineq, dtype=_dtype)
+            dx_np: Float[ndarray, " nv"] = sol[:n_var]
+            dmu_np: Float[ndarray, " ne"] = (
+                sol[n_var:n_var + n_eq]
+                if n_eq > 0
+                else np.empty(0, dtype=_dtype)
+            )
+            dlam_np: Float[ndarray, " ni"] = np.zeros(n_ineq, dtype=_dtype)
             if n_ineq > 0 and n_active > 0:
-                dlam_np[active_np] = sol[n_var + n_eq:]
+                dlam_np[active_np] = sol[n_var + n_eq:]      # (na,)
 
         # ── Convert primal/dual solution to JAX ──────────────────────
         start = perf_counter()
         if batch_size > 0:
-            res = {
-                "x":      jnp.broadcast_to(jnp.array(x_np, dtype=_dtype),        (batch_size, n_var)),
-                "lam":    jnp.broadcast_to(jnp.array(lam_np, dtype=_dtype),       (batch_size, n_ineq)),
-                "mu":     jnp.broadcast_to(jnp.array(mu_np, dtype=_dtype),        (batch_size, n_eq)),
-                "active": jnp.broadcast_to(jnp.array(active_np, dtype=jnp.bool_), (batch_size, n_ineq)),
+            res: dict[str, jax.Array] = {
+                "x":      jnp.broadcast_to(                 # (B, nv)
+                    jnp.array(x_np, dtype=_dtype),
+                    (batch_size, n_var),
+                ),
+                "lam":    jnp.broadcast_to(                  # (B, ni)
+                    jnp.array(lam_np, dtype=_dtype),
+                    (batch_size, n_ineq),
+                ),
+                "mu":     jnp.broadcast_to(                  # (B, ne)
+                    jnp.array(mu_np, dtype=_dtype),
+                    (batch_size, n_eq),
+                ),
+                "active": jnp.broadcast_to(                  # (B, ni)
+                    jnp.array(active_np, dtype=jnp.bool_),
+                    (batch_size, n_ineq),
+                ),
             }
         else:
             res = {
-                "x":      jnp.array(x_np, dtype=_dtype),
-                "lam":    jnp.array(lam_np, dtype=_dtype),
-                "mu":     jnp.array(mu_np, dtype=_dtype),
-                "active": jnp.array(active_np, dtype=jnp.bool_),
+                "x":      jnp.array(x_np, dtype=_dtype),       # (nv,)
+                "lam":    jnp.array(lam_np, dtype=_dtype),      # (ni,)
+                "mu":     jnp.array(mu_np, dtype=_dtype),       # (ne,)
+                "active": jnp.array(active_np, dtype=jnp.bool_),  # (ni,)
             }
         logger.debug(f"kkt_diff convert_sol: {perf_counter() - start:.3e}s")
 
-        # Active-set mask is not differentiable
-        dactive = np.zeros(
+        # Active-set mask is not differentiable — zero tangent
+        dactive = np.zeros(                                  # (ni,) | (B, ni)
             res["active"].shape, dtype=jax.dtypes.float0
         )
 
         logger.info(f"kkt_diff total: {perf_counter() - t_start:.3e}s")
 
         return dx_np, dlam_np, dmu_np, dactive, res
-    
-    def _kkt_diff_callback(primals_dict, tangents_dict):
+
+    def _kkt_diff_callback(
+        primals_dict: dict[str, jax.Array],
+        tangents_dict: dict[str, jax.Array],
+    ) -> tuple[
+        Float[jax.Array, " nv"],    # dx
+        Float[jax.Array, " ni"],    # dlam
+        Float[jax.Array, " ne"],    # dmu
+        jax.Array,                  # dactive (float0)
+        dict[str, jax.Array],       # sol
+    ]:
         """Wrap ``_kkt_diff`` in a ``pure_callback`` for use inside JAX traces.
 
         Converts the named dicts back to positional args in
@@ -463,13 +610,19 @@ def setup_dense_solver(
 
         Args:
             primals_dict: Dict mapping ``_required_keys`` to primal
-                JAX arrays.
+                JAX arrays:
+
+                    - ``P`` (nv, nv), ``q`` (nv,),
+                    - ``A`` (ne, nv), ``b`` (ne,),
+                    - ``G`` (ni, nv), ``h`` (ni,).
+
             tangents_dict: Dict mapping ``_required_keys`` to tangent
-                JAX arrays.
+                JAX arrays (same shapes as primals, or with leading
+                batch dim ``B``).
 
         Returns:
             The output of ``_kkt_diff``: a tuple
-            ``(dx, dmu, dlam, dactive, sol)``.
+            ``(dx, dlam, dmu, dactive, sol)``.
         """
         primal_vals = tuple(primals_dict[k] for k in _required_keys)
         tangent_vals = tuple(tangents_dict[k] for k in _required_keys)
@@ -492,23 +645,35 @@ def setup_dense_solver(
     def _solver_dynamic(*vals: jax.Array) -> dict[str, jax.Array]:
         """Internal solver with positional-only arguments.
 
-        Wraps ``_solve_qp`` in a ``pure_callback`` so that the numpy QP solver
-        can be called from within JAX-traced code. All required QP ingredients
-        are passed positionally in ``_required_keys`` order, so that every
-        argument is visible to JAX's tracer and carries correct tangent
-        information.
+        Wraps ``_solve_qp`` in a ``pure_callback`` so that the numpy QP
+        solver can be called from within JAX-traced code. All required QP
+        ingredients are passed positionally in ``_required_keys`` order,
+        so that every argument is visible to JAX's tracer and carries
+        correct tangent information.
 
-        Fixed elements supplied at setup time act as defaults; they are merged
-        in ``solver()`` before reaching this function, so from this function's
-        perspective every required ingredient is always present.
+        Fixed elements supplied at setup time act as defaults; they are
+        merged in ``solver()`` before reaching this function, so from
+        this function's perspective every required ingredient is always
+        present.
 
         Args:
-            *vals (jax.Array): JAX arrays corresponding to ``_required_keys``,
-                in the same order (i.e. P, q, [A, b,] [G, h]).
+            *vals: JAX arrays corresponding to ``_required_keys``, in
+                the same order:
+
+                    - ``P`` (nv, nv): Cost matrix.
+                    - ``q`` (nv,): Linear cost.
+                    - ``A`` (ne, nv): Equality constraints (if present).
+                    - ``b`` (ne,): Equality RHS (if present).
+                    - ``G`` (ni, nv): Inequality constraints (if present).
+                    - ``h`` (ni,): Inequality RHS (if present).
 
         Returns:
-            dict[str, jax.Array]: Solution dict with keys ``x``, ``lam``,
-                ``mu``, ``active``.
+            Solution dict with JAX arrays:
+
+                - ``x``      (nv,):  Primal solution.
+                - ``lam``    (ni,):  Inequality duals.
+                - ``mu``     (ne,):  Equality duals.
+                - ``active`` (ni,):  Active-set boolean mask.
         """
         return pure_callback(_solve_qp, _fwd_shapes, *vals)
 
@@ -517,39 +682,54 @@ def setup_dense_solver(
         primals: tuple[jax.Array, ...],
         tangents: tuple[jax.Array, ...],
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
-        """JVP rule for ``_solver_dynamic`` via implicit differentiation of the KKT conditions.
+        """JVP rule for ``_solver_dynamic`` via implicit differentiation.
 
-        ``primals`` and ``tangents`` are positional tuples whose order matches
-        ``_required_keys``. Any element — whether originally fixed or supplied
-        at runtime — flows through the traced path, so its tangent is computed
-        correctly by JAX regardless of whether it was declared fixed at setup.
+        ``primals`` and ``tangents`` are positional tuples whose order
+        matches ``_required_keys``. Any element — whether originally
+        fixed or supplied at runtime — flows through the traced path,
+        so its tangent is computed correctly by JAX regardless of
+        whether it was declared fixed at setup.
 
         Args:
-            primals (tuple[jax.Array, ...]): Primal inputs corresponding to
-                ``_required_keys`` order.
-            tangents (tuple[jax.Array, ...]): Tangent inputs with the same
-                structure as ``primals``. Elements that do not depend on any
-                upstream traced computation will naturally be zero; elements
-                that do (even if they override a fixed default) will carry
-                the correct nonzero tangent.
+            primals: Primal inputs in ``_required_keys`` order.
+
+                - ``P`` (nv, nv), ``q`` (nv,),
+                - ``A`` (ne, nv), ``b`` (ne,),
+                - ``G`` (ni, nv), ``h`` (ni,).
+
+            tangents: Tangent inputs with the same structure as
+                ``primals``. Elements that do not depend on any
+                upstream traced computation will naturally be zero;
+                elements that do (even if they override a fixed
+                default) will carry the correct nonzero tangent.
 
         Returns:
-            tuple[dict[str, jax.Array], dict[str, jax.Array]]: Tuple of
-                ``(primal_out, tangent_out)`` where both are solution dicts
-                with keys ``x``, ``lam``, ``mu``, ``active``.
+            ``(primal_out, tangent_out)`` where both are solution dicts:
+
+                - ``x``      (nv,):  Primal / tangent of primal.
+                - ``lam``    (ni,):  Inequality duals / tangent.
+                - ``mu``     (ne,):  Equality duals / tangent.
+                - ``active`` (ni,):  Active mask / zero tangent.
         """
         # Recover named access by zipping with the stable key order
-        primals_dict  : dict[str, jax.Array] = dict(zip(_required_keys, primals))
-        tangents_dict : dict[str, jax.Array] = dict(zip(_required_keys, tangents))
+        primals_dict: dict[str, jax.Array] = dict(
+            zip(_required_keys, primals)
+        )
+        tangents_dict: dict[str, jax.Array] = dict(
+            zip(_required_keys, tangents)
+        )
 
         # Differentiate via KKT implicit differentiation
-        dx, dlam, dmu, dactive, res = _kkt_diff_callback(primals_dict, tangents_dict)
+        # Returns: (dx, dlam, dmu, dactive, res)
+        dx, dlam, dmu, dactive, res = _kkt_diff_callback(
+            primals_dict, tangents_dict
+        )
 
         tangents_out: dict[str, jax.Array] = {
-            "x":      dx,
-            "lam":    dlam,
-            "mu":     dmu,
-            "active": dactive,
+            "x":      dx,       # (nv,)
+            "lam":    dlam,     # (ni,)
+            "mu":     dmu,      # (ne,)
+            "active": dactive,  # (ni,) float0
         }
 
         return res, tangents_out
@@ -557,41 +737,42 @@ def setup_dense_solver(
     def solver(**runtime: jax.Array) -> dict[str, jax.Array]:
         """Solve a (possibly partially fixed) QP problem.
 
-        The full set of QP ingredients is ``{P, q, A, b, G, h}``. Any subset
-        may be fixed at setup time via ``fixed_elements``; the remainder must
-        be supplied here at call time. If an ingredient is supplied both at
-        setup and at call time, the **runtime value takes precedence** — this
-        allows overriding defaults without rebuilding the solver or
-        re-triggering JIT compilation.
+        The full set of QP ingredients is ``{P, q, A, b, G, h}``. Any
+        subset may be fixed at setup time via ``fixed_elements``; the
+        remainder must be supplied here at call time. If an ingredient
+        is supplied both at setup and at call time, the **runtime value
+        takes precedence** — this allows overriding defaults without
+        rebuilding the solver or re-triggering JIT compilation.
 
-        Every ingredient (fixed or runtime) is routed through JAX's tracer,
-        so gradients are correct regardless of whether a value was originally
-        declared as fixed.
+        Every ingredient (fixed or runtime) is routed through JAX's
+        tracer, so gradients are correct regardless of whether a value
+        was originally declared as fixed.
 
         Args:
-            **runtime (jax.Array): QP ingredients as JAX arrays. Must cover
-                at least every key not already present in ``fixed_elements``.
-                May also include keys that *are* fixed, in which case the
-                runtime value overrides the default. Valid keys are:
+            **runtime: QP ingredients as JAX arrays. Must cover at
+                least every key not already present in
+                ``fixed_elements``. May also include keys that *are*
+                fixed, in which case the runtime value overrides the
+                default. Valid keys and shapes:
 
-                - ``P`` (n_var, n_var): positive semi-definite cost matrix
-                - ``q`` (n_var,): linear cost vector
-                - ``A`` (n_eq, n_var): equality constraint matrix
-                - ``b`` (n_eq,): equality constraint vector
-                - ``G`` (n_ineq, n_var): inequality constraint matrix
-                - ``h`` (n_ineq,): inequality constraint vector
+                    - ``P`` (nv, nv): PSD cost matrix.
+                    - ``q`` (nv,): Linear cost vector.
+                    - ``A`` (ne, nv): Equality constraint matrix.
+                    - ``b`` (ne,): Equality RHS.
+                    - ``G`` (ni, nv): Inequality constraint matrix.
+                    - ``h`` (ni,): Inequality RHS.
 
         Returns:
-            dict[str, jax.Array]: Solution dict with keys:
+            Solution dict with JAX arrays:
 
-                - ``x`` (n_var,): primal solution
-                - ``lam`` (n_ineq,): dual variables for inequality constraints
-                - ``mu`` (n_eq,): dual variables for equality constraints
-                - ``active`` (n_ineq,): boolean active-set mask
+                - ``x``      (nv,):  Primal solution.
+                - ``lam``    (ni,):  Inequality duals.
+                - ``mu``     (ne,):  Equality duals.
+                - ``active`` (ni,):  Active-set boolean mask.
 
         Raises:
-            ValueError: If any required ingredient is missing from both
-                ``fixed_elements`` and ``runtime``.
+            ValueError: If any required ingredient is missing from
+                both ``fixed_elements`` and ``runtime``.
         """
         # Merge: runtime values override fixed defaults
         merged = {**_fixed, **runtime}
@@ -600,15 +781,19 @@ def setup_dense_solver(
         if missing:
             raise ValueError(
                 f"Missing QP ingredients: {sorted(missing)}. "
-                f"Provide them via fixed_elements at setup or at call time."
+                f"Provide them via fixed_elements at setup or at "
+                f"call time."
             )
 
-        # Build positional args in _required_keys order — every ingredient
-        # passes through the traced path so that tangents are always correct.
-        vals: tuple[jax.Array, ...] = tuple(merged[k] for k in _required_keys)
+        # Build positional args in _required_keys order — every
+        # ingredient passes through the traced path so that tangents
+        # are always correct.
+        vals: tuple[jax.Array, ...] = tuple(
+            merged[k] for k in _required_keys
+        )
 
         return _solver_dynamic(*vals)
-    
+
     #endregion
 
     # =================================================================
