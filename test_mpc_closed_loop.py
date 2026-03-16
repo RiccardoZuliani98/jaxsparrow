@@ -70,7 +70,7 @@ from new_solver import setup_dense_solver
 
 solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 
-solve_mpc = lambda x_init: solver(P, q, Aeq, beq(x_init), G, h)
+solve_mpc = lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
 
 
 

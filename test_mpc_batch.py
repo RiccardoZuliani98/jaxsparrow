@@ -159,5 +159,4 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout()
-plt.savefig("vmapped_jvp_trajectories.png", dpi=150)
 plt.show()
