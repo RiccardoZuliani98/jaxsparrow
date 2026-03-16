@@ -81,8 +81,7 @@ dx0 = jnp.array([[EPSILON,0]])
 jvp_func_base = lambda x0, dx0: jvp(solve_mpc,(x0,),(dx0,))
 jvp_func = vmap(jvp_func_base, in_axes=(None,0))
 
-sol, dsol = jvp_func(x0,dx0)
-# sol, dsol = jvp_func(x0,jnp.vstack((dx0,dx0)))
+sol, dsol = jvp_func(x0,jnp.vstack((dx0,dx0)))
 
 
 # x_opt = sol["x"][:(horizon+1)*nx].reshape(-1,nx).T
