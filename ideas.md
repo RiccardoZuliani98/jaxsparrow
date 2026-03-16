@@ -33,3 +33,5 @@ Problems we need to address:
 3. the custom jvp has to be implemented in pure jax or else we can't jit the process and there's no point even doing this because it's too slow.
 4. when running jit we can't allow the linear system to have a variable dimension, because jax has to preallocate. This means we either need to keep the inactive multipliers, or write a second pure callback for the linear solve. 
 
+---
+
