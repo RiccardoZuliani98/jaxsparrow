@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 import jax
-from jax import jvp, vmap
+from jax import jvp, vmap, jit
 import matplotlib.pyplot as plt
 
 import logging
@@ -69,6 +69,7 @@ neq = Aeq.shape[0]
 nineq = G.shape[0]
 
 from solver_dense.solver_dense import setup_dense_solver
+from time import perf_counter
 
 epsilon = 0.1
 
@@ -76,14 +77,17 @@ x0 = jnp.array([-3.0, -1.0])
 dx0 = jnp.array([epsilon, 0.0])
 
 solver = setup_dense_solver(n_var=nz, n_ineq=nineq, n_eq=neq)
-solve_mpc = lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+solve_mpc = jit(lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h))
 
 # ── Vmapped JVP: evaluate both +dx0 and -dx0 in one call ────────
 jvp_func_base = lambda x0, dx0: jvp(solve_mpc, (x0,), (dx0,))
-jvp_func = vmap(jvp_func_base, in_axes=(None, 0))
+jvp_func = jit(vmap(jvp_func_base, in_axes=(None, 0)))
 
 perturbations = jnp.vstack((dx0, -dx0))          # (2, nx)
 sol_batch, dsol_batch = jvp_func(x0, perturbations)
+start = perf_counter()
+sol_batch, dsol_batch = jvp_func(x0, perturbations)
+print(f"Elapsed: {perf_counter()-start}")
 
 # sol_batch["x"]  has shape (2, nz) — but both rows are the same
 # dsol_batch["x"] has shape (2, nz) — one for +dx0, one for -dx0
@@ -98,8 +102,13 @@ labels = ["+dx0", "-dx0"]
 dsol_x = dsol_batch["x"]                          # (2, nz)
 
 # ── Compute true perturbed solutions for comparison ──────────────
+sol_plus  = solve_mpc(x0)
+start = perf_counter()
 sol_plus  = solve_mpc(x0 + dx0)
+print(f"Elapsed: {perf_counter()-start}")
+start = perf_counter()
 sol_minus = solve_mpc(x0 - dx0)
+print(f"Elapsed: {perf_counter()-start}")
 perturbed_sols = [sol_plus, sol_minus]
 signs = [1.0, -1.0]
 
