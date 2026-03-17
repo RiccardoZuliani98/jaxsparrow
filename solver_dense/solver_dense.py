@@ -336,10 +336,7 @@ def setup_dense_solver(
 
         Solves the QP forward, then differentiates through the KKT
         optimality conditions by solving a linear system. Returns
-        both the tangents and the primal solution as **numpy arrays**.
-        ``pure_callback`` handles all numpy → JAX conversion using
-        ``_jvp_shapes``, avoiding redundant Python-level ``jnp.array``
-        calls.
+        both the tangents and the primal solution as **jnp.array**.
 
         Receives only the **dynamic** primals and tangents (those not
         in ``_fixed``). Fixed primals are merged from the ``_fixed``
@@ -363,7 +360,7 @@ def setup_dense_solver(
                 - ``dlam``    (ni,) | (B, ni):   Tangent of ineq duals.
                 - ``dmu``     (ne,) | (B, ne):   Tangent of eq duals.
                 - ``dactive`` (ni,) | (B, ni):   Zero tangent (float0).
-                - ``sol``: Primal / dual solution dict as numpy arrays.
+                - ``sol``: Primal / dual solution dict as jnp arrays.
                   Broadcast to ``(B, ...)`` when batched.
         """
         t_start = perf_counter()
@@ -768,7 +765,5 @@ def setup_dense_solver(
         return _solver_dynamic(*dynamic_vals)
 
     #endregion
-
-    # =================================================================
 
     return solver
