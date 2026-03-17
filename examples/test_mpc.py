@@ -1,6 +1,7 @@
 from pathlib import Path
+import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../Code
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../Code
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import jax.numpy as jnp
@@ -72,7 +73,7 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 epsilon = 0.1
 
@@ -140,4 +141,14 @@ plt.plot(x1_opt,x2_opt,label='Original')
 plt.plot(x1_opt_perturbed,x2_opt_perturbed,label='Perturbed')
 plt.plot(x1_opt_approx,x2_opt_approx,label='Approx')
 plt.legend()
-plt.show()
+# plt.show()
+
+
+# now we compute full jacobian
+from jax import jacfwd
+dmpc = jacfwd(solve_mpc)
+dmpc(x0)
+
+start = perf_counter()
+dmpc(x0)
+print(f"Elapsed: {perf_counter()-start}")

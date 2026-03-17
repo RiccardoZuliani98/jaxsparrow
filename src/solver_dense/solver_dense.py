@@ -381,6 +381,9 @@ def setup_dense_solver(
                 - ``sol``: Primal / dual solution dict as numpy arrays.
                   Broadcast to ``(B, ...)`` when batched.
         """
+
+        print("Hi, I'm kkt diff and I am running.")
+
         t_start = perf_counter()
         t: dict[str, float] = {}
 
