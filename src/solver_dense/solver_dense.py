@@ -302,10 +302,16 @@ def setup_dense_solver(
 
         # ── Convert only dynamic JAX arrays to numpy ─────────────────
         start = perf_counter()
-        dynamic_np = {
-            k: np.asarray(v, dtype=_dtype).squeeze()
-            for k, v in zip(_dynamic_keys, dynamic_vals)
-        }
+        # dynamic_np = {
+        #     k: np.asarray(v, dtype=_dtype).squeeze()
+        #     for k, v in zip(_dynamic_keys, dynamic_vals)
+        # }
+        dynamic_np: dict[str, ndarray] = {}
+        for k, v in zip(_dynamic_keys, dynamic_vals):
+            arr = np.asarray(v, dtype=_dtype)
+            if arr.ndim > _EXPECTED_NDIM[k]:
+                arr = arr[0]  # all batch entries are identical for primals
+            dynamic_np[k] = arr
         t["convert_to_numpy"] = perf_counter() - start
 
         # ── Merge with pre-stored fixed arrays (no conversion) ───────
@@ -377,8 +383,6 @@ def setup_dense_solver(
                   Broadcast to ``(B, ...)`` when batched.
         """
 
-        print("Hi, I'm kkt diff and I am running.")
-
         t_start = perf_counter()
         t: dict[str, float] = {}
 
@@ -388,10 +392,16 @@ def setup_dense_solver(
 
         # ── Convert dynamic primals to numpy, squeeze batch-1 dims ───
         start = perf_counter()
-        dyn_primals_np: dict[str, ndarray] = {
-            k: np.asarray(v, dtype=_dtype).squeeze()
-            for k, v in zip(_dynamic_keys, dyn_primal_vals)
-        }
+        # dyn_primals_np: dict[str, ndarray] = {
+        #     k: np.asarray(v, dtype=_dtype).squeeze()
+        #     for k, v in zip(_dynamic_keys, dyn_primal_vals)
+        # }
+        dyn_primals_np: dict[str, ndarray] = {}
+        for k, v in zip(_dynamic_keys, dyn_primal_vals):
+            arr = np.asarray(v, dtype=_dtype)
+            if arr.ndim > _EXPECTED_NDIM[k]:
+                arr = arr[0]  # all batch entries are identical for primals
+            dyn_primals_np[k] = arr
         t["convert_primals"] = perf_counter() - start
 
         # ── Merge with fixed arrays (already numpy, no conversion) ───

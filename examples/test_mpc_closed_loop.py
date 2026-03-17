@@ -3,6 +3,12 @@ import jax
 from jax import jvp, jit
 jax.config.update("jax_enable_x64", True)
 
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../Code
+sys.path.insert(0, str(PROJECT_ROOT))
+
 EPSILON = 0.1
 CL_HORIZON = 10
 
@@ -66,7 +72,7 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from new_solver import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 
@@ -106,3 +112,20 @@ cost_perturbed = cl_cost(x0+dx0)
 cost_approx = cost+dcost
 
 print(f"nominal: {cost}, perturbed: {cost_perturbed}, approx: {cost_approx}")
+
+# now vmap
+from jax import vmap
+from time import perf_counter
+
+
+def jvp_func_base(x0,dx0):
+    return jvp(cl_cost,(x0,),(dx0,))
+
+jvp_func = jit(vmap(jvp_func_base, in_axes=(None,0)))
+
+e_mat = jnp.array([[1.0,0.0],[0.0,1.0]])
+d_cl = jvp_func(x0,jnp.array([[0.3,-0.3]]))
+start = perf_counter()
+d_cl = jvp_func(x0,e_mat)
+elapsed = perf_counter()
+print(f"Elapsed: {elapsed - start}")
