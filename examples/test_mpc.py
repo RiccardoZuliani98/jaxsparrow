@@ -144,11 +144,11 @@ plt.legend()
 # plt.show()
 
 
-# now we compute full jacobian
-from jax import jacfwd
-dmpc = jacfwd(solve_mpc)
-dmpc(x0)
+# # now we compute full jacobian
+# from jax import jacfwd
+# dmpc = jacfwd(solve_mpc)
+# dmpc(x0)
 
-start = perf_counter()
-dmpc(x0)
-print(f"Elapsed: {perf_counter()-start}")
+# start = perf_counter()
+# dmpc(x0)
+# print(f"Elapsed: {perf_counter()-start}")

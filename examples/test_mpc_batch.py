@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 import jax
-from jax import jvp, vmap
+from jax import jvp, vmap, jit
 from time import perf_counter
 
 import logging
@@ -77,7 +77,7 @@ def solve_mpc(x_init):
 def jvp_func_base(x0, dx0):
     return jvp(solve_mpc, (x0,), (dx0,))
 
-jvp_func = vmap(jvp_func_base, in_axes=(None, 0))
+jvp_func = jit(vmap(jvp_func_base, in_axes=(None, 0)))
 
 perturbations = jnp.vstack((dx0, -dx0))  # (2, nx)
 
@@ -123,3 +123,19 @@ for i, (label, sol_true) in enumerate([("+dx0", sol_plus), ("-dx0", sol_minus)])
         jnp.linalg.norm(dx_jvp) * jnp.linalg.norm(dx_fd)
     )
     print(f"  [{label}] rel_err={rel_err:.6e}  cos_sim={cos_sim:.10f}")
+
+v1 = jnp.array([[1.0,1.0]])
+v2 = jnp.array([[1.0,0.0]])
+e_mat = jnp.array([[1.0,0.0],[0.0,1.0]])
+
+# compute jacobian
+jac_x0 = jvp_func(x0,v1)
+logging.basicConfig(level=logging.INFO)
+start = perf_counter()
+jac_x0 = jvp_func(x0,v2)
+elapsed = perf_counter() - start
+print(f"  Jacobian computation: {elapsed:.6f}s")
+start = perf_counter()
+jac_x0 = jvp_func(x0,e_mat)
+elapsed = perf_counter() - start
+print(f"  Jacobian computation: {elapsed:.6f}s")
