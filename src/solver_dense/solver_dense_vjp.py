@@ -11,6 +11,7 @@ from jaxtyping import Float, Bool
 
 from src.utils.parsing_utils import parse_options
 from src.utils.printing_utils import fmt_times
+from src.utils.timing_utils import TimingRecorder
 from src.solver_dense.solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
@@ -79,6 +80,10 @@ def setup_dense_solver(
     """
     # start logging
     logger = logging.getLogger(__name__)
+
+    # timing recorder — collects structured timing dicts across calls.
+    # Accessible after setup as ``solver.timings``.
+    _timings = TimingRecorder()
 
     # parse user options
     _options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
@@ -363,6 +368,7 @@ def setup_dense_solver(
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_solve_qp | {fmt_times(t)}")
+        _timings.record("_solve_qp", t)
 
         return result
 
@@ -419,6 +425,7 @@ def setup_dense_solver(
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_solve_qp_vjp_fwd | {fmt_times(t)}")
+        _timings.record("_solve_qp_vjp_fwd", t)
 
         # ── Return flat tuple: solution + active + merged problem ────
         return (
@@ -684,6 +691,7 @@ def setup_dense_solver(
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_diff | {fmt_times(t)}")
+        _timings.record("_kkt_diff", t)
 
         return dx, dlam, dmu, res
 
@@ -885,6 +893,7 @@ def setup_dense_solver(
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")
+        _timings.record("_kkt_vjp", t)
 
         # ── Return in _dynamic_keys order ────────────────────────────
         return tuple(grads[k] for k in _dynamic_keys)
@@ -1203,5 +1212,7 @@ def setup_dense_solver(
         return _solver_dynamic(*dynamic_vals)
 
     #endregion
+
+    solver.timings = _timings  # type: ignore[attr-defined]
 
     return solver

@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from time import perf_counter
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../Code
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.solver_dense.solver_dense_vjp import setup_dense_solver
@@ -160,3 +160,5 @@ for i in range(N_RUNS):
     elapsed_jvp.append(perf_counter() - start)
 
 print(f"VJP: {jnp.mean(jnp.array(elapsed_vjp))}, JVP: {jnp.mean(jnp.array(elapsed_jvp))}")
+
+print(solver.timings.summary())
