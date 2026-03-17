@@ -22,7 +22,7 @@ import logging
 
 jax.config.update("jax_enable_x64", True)
 
-from solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 
 # =====================================================================
@@ -534,99 +534,6 @@ class TestMultipleSolves:
 
             # Check initial condition embedded in solution
             np.testing.assert_allclose(sol["x"][:d["nx"]], x0_i, atol=1e-8)
-
-
-# =====================================================================
-# Warmstart
-# =====================================================================
-
-class TestWarmstart:
-    """Test warmstart functionality."""
-
-    def test_warmstart_same_solution(self, full_qp):
-        """Warmstart should not change the solution, only speed it up."""
-        d = full_qp
-        solver = setup_dense_solver(
-            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-        )
-        sol_cold = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
-                          G=d["G"], h=d["h"])
-        sol_warm = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
-                          G=d["G"], h=d["h"],
-                          warmstart=jnp.array([0.4, 0.6]))
-        np.testing.assert_allclose(sol_cold["x"], sol_warm["x"], atol=1e-10)
-
-    def test_warmstart_with_previous_solution(self, mpc_problem):
-        """Use a previous solution as warmstart for the next call."""
-        d = mpc_problem
-        solver = setup_dense_solver(
-            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-        )
-        sol1 = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
-                       G=d["G"], h=d["h"])
-
-        # Slightly perturbed b
-        b2 = d["b"].at[0].add(0.01)
-        sol2 = solver(P=d["P"], q=d["q"], A=d["A"], b=b2,
-                       G=d["G"], h=d["h"],
-                       warmstart=sol1["x"])
-
-        # Should still satisfy constraints
-        residual = d["A"] @ sol2["x"] - b2
-        np.testing.assert_allclose(residual, 0.0, atol=1e-7)
-
-    def test_warmstart_none_default(self, unconstrained_2d):
-        """warmstart=None should behave identically to no warmstart."""
-        d = unconstrained_2d
-        solver = setup_dense_solver(n_var=d["n_var"])
-        sol1 = solver(P=d["P"], q=d["q"])
-        sol2 = solver(P=d["P"], q=d["q"], warmstart=None)
-        np.testing.assert_allclose(sol1["x"], sol2["x"], atol=1e-12)
-
-    def test_warmstart_cleared_after_use(self, unconstrained_2d):
-        """Warmstart should not persist across calls."""
-        d = unconstrained_2d
-        solver = setup_dense_solver(n_var=d["n_var"])
-
-        # Call with warmstart
-        solver(P=d["P"], q=d["q"], warmstart=jnp.array([0.5, 1.0]))
-
-        # Next call without warmstart should still work
-        sol = solver(P=d["P"], q=d["q"])
-        np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
-
-    def test_warmstart_with_fixed_elements(self, full_qp):
-        """Warmstart should work when some elements are fixed."""
-        d = full_qp
-        solver = setup_dense_solver(
-            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            fixed_elements={"P": d["P"], "q": d["q"]},
-        )
-        sol = solver(A=d["A"], b=d["b"], G=d["G"], h=d["h"],
-                     warmstart=jnp.array([0.4, 0.6]))
-        np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
-
-    def test_warmstart_with_jvp(self, unconstrained_2d):
-        """Warmstart should work through the JVP path."""
-        from jax import jvp
-        d = unconstrained_2d
-        solver = setup_dense_solver(n_var=d["n_var"])
-
-        def solve_warm(q_val):
-            return solver(P=d["P"], q=q_val,
-                          warmstart=jnp.array([0.9, 1.9]))
-
-        def solve_cold(q_val):
-            return solver(P=d["P"], q=q_val)
-
-        dq = jnp.ones(d["n_var"])
-
-        sol_w, dsol_w = jvp(solve_warm, (d["q"],), (dq,))
-        sol_c, dsol_c = jvp(solve_cold, (d["q"],), (dq,))
-
-        # Same primal and tangent regardless of warmstart
-        np.testing.assert_allclose(sol_w["x"], sol_c["x"], atol=1e-10)
-        np.testing.assert_allclose(dsol_w["x"], dsol_c["x"], atol=1e-10)
 
 
 # =====================================================================

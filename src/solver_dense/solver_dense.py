@@ -9,9 +9,9 @@ from typing import Optional, cast
 from numpy import ndarray
 from jaxtyping import Float, Bool
 
-from .parsing_utils import parse_options
-from .printing_utils import fmt_times
-from .solver_dense_options import (
+from src.utils.parsing_utils import parse_options
+from src.utils.printing_utils import fmt_times
+from src.solver_dense.solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
 )

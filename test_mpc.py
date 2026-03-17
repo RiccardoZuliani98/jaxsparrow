@@ -1,3 +1,8 @@
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../Code
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import jax.numpy as jnp
 import jax
 import numpy as np
