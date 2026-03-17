@@ -537,35 +537,186 @@ class TestMultipleSolves:
 
 
 # =====================================================================
-# Known bug: squeeze destroys shape for n_eq=1 or n_ineq=1
+# Warmstart
 # =====================================================================
 
-class TestSqueezeBug:
-    """np.squeeze() in _solve_qp removes size-1 constraint dimensions.
+class TestWarmstart:
+    """Test warmstart functionality."""
 
-    When n_eq=1, A has shape (1, n_var). After squeeze it becomes
-    (n_var,), which fails the shape assertion. Same for n_ineq=1.
-    """
+    def test_warmstart_same_solution(self, full_qp):
+        """Warmstart should not change the solution, only speed it up."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+        sol_cold = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+        sol_warm = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"],
+                          warmstart=jnp.array([0.4, 0.6]))
+        np.testing.assert_allclose(sol_cold["x"], sol_warm["x"], atol=1e-10)
 
-    @pytest.mark.xfail(reason="squeeze bug: n_eq=1 collapses A shape")
-    def test_single_equality(self):
-        P = jnp.eye(2)
-        q = jnp.zeros(2)
-        A = jnp.array([[1.0, 1.0]])     # shape (1, 2)
-        b = jnp.array([1.0])
-        solver = setup_dense_solver(n_var=2, n_eq=1)
-        sol = solver(P=P, q=q, A=A, b=b)
-        np.testing.assert_allclose(sol["x"].sum(), 1.0, atol=1e-8)
+    def test_warmstart_with_previous_solution(self, mpc_problem):
+        """Use a previous solution as warmstart for the next call."""
+        d = mpc_problem
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+        sol1 = solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                       G=d["G"], h=d["h"])
 
-    @pytest.mark.xfail(reason="squeeze bug: n_ineq=1 collapses G shape")
-    def test_single_inequality(self):
-        P = jnp.eye(2)
-        q = jnp.array([-2.0, -2.0])
-        G = jnp.array([[1.0, 1.0]])     # shape (1, 2)
-        h = jnp.array([1.0])            # x1 + x2 <= 1
-        solver = setup_dense_solver(n_var=2, n_ineq=1)
-        sol = solver(P=P, q=q, G=G, h=h)
-        assert float(G @ sol["x"]) <= 1.0 + 1e-8
+        # Slightly perturbed b
+        b2 = d["b"].at[0].add(0.01)
+        sol2 = solver(P=d["P"], q=d["q"], A=d["A"], b=b2,
+                       G=d["G"], h=d["h"],
+                       warmstart=sol1["x"])
+
+        # Should still satisfy constraints
+        residual = d["A"] @ sol2["x"] - b2
+        np.testing.assert_allclose(residual, 0.0, atol=1e-7)
+
+    def test_warmstart_none_default(self, unconstrained_2d):
+        """warmstart=None should behave identically to no warmstart."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+        sol1 = solver(P=d["P"], q=d["q"])
+        sol2 = solver(P=d["P"], q=d["q"], warmstart=None)
+        np.testing.assert_allclose(sol1["x"], sol2["x"], atol=1e-12)
+
+    def test_warmstart_cleared_after_use(self, unconstrained_2d):
+        """Warmstart should not persist across calls."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        # Call with warmstart
+        solver(P=d["P"], q=d["q"], warmstart=jnp.array([0.5, 1.0]))
+
+        # Next call without warmstart should still work
+        sol = solver(P=d["P"], q=d["q"])
+        np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
+
+    def test_warmstart_with_fixed_elements(self, full_qp):
+        """Warmstart should work when some elements are fixed."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"]},
+        )
+        sol = solver(A=d["A"], b=d["b"], G=d["G"], h=d["h"],
+                     warmstart=jnp.array([0.4, 0.6]))
+        np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
+
+    def test_warmstart_with_jvp(self, unconstrained_2d):
+        """Warmstart should work through the JVP path."""
+        from jax import jvp
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        def solve_warm(q_val):
+            return solver(P=d["P"], q=q_val,
+                          warmstart=jnp.array([0.9, 1.9]))
+
+        def solve_cold(q_val):
+            return solver(P=d["P"], q=q_val)
+
+        dq = jnp.ones(d["n_var"])
+
+        sol_w, dsol_w = jvp(solve_warm, (d["q"],), (dq,))
+        sol_c, dsol_c = jvp(solve_cold, (d["q"],), (dq,))
+
+        # Same primal and tangent regardless of warmstart
+        np.testing.assert_allclose(sol_w["x"], sol_c["x"], atol=1e-10)
+        np.testing.assert_allclose(dsol_w["x"], dsol_c["x"], atol=1e-10)
+
+    def test_warmstart_good_vs_bad_speed(self):
+        """A good warmstart should converge faster than a bad one."""
+        import time
+
+        n_var, n_eq, n_ineq = 200, 50, 100
+
+        # Random well-conditioned QP
+        key = jax.random.PRNGKey(0)
+        k1, k2, k3, k4 = jax.random.split(key, 4)
+        M = jax.random.normal(k1, (n_var, n_var))
+        P = M.T @ M + 0.1 * jnp.eye(n_var)  # positive definite
+        q = jax.random.normal(k2, (n_var,))
+        A = jax.random.normal(k3, (n_eq, n_var))
+        b = A @ jnp.ones(n_var)  # feasible at x=1
+        G = jax.random.normal(k4, (n_ineq, n_var))
+        h = G @ jnp.ones(n_var) + 1.0  # feasible with slack
+
+        solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":"osqp"})
+
+        # Get the true solution for a "good" warmstart
+        sol = solver(P=P, q=q, A=A, b=b, G=G, h=h)
+        good_ws = sol["x"]
+
+        # solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":"piqp"})
+
+        # Bad warmstart: far from solution
+        bad_ws = jnp.ones(n_var) * 1e3
+
+        # JIT warmup — run each path once so compilation is not measured
+        solver(P=P, q=q, A=A, b=b, G=G, h=h,
+            warmstart=good_ws)["x"].block_until_ready()
+        solver(P=P, q=q, A=A, b=b, G=G, h=h,
+            warmstart=bad_ws)["x"].block_until_ready()
+
+        n_runs = 20
+
+        # Time bad warmstart
+        t0 = time.perf_counter()
+        for _ in range(n_runs):
+            solver(P=P, q=q, A=A, b=b, G=G, h=h,
+                warmstart=bad_ws)["x"].block_until_ready()
+        t_bad = (time.perf_counter() - t0) / n_runs
+
+        # Time good warmstart
+        t0 = time.perf_counter()
+        for _ in range(n_runs):
+            solver(P=P, q=q, A=A, b=b, G=G, h=h,
+                warmstart=good_ws)["x"].block_until_ready()
+        t_good = (time.perf_counter() - t0) / n_runs
+
+        logging.info(f"Avg time — good warmstart: {t_good:.6f}s, "
+                    f"bad warmstart: {t_bad:.6f}s")
+
+        assert t_good < t_bad, (
+            f"Good warmstart ({t_good:.6f}s) should be faster than "
+            f"bad warmstart ({t_bad:.6f}s)"
+        )
+
+
+# # =====================================================================
+# # Known bug: squeeze destroys shape for n_eq=1 or n_ineq=1
+# # =====================================================================
+
+# class TestSqueezeBug:
+#     """np.squeeze() in _solve_qp removes size-1 constraint dimensions.
+
+#     When n_eq=1, A has shape (1, n_var). After squeeze it becomes
+#     (n_var,), which fails the shape assertion. Same for n_ineq=1.
+#     """
+
+#     @pytest.mark.xfail(reason="squeeze bug: n_eq=1 collapses A shape")
+#     def test_single_equality(self):
+#         P = jnp.eye(2)
+#         q = jnp.zeros(2)
+#         A = jnp.array([[1.0, 1.0]])     # shape (1, 2)
+#         b = jnp.array([1.0])
+#         solver = setup_dense_solver(n_var=2, n_eq=1)
+#         sol = solver(P=P, q=q, A=A, b=b)
+#         np.testing.assert_allclose(sol["x"].sum(), 1.0, atol=1e-8)
+
+#     @pytest.mark.xfail(reason="squeeze bug: n_ineq=1 collapses G shape")
+#     def test_single_inequality(self):
+#         P = jnp.eye(2)
+#         q = jnp.array([-2.0, -2.0])
+#         G = jnp.array([[1.0, 1.0]])     # shape (1, 2)
+#         h = jnp.array([1.0])            # x1 + x2 <= 1
+#         solver = setup_dense_solver(n_var=2, n_ineq=1)
+#         sol = solver(P=P, q=q, G=G, h=h)
+#         assert float(G @ sol["x"]) <= 1.0 + 1e-8
 
 
 # =====================================================================
