@@ -5,14 +5,30 @@ from numpy import ndarray
 from jaxtyping import Float, Bool
 from typing import cast
 
-def create_dense_qp_solver(n_eq,n_ineq,options,fixed_elements):
+DEFAULT_SOLVER_OPTIONS = {
+    "solver_name":"piqp",
+    "dtype":np.float64,
+    "bool_dtype":np.bool_,
+    "cst_tol": 1e-8
+}
+
+def create_dense_qp_solver(n_eq,n_ineq,options=None,fixed_elements=None):
+
+    # parse options
+    if options is not None:
+        options_parsed = DEFAULT_SOLVER_OPTIONS | options
+    else:
+        options_parsed = DEFAULT_SOLVER_OPTIONS
 
     if fixed_elements is not None:
         _fixed = cast(
             dict[str,ndarray],
-            {k: np.array(v, dtype=options["dtype"]).squeeze() for k, v in fixed_elements.items()}
+            {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()}
         )
+    else:
+        _fixed = {}
 
+    #TODO: change output
     def solve_qp_numpy(**kwargs: ndarray) -> tuple[
             Float[ndarray, " nv"],      # x
             Float[ndarray, " ni"],      # lam
@@ -69,18 +85,22 @@ def create_dense_qp_solver(n_eq,n_ineq,options,fixed_elements):
 
             # Build qpsolvers Problem
             start = perf_counter()
-            merged = kwargs | _fixed
-            prob = Problem(**merged)
-            t["problem_setup"] = perf_counter() - start
 
             # get warmstart if present
-            warmstart = getattr(kwargs,"warmstart",None)
+            warmstart = kwargs.pop("warmstart",None)
+
+            # merge with fixed elements
+            merged = _fixed | kwargs
+
+            # form problem with the warmstart removed
+            prob = Problem(**merged)
+            t["problem_setup"] = perf_counter() - start
 
             # Solve QP
             start = perf_counter()
             sol = solve_problem(
                 prob,
-                solver=options["solver"],
+                solver=options_parsed["solver_name"],
                 initvals=warmstart,
             )
             assert sol.found, "QP solver failed to find a solution."
@@ -89,22 +109,22 @@ def create_dense_qp_solver(n_eq,n_ineq,options,fixed_elements):
             # Recover primal / dual variables
             start = perf_counter()
             x: Float[ndarray, " nv"] = (
-                np.asarray(sol.x, dtype=options["dtype"]).reshape(-1)
+                np.asarray(sol.x, dtype=options_parsed["dtype"]).reshape(-1)
             )
 
             if n_eq > 0:
                 mu: Float[ndarray, " ne"] = (
-                    np.asarray(sol.y, dtype=options["dtype"]).reshape(-1)
+                    np.asarray(sol.y, dtype=options_parsed["dtype"]).reshape(-1)
                 )
             else:
-                mu = np.empty(0, dtype=options["dtype"])
+                mu = np.empty(0, dtype=options_parsed["dtype"])
 
             if n_ineq > 0:
                 lam: Float[ndarray, " ni"] = (
-                    np.asarray(sol.z, dtype=options["dtype"]).reshape(-1)
+                    np.asarray(sol.z, dtype=options_parsed["dtype"]).reshape(-1)
                 )
             else:
-                lam = np.empty(0, dtype=options["dtype"])
+                lam = np.empty(0, dtype=options_parsed["dtype"])
             t["retrieve"] = perf_counter() - start
 
             # Determine active set: |Gx − h| <= tolerance
@@ -112,11 +132,11 @@ def create_dense_qp_solver(n_eq,n_ineq,options,fixed_elements):
             if n_ineq > 0:
                 active: Bool[ndarray, " ni"] = np.asarray(
                     np.abs(merged["G"] @ sol.x - merged["h"])
-                    <= options["cst_tol"],
-                    dtype=options["bool_dtype"],
+                    <= options_parsed["cst_tol"],
+                    dtype=options_parsed["bool_dtype"],
                 ).reshape(-1)
             else:
-                active = np.empty(0, dtype=options["bool_dtype"])
+                active = np.empty(0, dtype=options_parsed["bool_dtype"])
             t["active_set"] = perf_counter() - start
 
             return x, lam, mu, active, t

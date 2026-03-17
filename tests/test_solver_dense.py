@@ -629,7 +629,7 @@ class TestWarmstart:
         G = jax.random.normal(k4, (n_ineq, n_var))
         h = G @ jnp.ones(n_var) + 1.0  # feasible with slack
 
-        solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":"osqp"})
+        solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":{"solver_name":"osqp"}})
 
         # Get the true solution for a "good" warmstart
         sol = solver(P=P, q=q, A=A, b=b, G=G, h=h)
