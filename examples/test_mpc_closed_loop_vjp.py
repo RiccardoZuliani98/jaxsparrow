@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 import jax
-from jax import vjp, jvp, jit
+from jax import vjp, jvp, jit, vmap
 jax.config.update("jax_enable_x64", True)
 from pathlib import Path
 import sys
@@ -12,8 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.solver_dense.solver_dense_vjp import setup_dense_solver
 
 EPSILON = 0.1
-CL_HORIZON = 10
-N_RUNS = 20
+CL_HORIZON = 100
+N_RUNS = 10
 
 horizon = 30
 
@@ -128,16 +128,17 @@ def cl_cost_jvp(x0):
     return cost_fun(x_cl,u_cl)
 
 @jit
-def solve_and_differentiate(x0,dcost):
+def solve_and_differentiate(x0):
     cost, vjp_func = vjp(cl_cost,x0)
-    dcost = vjp_func(dcost)
-    return cost, dcost
+    jac = vjp_func(1.0)
+    return cost, jac
 
-@jit
 def jvp_func_base(x0,dx0):
     return jvp(cl_cost_jvp,(x0,),(dx0,))
 
-solve_and_differentiate(0.9*x0,-1.0)
+jvp_func = jit(vmap(jvp_func_base, in_axes=(None,0)))
+
+solve_and_differentiate(0.9*x0)
 
 elapsed_vjp, elapsed_jvp = [], []
 
@@ -147,14 +148,15 @@ keys = jax.random.split(key, N_RUNS)
 for i in range(N_RUNS):
     xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
     start = perf_counter()
-    solve_and_differentiate(xi,1.0)
+    solve_and_differentiate(xi)
     elapsed_vjp.append(perf_counter() - start)
+
+e_mat = jnp.eye(x0.shape[0],dtype=x0.dtype)
 
 for i in range(N_RUNS):
     xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
-    dxi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
     start = perf_counter()
-    jvp_func_base(xi,dxi)
+    jvp_func(xi,e_mat)
     elapsed_jvp.append(perf_counter() - start)
 
 print(f"VJP: {jnp.mean(jnp.array(elapsed_vjp))}, JVP: {jnp.mean(jnp.array(elapsed_jvp))}")
