@@ -99,18 +99,16 @@ def setup_dense_solver(
         "x":        jax.ShapeDtypeStruct((n_var,),  _dtype),
         "lam":      jax.ShapeDtypeStruct((n_ineq,), _dtype),
         "mu":       jax.ShapeDtypeStruct((n_eq,),   _dtype),
-        "active":   jax.ShapeDtypeStruct((n_ineq,), jnp.bool_),
     }
 
     # Shapes for the combined JVP callback: tangents + solution.
     # Must match the return order of _kkt_diff:
-    # (dx, dlam, dmu, dactive, sol_dict).
+    # (dx, dlam, dmu, sol_dict).
     # pure_callback uses these to convert numpy → JAX internally.
     _jvp_shapes = (
         jax.ShapeDtypeStruct((n_var,),  _dtype),             # dx
         jax.ShapeDtypeStruct((n_ineq,), _dtype),             # dlam
         jax.ShapeDtypeStruct((n_eq,),   _dtype),             # dmu
-        jax.ShapeDtypeStruct((n_ineq,), jax.dtypes.float0),  # dactive
         _fwd_shapes,                                          # sol
     )
 
@@ -314,7 +312,7 @@ def setup_dense_solver(
         prob_np = {**_fixed, **dynamic_np}
 
         # ── Solve in numpy ───────────────────────────────────────────
-        x_np, lam_np, mu_np, active_np, t_solve = _solve_qp_numpy(**prob_np)
+        x_np, lam_np, mu_np, _, t_solve = _solve_qp_numpy(**prob_np)
         t.update(t_solve)
 
         # ── Return numpy arrays directly ─────────────────────────────
@@ -324,7 +322,6 @@ def setup_dense_solver(
             "x":      jnp.array(x_np,dtype=_dtype),
             "lam":    jnp.array(lam_np,dtype=_dtype),
             "mu":     jnp.array(mu_np,dtype=_dtype),
-            "active": jnp.array(active_np,dtype=jnp.bool_),
         }
         t["convert_to_jax"] = perf_counter() - start
 
@@ -344,7 +341,6 @@ def setup_dense_solver(
         Float[Array, " nv"],      # dx
         Float[Array, " ni"],      # dlam
         Float[Array, " ne"],      # dmu
-        Array,                    # dactive (float0)
         dict[str, Array],         # sol (numpy, not JAX)
     ]:
         """Implicit differentiation of the KKT conditions.
@@ -372,12 +368,11 @@ def setup_dense_solver(
                 tangents, both in ``_dynamic_keys`` order.
 
         Returns:
-            A tuple ``(dx, dlam, dmu, dactive, sol)`` where:
+            A tuple ``(dx, dlam, dmu, sol)`` where:
 
                 - ``dx``      (nv,) | (B, nv):   Tangent of primal.
                 - ``dlam``    (ni,) | (B, ni):   Tangent of ineq duals.
                 - ``dmu``     (ne,) | (B, ne):   Tangent of eq duals.
-                - ``dactive`` (ni,) | (B, ni):   Zero tangent (float0).
                 - ``sol``: Primal / dual solution dict as numpy arrays.
                   Broadcast to ``(B, ...)`` when batched.
         """
@@ -583,29 +578,22 @@ def setup_dense_solver(
                 "x":      jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(),dtype=_dtype),
                 "lam":    jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(),dtype=_dtype),
                 "mu":     jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(),dtype=_dtype),
-                "active": jnp.array(np.broadcast_to(active_np, (batch_size, n_ineq)).copy(),dtype=jnp.bool_),
             }
         else:
             res = {
                 "x":      jnp.array(x_np,dtype=_dtype),
                 "lam":    jnp.array(lam_np,dtype=_dtype),
                 "mu":     jnp.array(mu_np,dtype=_dtype),
-                "active": jnp.array(active_np,dtype=jnp.bool_),
             }
         dx = jnp.array(dx_np, dtype=_dtype)
         dlam = jnp.array(dlam_np, dtype=_dtype)
         dmu = jnp.array(dmu_np, dtype=_dtype)
         t["build_sol"] = perf_counter() - start
 
-        # Active-set mask is not differentiable — zero tangent
-        dactive = jnp.zeros(
-            res["active"].shape, dtype=jax.dtypes.float0
-        )
-
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_diff | {fmt_times(t)}")
 
-        return dx, dlam, dmu, dactive, res
+        return dx, dlam, dmu, res
 
     def _kkt_diff_callback(
         primals_dict: dict[str, jax.Array],
@@ -614,7 +602,6 @@ def setup_dense_solver(
         Float[jax.Array, " nv"],    # dx
         Float[jax.Array, " ni"],    # dlam
         Float[jax.Array, " ne"],    # dmu
-        jax.Array,                  # dactive (float0)
         dict[str, jax.Array],       # sol
     ]:
         """Wrap ``_kkt_diff`` in a ``pure_callback`` for use inside JAX traces.
@@ -635,7 +622,7 @@ def setup_dense_solver(
                 batch dim ``B``).
 
         Returns:
-            A tuple ``(dx, dlam, dmu, dactive, sol)``.
+            A tuple ``(dx, dlam, dmu, sol)``.
         """
         primal_vals = tuple(primals_dict[k] for k in _dynamic_keys)
         tangent_vals = tuple(tangents_dict[k] for k in _dynamic_keys)
@@ -675,7 +662,6 @@ def setup_dense_solver(
                 - ``x``      (nv,):  Primal solution.
                 - ``lam``    (ni,):  Inequality duals.
                 - ``mu``     (ne,):  Equality duals.
-                - ``active`` (ni,):  Active-set boolean mask.
         """
         return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
 
@@ -708,7 +694,7 @@ def setup_dense_solver(
             zip(_dynamic_keys, tangents)
         )
 
-        dx, dlam, dmu, dactive, res = _kkt_diff_callback(
+        dx, dlam, dmu, res = _kkt_diff_callback(
             primals_dict, tangents_dict
         )
 
@@ -716,7 +702,6 @@ def setup_dense_solver(
             "x":      dx,
             "lam":    dlam,
             "mu":     dmu,
-            "active": dactive,
         }
 
         return res, tangents_out
@@ -761,7 +746,6 @@ def setup_dense_solver(
                 - ``x``      (nv,):  Primal solution.
                 - ``lam``    (ni,):  Inequality duals.
                 - ``mu``     (ne,):  Equality duals.
-                - ``active`` (ni,):  Active-set boolean mask.
 
         Raises:
             ValueError: If any dynamic ingredient is missing.

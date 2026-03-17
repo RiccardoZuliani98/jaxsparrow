@@ -135,7 +135,6 @@ class TestUnconstrainedQP:
         assert sol["x"].shape == (d["n_var"],)
         assert sol["lam"].shape == (0,)
         assert sol["mu"].shape == (0,)
-        assert sol["active"].shape == (0,)
 
     def test_output_dtypes(self, unconstrained_2d):
         d = unconstrained_2d
@@ -145,7 +144,6 @@ class TestUnconstrainedQP:
         assert sol["x"].dtype == jnp.float64
         assert sol["lam"].dtype == jnp.float64
         assert sol["mu"].dtype == jnp.float64
-        assert sol["active"].dtype == jnp.bool_
 
 
 class TestInequalityOnlyQP:
@@ -165,18 +163,6 @@ class TestInequalityOnlyQP:
         assert sol["x"].shape == (d["n_var"],)
         assert sol["lam"].shape == (d["n_ineq"],)
         assert sol["mu"].shape == (0,)
-        assert sol["active"].shape == (d["n_ineq"],)
-
-    def test_active_set(self, inequality_only):
-        d = inequality_only
-        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
-        sol = solver(P=d["P"], q=d["q"], G=d["G"], h=d["h"])
-
-        # Constraints 0 and 2 should be active (x1=0, x3=0)
-        active = np.array(sol["active"])
-        assert active[0] == True   # x1 = 0 is active
-        assert active[1] == False  # x2 = 2 is not active
-        assert active[2] == True   # x3 = 0 is active
 
     def test_dual_nonnegative(self, inequality_only):
         """Inequality duals should be >= 0 for active constraints."""
@@ -204,7 +190,6 @@ class TestEqualityOnlyQP:
         assert sol["x"].shape == (d["n_var"],)
         assert sol["lam"].shape == (0,)
         assert sol["mu"].shape == (d["n_eq"],)
-        assert sol["active"].shape == (0,)
 
     def test_equality_satisfied(self, equality_only):
         d = equality_only
@@ -237,7 +222,6 @@ class TestFullQP:
         assert sol["x"].shape == (d["n_var"],)
         assert sol["lam"].shape == (d["n_ineq"],)
         assert sol["mu"].shape == (d["n_eq"],)
-        assert sol["active"].shape == (d["n_ineq"],)
 
     def test_equality_satisfied(self, full_qp):
         d = full_qp
