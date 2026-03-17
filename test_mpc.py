@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import jax
+import numpy as np
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -96,7 +97,7 @@ sol, dsol = jvp_func(x0,dx0)
 print(f"Elapsed: {perf_counter()-start}")
 
 ## SECOND SOLVER: some stuff fixed at setup
-solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
+solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":np.array(P),"q":np.array(q)})
 sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
 sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
 def solver2(x_init):

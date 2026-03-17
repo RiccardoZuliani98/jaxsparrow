@@ -25,8 +25,6 @@ from .solver_dense_options import (
 #   B   = batch   — batch dimension (JVP vmap path only)
 
 
-#TODO: add warmstart
-
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
 _EXPECTED_NDIM: dict[str, int] = {
@@ -129,6 +127,11 @@ def setup_dense_solver(
 
     _n_dyn = len(_dynamic_keys)
 
+    # Mutable warmstart slot. Written by solver() before each call,
+    # read by _solve_qp_numpy() inside the callback, cleared after use.
+    # Stored as a one-element list so nested functions can mutate it.
+    _warmstart: list[Optional[ndarray]] = [None]
+
     logger.info(
         f"Setting up QP with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
@@ -221,9 +224,16 @@ def setup_dense_solver(
 
         # Solve QP
         start = perf_counter()
-        sol = solve_problem(prob, solver=_options_parsed["solver"])
+        sol = solve_problem(
+            prob,
+            solver=_options_parsed["solver"],
+            initvals=_warmstart[0],
+        )
         assert sol.found, "QP solver failed to find a solution."
         t["solve"] = perf_counter() - start
+
+        # Clear warmstart after use so it doesn't persist
+        _warmstart[0] = None
 
         # Recover primal / dual variables
         start = perf_counter()
@@ -336,7 +346,10 @@ def setup_dense_solver(
 
         Solves the QP forward, then differentiates through the KKT
         optimality conditions by solving a linear system. Returns
-        both the tangents and the primal solution as **jnp.array**.
+        both the tangents and the primal solution as **numpy arrays**.
+        ``pure_callback`` handles all numpy → JAX conversion using
+        ``_jvp_shapes``, avoiding redundant Python-level ``jnp.array``
+        calls.
 
         Receives only the **dynamic** primals and tangents (those not
         in ``_fixed``). Fixed primals are merged from the ``_fixed``
@@ -360,7 +373,7 @@ def setup_dense_solver(
                 - ``dlam``    (ni,) | (B, ni):   Tangent of ineq duals.
                 - ``dmu``     (ne,) | (B, ne):   Tangent of eq duals.
                 - ``dactive`` (ni,) | (B, ni):   Zero tangent (float0).
-                - ``sol``: Primal / dual solution dict as jnp arrays.
+                - ``sol``: Primal / dual solution dict as numpy arrays.
                   Broadcast to ``(B, ...)`` when batched.
         """
         t_start = perf_counter()
@@ -700,7 +713,11 @@ def setup_dense_solver(
 
         return res, tangents_out
 
-    def solver(**runtime: jax.Array) -> dict[str, jax.Array]:
+    def solver(
+        *,
+        warmstart: Optional[jax.Array] = None,
+        **runtime: jax.Array,
+    ) -> dict[str, jax.Array]:
         """Solve a (possibly partially fixed) QP problem.
 
         The full set of QP ingredients is ``{P, q, A, b, G, h}``. Any
@@ -713,6 +730,10 @@ def setup_dense_solver(
         element, supply it at runtime instead of fixing it at setup.
 
         Args:
+            warmstart: Optional initial guess for the primal solution,
+                shape ``(n_var,)``. Passed to the underlying QP solver
+                to speed up convergence. Not differentiated through.
+                Cleared after each solve.
             **runtime: QP ingredients as JAX arrays. Must cover at
                 least every key in ``_dynamic_keys`` (i.e. every
                 ingredient not already in ``fixed_elements``). Keys
@@ -737,6 +758,13 @@ def setup_dense_solver(
         Raises:
             ValueError: If any dynamic ingredient is missing.
         """
+        # Store warmstart in the mutable closure slot (converted to
+        # numpy). _solve_qp_numpy reads it and clears it after use.
+        if warmstart is not None:
+            _warmstart[0] = np.asarray(warmstart, dtype=_dtype).reshape(-1)
+        else:
+            _warmstart[0] = None
+
         # Warn if user passes keys that are already fixed
         if _options_parsed["debug"]:
             overridden = set(runtime) & _fixed_keys_set
