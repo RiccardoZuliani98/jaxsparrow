@@ -60,7 +60,7 @@ def beq(x_init):
 
 # ─── Solver setup ────────────────────────────────────────────────────
 
-from src.solver_dense.solver_dense_vjp import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 solver = setup_dense_solver(n_var=nz, n_ineq=nineq, n_eq=neq)
 
@@ -85,7 +85,7 @@ _ = jvp_jacobian(x0_warmup, I_nx)
 rng = np.random.default_rng(42)
 x0_samples = rng.uniform(-1.0, 1.0, size=(N_SAMPLES, nx))
 
-solver.timings.reset()
+# solver.timings.reset()
 
 wall_start = perf_counter()
 
@@ -104,4 +104,4 @@ print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(jvp)")
 print(f"{'=' * 60}")
 print(f"\n  Wall-clock total : {wall_elapsed:.4f} s")
 print(f"  Wall-clock / call: {wall_elapsed / N_SAMPLES * 1e3:.3f} ms\n")
-print(solver.timings.summary())
+# print(solver.timings.summary())

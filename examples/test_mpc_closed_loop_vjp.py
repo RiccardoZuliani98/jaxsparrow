@@ -9,7 +9,7 @@ from time import perf_counter
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.solver_dense.solver_dense_vjp import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 EPSILON = 0.1
 CL_HORIZON = 100
