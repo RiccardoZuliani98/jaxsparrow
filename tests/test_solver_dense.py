@@ -735,3 +735,732 @@ class TestOptions:
         sol = solver(P=d["P"], q=d["q"])
         assert sol["x"].dtype == jnp.float32
         np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-4)
+
+
+# =====================================================================
+# JVP vs Finite Differences
+# =====================================================================
+
+class TestJVPFiniteDifferences:
+    """Verify JVP tangents against central finite differences."""
+
+    EPS = 1e-6
+    ATOL_X = 1e-4
+    ATOL_DUAL = 1e-3
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _fd_central(solve_fn, param, direction, eps):
+        """Central finite difference: (f(p+εd) - f(p-εd)) / 2ε."""
+        sol_plus = solve_fn(param + eps * direction)
+        sol_minus = solve_fn(param - eps * direction)
+        return {
+            k: (sol_plus[k] - sol_minus[k]) / (2.0 * eps)
+            for k in ("x", "lam", "mu")
+        }
+
+    # -----------------------------------------------------------------
+    # Unconstrained: d/dq, d/dP
+    # -----------------------------------------------------------------
+
+    def test_jvp_dq_unconstrained(self, unconstrained_2d):
+        """dx/dq via JVP vs finite differences (unconstrained)."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        dq = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val)
+
+        _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+        fd = self._fd_central(solve_q, d["q"], dq, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+
+    def test_jvp_dP_unconstrained(self, unconstrained_2d):
+        """dx/dP via JVP vs finite differences (unconstrained)."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        dP = jnp.array([[1.0, 0.0], [0.0, 0.0]])
+
+        def solve_P(P_val):
+            return solver(P=P_val, q=d["q"])
+
+        _, tangents = jax.jvp(solve_P, (d["P"],), (dP,))
+        fd = self._fd_central(solve_P, d["P"], dP, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Equality only: d/dq, d/db, d/dA
+    # -----------------------------------------------------------------
+
+    def test_jvp_dq_equality(self, equality_only):
+        """dx/dq via JVP vs finite differences (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        dq = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"])
+
+        _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+        fd = self._fd_central(solve_q, d["q"], dq, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_jvp_db_equality(self, equality_only):
+        """dx/db via JVP vs finite differences (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        db = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val)
+
+        _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+        fd = self._fd_central(solve_b, d["b"], db, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_jvp_dA_equality(self, equality_only):
+        """dx/dA via JVP vs finite differences (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        dA = jnp.array([[1.0, 0.0], [0.0, 0.0]])
+
+        def solve_A(A_val):
+            return solver(P=d["P"], q=d["q"], A=A_val, b=d["b"])
+
+        _, tangents = jax.jvp(solve_A, (d["A"],), (dA,))
+        fd = self._fd_central(solve_A, d["A"], dA, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # Inequality only: d/dq, d/dh, d/dG
+    # -----------------------------------------------------------------
+
+    def test_jvp_dq_inequality(self, inequality_only):
+        """dx/dq via JVP vs finite differences (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        dq = jnp.array([0.0, 1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, G=d["G"], h=d["h"])
+
+        _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+        fd = self._fd_central(solve_q, d["q"], dq, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_jvp_dh_inequality(self, inequality_only):
+        """dx/dh via JVP vs finite differences (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        dh = jnp.array([1.0, 0.0, 0.0])
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], G=d["G"], h=h_val)
+
+        _, tangents = jax.jvp(solve_h, (d["h"],), (dh,))
+        fd = self._fd_central(solve_h, d["h"], dh, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_jvp_dG_inequality(self, inequality_only):
+        """dx/dG via JVP vs finite differences (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        key = jax.random.PRNGKey(42)
+        dG = jax.random.normal(key, d["G"].shape)
+
+        def solve_G(G_val):
+            return solver(P=d["P"], q=d["q"], G=G_val, h=d["h"])
+
+        _, tangents = jax.jvp(solve_G, (d["G"],), (dG,))
+        fd = self._fd_central(solve_G, d["G"], dG, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # Full QP: d/dq, d/db, d/dh (all constraints active)
+    # -----------------------------------------------------------------
+
+    def test_jvp_dq_full(self, full_qp):
+        """dx/dq via JVP vs finite differences (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        dq = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+        fd = self._fd_central(solve_q, d["q"], dq, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+        np.testing.assert_allclose(tangents["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_jvp_db_full(self, full_qp):
+        """dx/db via JVP vs finite differences (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        db = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val,
+                          G=d["G"], h=d["h"])
+
+        _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+        fd = self._fd_central(solve_b, d["b"], db, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_jvp_dh_full(self, full_qp):
+        """dx/dh via JVP vs finite differences (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        dh = jnp.array([0.1, 0.0])
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=h_val)
+
+        _, tangents = jax.jvp(solve_h, (d["h"],), (dh,))
+        fd = self._fd_central(solve_h, d["h"], dh, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # MPC: d/db (parametric initial condition)
+    # -----------------------------------------------------------------
+
+    def test_jvp_db_mpc(self, mpc_problem):
+        """dx/db via JVP vs finite differences on the MPC problem."""
+        d = mpc_problem
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"],
+                            "A": d["A"], "G": d["G"], "h": d["h"]},
+        )
+
+        # Perturb only the initial condition slots of b
+        db = jnp.zeros(d["n_eq"])
+        db = db.at[0].set(1.0)
+
+        def solve_b(b_val):
+            return solver(b=b_val)
+
+        _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+        fd = self._fd_central(solve_b, d["b"], db, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Random direction (checks linearity of JVP in the tangent)
+    # -----------------------------------------------------------------
+
+    def test_jvp_random_direction_full(self, full_qp):
+        """JVP with a random tangent direction matches FD on full QP."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(7)
+        k1, k2, k3 = jax.random.split(key, 3)
+        dq = jax.random.normal(k1, d["q"].shape)
+        db = jax.random.normal(k2, d["b"].shape)
+        dh = jax.random.normal(k3, d["h"].shape)
+
+        def solve_qbh(q_val, b_val, h_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=b_val,
+                          G=d["G"], h=h_val)
+
+        _, tangents = jax.jvp(
+            solve_qbh,
+            (d["q"], d["b"], d["h"]),
+            (dq, db, dh),
+        )
+
+        # FD over the combined perturbation
+        def solve_eps(eps):
+            return solve_qbh(
+                d["q"] + eps * dq,
+                d["b"] + eps * db,
+                d["h"] + eps * dh,
+            )
+
+        sol_p = solve_eps(self.EPS)
+        sol_m = solve_eps(-self.EPS)
+        fd_x = (sol_p["x"] - sol_m["x"]) / (2.0 * self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd_x, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Fixed elements: JVP only flows through dynamic keys
+    # -----------------------------------------------------------------
+
+    def test_jvp_fixed_P_q_diff_through_b(self, full_qp):
+        """With P, q fixed, JVP w.r.t. b still matches FD."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"]},
+        )
+
+        db = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(A=d["A"], b=b_val, G=d["G"], h=d["h"])
+
+        _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+        fd = self._fd_central(solve_b, d["b"], db, self.EPS)
+
+        np.testing.assert_allclose(tangents["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(tangents["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+# =====================================================================
+# JVP under vmap vs Finite Differences
+# =====================================================================
+
+class TestJVPVmapFiniteDifferences:
+    """Verify that vmapped JVP tangents match per-direction finite differences."""
+
+    EPS = 1e-6
+    ATOL_X = 1e-4
+    ATOL_DUAL = 1e-3
+    N_DIRS = 3  # number of random tangent directions per test
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _fd_central(solve_fn, param, direction, eps):
+        """Central finite difference for a single direction."""
+        sol_plus = solve_fn(param + eps * direction)
+        sol_minus = solve_fn(param - eps * direction)
+        return {
+            k: (sol_plus[k] - sol_minus[k]) / (2.0 * eps)
+            for k in ("x", "lam", "mu")
+        }
+
+    def _fd_batch(self, solve_fn, param, directions, eps):
+        """Run central FD for each direction, stack results."""
+        results = [self._fd_central(solve_fn, param, d, eps) for d in directions]
+        return {
+            k: jnp.stack([r[k] for r in results])
+            for k in ("x", "lam", "mu")
+        }
+
+    # -----------------------------------------------------------------
+    # Unconstrained: vmap d/dq, vmap d/dP
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_dq_unconstrained(self, unconstrained_2d):
+        """Batched dx/dq via vmap(jvp) vs finite differences."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        key = jax.random.PRNGKey(10)
+        dqs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val)
+
+        def jvp_one(dq):
+            _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+            return tangents
+
+        batched_tangents = jax.vmap(jvp_one)(dqs)
+        fd = self._fd_batch(solve_q, d["q"], dqs, self.EPS)
+
+        np.testing.assert_allclose(batched_tangents["x"], fd["x"], atol=self.ATOL_X)
+
+    def test_vmap_jvp_dP_unconstrained(self, unconstrained_2d):
+        """Batched dx/dP via vmap(jvp) vs finite differences."""
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"])
+
+        key = jax.random.PRNGKey(11)
+        dPs = jax.random.normal(key, (self.N_DIRS, d["n_var"], d["n_var"]))
+        # Symmetrize tangent directions (P is symmetric)
+        dPs = (dPs + jnp.swapaxes(dPs, -2, -1)) / 2.0
+
+        def solve_P(P_val):
+            return solver(P=P_val, q=d["q"])
+
+        def jvp_one(dP):
+            _, tangents = jax.jvp(solve_P, (d["P"],), (dP,))
+            return tangents
+
+        batched_tangents = jax.vmap(jvp_one)(dPs)
+        fd = self._fd_batch(solve_P, d["P"], dPs, self.EPS)
+
+        np.testing.assert_allclose(batched_tangents["x"], fd["x"], atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Equality only: vmap d/dq, vmap d/db, vmap d/dA
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_dq_equality(self, equality_only):
+        """Batched dx/dq via vmap(jvp) vs FD (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        key = jax.random.PRNGKey(20)
+        dqs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"])
+
+        def jvp_one(dq):
+            _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dqs)
+        fd = self._fd_batch(solve_q, d["q"], dqs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_db_equality(self, equality_only):
+        """Batched dx/db via vmap(jvp) vs FD (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        key = jax.random.PRNGKey(21)
+        dbs = jax.random.normal(key, (self.N_DIRS, d["n_eq"]))
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val)
+
+        def jvp_one(db):
+            _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dbs)
+        fd = self._fd_batch(solve_b, d["b"], dbs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_dA_equality(self, equality_only):
+        """Batched dx/dA via vmap(jvp) vs FD (equality constrained)."""
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"])
+
+        key = jax.random.PRNGKey(22)
+        dAs = jax.random.normal(key, (self.N_DIRS, d["n_eq"], d["n_var"]))
+
+        def solve_A(A_val):
+            return solver(P=d["P"], q=d["q"], A=A_val, b=d["b"])
+
+        def jvp_one(dA):
+            _, tangents = jax.jvp(solve_A, (d["A"],), (dA,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dAs)
+        fd = self._fd_batch(solve_A, d["A"], dAs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # Inequality only: vmap d/dq, vmap d/dh, vmap d/dG
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_dq_inequality(self, inequality_only):
+        """Batched dx/dq via vmap(jvp) vs FD (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        key = jax.random.PRNGKey(30)
+        dqs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, G=d["G"], h=d["h"])
+
+        def jvp_one(dq):
+            _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dqs)
+        fd = self._fd_batch(solve_q, d["q"], dqs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_dh_inequality(self, inequality_only):
+        """Batched dx/dh via vmap(jvp) vs FD (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        key = jax.random.PRNGKey(31)
+        dhs = jax.random.normal(key, (self.N_DIRS, d["n_ineq"]))
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], G=d["G"], h=h_val)
+
+        def jvp_one(dh):
+            _, tangents = jax.jvp(solve_h, (d["h"],), (dh,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dhs)
+        fd = self._fd_batch(solve_h, d["h"], dhs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_dG_inequality(self, inequality_only):
+        """Batched dx/dG via vmap(jvp) vs FD (inequality only)."""
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"])
+
+        key = jax.random.PRNGKey(32)
+        dGs = jax.random.normal(key, (self.N_DIRS, d["n_ineq"], d["n_var"]))
+
+        def solve_G(G_val):
+            return solver(P=d["P"], q=d["q"], G=G_val, h=d["h"])
+
+        def jvp_one(dG):
+            _, tangents = jax.jvp(solve_G, (d["G"],), (dG,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dGs)
+        fd = self._fd_batch(solve_G, d["G"], dGs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # Full QP: vmap d/dq, vmap d/db, vmap d/dh
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_dq_full(self, full_qp):
+        """Batched dx/dq via vmap(jvp) vs FD (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(40)
+        dqs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        def jvp_one(dq):
+            _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dqs)
+        fd = self._fd_batch(solve_q, d["q"], dqs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["mu"], fd["mu"], atol=self.ATOL_DUAL)
+        np.testing.assert_allclose(batched["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_db_full(self, full_qp):
+        """Batched dx/db via vmap(jvp) vs FD (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(41)
+        dbs = jax.random.normal(key, (self.N_DIRS, d["n_eq"]))
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val,
+                          G=d["G"], h=d["h"])
+
+        def jvp_one(db):
+            _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dbs)
+        fd = self._fd_batch(solve_b, d["b"], dbs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["mu"], fd["mu"], atol=self.ATOL_DUAL)
+
+    def test_vmap_jvp_dh_full(self, full_qp):
+        """Batched dx/dh via vmap(jvp) vs FD (full QP)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(42)
+        dhs = jax.random.normal(key, (self.N_DIRS, d["n_ineq"]))
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=h_val)
+
+        def jvp_one(dh):
+            _, tangents = jax.jvp(solve_h, (d["h"],), (dh,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dhs)
+        fd = self._fd_batch(solve_h, d["h"], dhs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+        np.testing.assert_allclose(batched["lam"], fd["lam"], atol=self.ATOL_DUAL)
+
+    # -----------------------------------------------------------------
+    # MPC: vmap d/db (parametric initial condition)
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_db_mpc(self, mpc_problem):
+        """Batched dx/db via vmap(jvp) vs FD on MPC problem."""
+        d = mpc_problem
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"],
+                            "A": d["A"], "G": d["G"], "h": d["h"]},
+        )
+
+        key = jax.random.PRNGKey(50)
+        dbs = jax.random.normal(key, (self.N_DIRS, d["n_eq"]))
+
+        def solve_b(b_val):
+            return solver(b=b_val)
+
+        def jvp_one(db):
+            _, tangents = jax.jvp(solve_b, (d["b"],), (db,))
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dbs)
+        fd = self._fd_batch(solve_b, d["b"], dbs, self.EPS)
+
+        np.testing.assert_allclose(batched["x"], fd["x"], atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Multi-parameter vmap: simultaneous perturbation of q, b, h
+    # -----------------------------------------------------------------
+
+    def test_vmap_jvp_multi_param_full(self, full_qp):
+        """Batched JVP over joint (dq, db, dh) directions matches FD."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(60)
+        k1, k2, k3 = jax.random.split(key, 3)
+        dqs = jax.random.normal(k1, (self.N_DIRS, d["n_var"]))
+        dbs = jax.random.normal(k2, (self.N_DIRS, d["n_eq"]))
+        dhs = jax.random.normal(k3, (self.N_DIRS, d["n_ineq"]))
+
+        def solve_qbh(q_val, b_val, h_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=b_val,
+                          G=d["G"], h=h_val)
+
+        def jvp_one(dq, db, dh):
+            _, tangents = jax.jvp(
+                solve_qbh,
+                (d["q"], d["b"], d["h"]),
+                (dq, db, dh),
+            )
+            return tangents
+
+        batched = jax.vmap(jvp_one)(dqs, dbs, dhs)
+
+        # FD per direction
+        fd_xs = []
+        for i in range(self.N_DIRS):
+            sp = solve_qbh(
+                d["q"] + self.EPS * dqs[i],
+                d["b"] + self.EPS * dbs[i],
+                d["h"] + self.EPS * dhs[i],
+            )
+            sm = solve_qbh(
+                d["q"] - self.EPS * dqs[i],
+                d["b"] - self.EPS * dbs[i],
+                d["h"] - self.EPS * dhs[i],
+            )
+            fd_xs.append((sp["x"] - sm["x"]) / (2.0 * self.EPS))
+
+        fd_x = jnp.stack(fd_xs)
+        np.testing.assert_allclose(batched["x"], fd_x, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Consistency: vmap result matches sequential JVP calls
+    # -----------------------------------------------------------------
+
+    def test_vmap_matches_sequential(self, full_qp):
+        """vmap(jvp) should produce identical results to sequential jvp calls."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+        )
+
+        key = jax.random.PRNGKey(70)
+        dqs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        def jvp_one(dq):
+            _, tangents = jax.jvp(solve_q, (d["q"],), (dq,))
+            return tangents
+
+        # Batched path
+        batched = jax.vmap(jvp_one)(dqs)
+
+        # Sequential path
+        seq_xs = []
+        seq_lams = []
+        seq_mus = []
+        for i in range(self.N_DIRS):
+            _, t = jax.jvp(solve_q, (d["q"],), (dqs[i],))
+            seq_xs.append(t["x"])
+            seq_lams.append(t["lam"])
+            seq_mus.append(t["mu"])
+
+        np.testing.assert_allclose(
+            batched["x"], jnp.stack(seq_xs), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            batched["lam"], jnp.stack(seq_lams), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            batched["mu"], jnp.stack(seq_mus), atol=1e-12
+        )
