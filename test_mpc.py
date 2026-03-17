@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO)
 
 jax.config.update("jax_enable_x64", True)
 
-horizon = 30
+horizon = 50
 
 A = jnp.array([[1,1],[0,1]])
 B = jnp.array([[0],[1]])
@@ -78,22 +78,29 @@ solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 from jax import jit, jvp
 from time import perf_counter
 
-solve_mpc = jit(lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h))
+def solve_mpc_base(x_init):
+    return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+
+solve_mpc = jit(solve_mpc_base)
 sol1 = solve_mpc(x0)
 sol2 = solve_mpc(x0+dx0)
 
-jvp_func = jit(lambda x0, dx0: jvp(solve_mpc,(x0,),(dx0,)))
-sol, dsol = jvp_func(x0,dx0)
+def jvp_function_base(x0, dx0):
+    return jvp(solve_mpc,(x0,),(dx0,))
+
+jvp_func = jit(jvp_function_base)
+sol, dsol = jvp_func(x0,100*dx0)
 
 start = perf_counter()
-sol, dsol = jvp(solve_mpc,(x0,),(dx0,))
+sol, dsol = jvp_func(x0,dx0)
 print(f"Elapsed: {perf_counter()-start}")
 
 ## SECOND SOLVER: some stuff fixed at setup
-# solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
-# sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
-# sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
-# solver2 = lambda x_init: solver_fixed(A=Aeq, b=beq(x_init), G=G, h=h)
+solver_fixed = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,fixed_elements={"P":P,"q":q})
+sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
+sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
+def solver2(x_init):
+    return solver_fixed(A=Aeq, b=beq(x_init), G=G, h=h)
 
 start = perf_counter()
 sol, dsol = jvp_func(x0,dx0)

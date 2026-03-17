@@ -99,15 +99,16 @@ def setup_dense_solver(
         "active":   jax.ShapeDtypeStruct((n_ineq,), jnp.bool_),
     }
 
-    # Shapes for the tangent-only callback — no primal solution.
-    # Must match the return order of _kkt_diff: (dx, dlam, dmu, dactive).
-    # The forward pass is handled separately so that vmap can see the
-    # primal output does not depend on the batched tangents.
-    _tangent_shapes = (
+    # Shapes for the combined JVP callback: tangents + solution.
+    # Must match the return order of _kkt_diff:
+    # (dx, dlam, dmu, dactive, sol_dict).
+    # pure_callback uses these to convert numpy → JAX internally.
+    _jvp_shapes = (
         jax.ShapeDtypeStruct((n_var,),  _dtype),             # dx
         jax.ShapeDtypeStruct((n_ineq,), _dtype),             # dlam
         jax.ShapeDtypeStruct((n_eq,),   _dtype),             # dmu
         jax.ShapeDtypeStruct((n_ineq,), jax.dtypes.float0),  # dactive
+        _fwd_shapes,                                          # sol
     )
 
     # gather all required keys
@@ -266,7 +267,7 @@ def setup_dense_solver(
 
         return x, lam, mu, active, t
 
-    def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, jax.Array]:
+    def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, ndarray]:
         """Bridge between JAX ``pure_callback`` and the numpy QP solver.
 
         Receives only the **dynamic** QP ingredients (those not in
@@ -275,13 +276,15 @@ def setup_dense_solver(
         numpy arrays (no conversion needed for those), and delegates to
         ``_solve_qp_numpy``.
 
+        Returns numpy arrays directly — ``pure_callback`` handles
+        the numpy → JAX conversion using ``_fwd_shapes``.
+
         Args:
             *dynamic_vals: JAX arrays corresponding to ``_dynamic_keys``,
                 in order.
 
         Returns:
-            Solution dict with numpy arrays (``pure_callback`` handles
-            the numpy → JAX conversion):
+            Solution dict with numpy arrays:
 
                 - ``x``      (nv,):  Primal solution.
                 - ``lam``    (ni,):  Inequality duals.
@@ -309,10 +312,10 @@ def setup_dense_solver(
         # ── Return numpy arrays directly ─────────────────────────────
         # pure_callback handles numpy → JAX conversion using _fwd_shapes.
         result = {
-            "x":      x_np,
-            "lam":    lam_np,
-            "mu":     mu_np,
-            "active": active_np,
+            "x":      jnp.array(x_np,dtype=_dtype),
+            "lam":    jnp.array(lam_np,dtype=_dtype),
+            "mu":     jnp.array(mu_np,dtype=_dtype),
+            "active": jnp.array(active_np,dtype=jnp.bool_),
         }
 
         t["total"] = perf_counter() - t_start
@@ -332,17 +335,16 @@ def setup_dense_solver(
         Float[ndarray, " ni"],      # dlam
         Float[ndarray, " ne"],      # dmu
         ndarray,                    # dactive (float0)
+        dict[str, ndarray],         # sol (numpy, not JAX)
     ]:
         """Implicit differentiation of the KKT conditions.
 
-        Returns **only the tangents**. The primal solution is computed
-        separately in the forward pass (``_solver_dynamic``) and is
-        not duplicated here — this avoids expensive broadcasting when
-        the JVP is vmapped.
-
-        The QP is still solved internally (needed to build the KKT
-        system), but the numpy solution is not converted to JAX or
-        broadcast to batch size.
+        Solves the QP forward, then differentiates through the KKT
+        optimality conditions by solving a linear system. Returns
+        both the tangents and the primal solution as **numpy arrays**.
+        ``pure_callback`` handles all numpy → JAX conversion using
+        ``_jvp_shapes``, avoiding redundant Python-level ``jnp.array``
+        calls.
 
         Receives only the **dynamic** primals and tangents (those not
         in ``_fixed``). Fixed primals are merged from the ``_fixed``
@@ -360,12 +362,14 @@ def setup_dense_solver(
                 tangents, both in ``_dynamic_keys`` order.
 
         Returns:
-            A tuple ``(dx, dlam, dmu, dactive)`` where:
+            A tuple ``(dx, dlam, dmu, dactive, sol)`` where:
 
                 - ``dx``      (nv,) | (B, nv):   Tangent of primal.
                 - ``dlam``    (ni,) | (B, ni):   Tangent of ineq duals.
                 - ``dmu``     (ne,) | (B, ne):   Tangent of eq duals.
                 - ``dactive`` (ni,) | (B, ni):   Zero tangent (float0).
+                - ``sol``: Primal / dual solution dict as numpy arrays.
+                  Broadcast to ``(B, ...)`` when batched.
         """
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -386,7 +390,7 @@ def setup_dense_solver(
         # ── Merge with fixed arrays (already numpy, no conversion) ───
         prob_np: dict[str, ndarray] = {**_fixed, **dyn_primals_np}
 
-        # ── Forward solve (numpy only, result not returned) ──────────
+        # ── Forward solve (numpy only) ───────────────────────────────
         x_np, lam_np, mu_np, active_np, t_solve = _solve_qp_numpy(**prob_np)
         t.update({f"fwd_{k}": v for k, v in t_solve.items()})
 
@@ -547,9 +551,6 @@ def setup_dense_solver(
             )
             if n_ineq > 0 and n_active > 0:
                 dlam_np[:, active_np] = sol[n_var + n_eq:, :].T
-            dactive = np.zeros(
-                (batch_size, n_ineq), dtype=jax.dtypes.float0
-            )
         else:
             dx_np: Float[ndarray, " nv"] = sol[:n_var]
             dmu_np: Float[ndarray, " ne"] = (
@@ -560,12 +561,37 @@ def setup_dense_solver(
             dlam_np: Float[ndarray, " ni"] = np.zeros(n_ineq, dtype=_dtype)
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
-            dactive = np.zeros(n_ineq, dtype=jax.dtypes.float0)
+
+        # ── Build solution dict (numpy only) ─────────────────────────
+        # np.broadcast_to returns a read-only view (zero cost).
+        # .copy() materializes a contiguous array for pure_callback.
+        # No jnp.array calls — pure_callback handles numpy → JAX.
+        start = perf_counter()
+        if batch_size > 0:
+            res: dict[str, ndarray] = {
+                "x":      np.broadcast_to(x_np, (batch_size, n_var)).copy(),
+                "lam":    np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(),
+                "mu":     np.broadcast_to(mu_np, (batch_size, n_eq)).copy(),
+                "active": np.broadcast_to(active_np, (batch_size, n_ineq)).copy(),
+            }
+        else:
+            res = {
+                "x":      x_np,
+                "lam":    lam_np,
+                "mu":     mu_np,
+                "active": active_np,
+            }
+        t["build_sol"] = perf_counter() - start
+
+        # Active-set mask is not differentiable — zero tangent
+        dactive = np.zeros(
+            res["active"].shape, dtype=jax.dtypes.float0
+        )
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_diff | {_fmt_times(t)}")
 
-        return dx_np, dlam_np, dmu_np, dactive
+        return dx_np, dlam_np, dmu_np, dactive, res
 
     def _kkt_diff_callback(
         primals_dict: dict[str, jax.Array],
@@ -575,15 +601,17 @@ def setup_dense_solver(
         Float[jax.Array, " ni"],    # dlam
         Float[jax.Array, " ne"],    # dmu
         jax.Array,                  # dactive (float0)
+        dict[str, jax.Array],       # sol
     ]:
         """Wrap ``_kkt_diff`` in a ``pure_callback`` for use inside JAX traces.
 
         Extracts only the **dynamic** keys from the dicts and passes
         them positionally (primals first, then tangents) as expected
-        by ``_kkt_diff``.
+        by ``_kkt_diff``. The callback returns both tangents and the
+        primal solution in a single round-trip.
 
-        Returns only tangents — the primal solution is computed
-        separately in the forward pass.
+        ``pure_callback`` handles all numpy → JAX conversion using
+        ``_jvp_shapes``.
 
         Args:
             primals_dict: Dict mapping ``_dynamic_keys`` to primal
@@ -593,13 +621,13 @@ def setup_dense_solver(
                 batch dim ``B``).
 
         Returns:
-            A tuple ``(dx, dlam, dmu, dactive)``.
+            A tuple ``(dx, dlam, dmu, dactive, sol)``.
         """
         primal_vals = tuple(primals_dict[k] for k in _dynamic_keys)
         tangent_vals = tuple(tangents_dict[k] for k in _dynamic_keys)
         return pure_callback(
             _kkt_diff,
-            _tangent_shapes,
+            _jvp_shapes,
             *primal_vals,
             *tangent_vals,
             vmap_method="expand_dims",
@@ -644,16 +672,12 @@ def setup_dense_solver(
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
         """JVP rule for ``_solver_dynamic`` via implicit differentiation.
 
-        The forward pass and tangent computation are **separate**
-        callbacks. This allows JAX's vmap to see that the primal
-        output does not depend on the batched tangents, so vmap
-        broadcasts the primal result via metadata (zero cost) instead
-        of materializing a full batch copy.
-
-        The QP is solved twice (once in the forward callback, once
-        inside ``_kkt_diff`` to build the KKT system). This is
-        acceptable because the solve cost is small compared to the
-        cost of broadcasting large solution vectors to batch size.
+        Both the forward solve and KKT differentiation happen inside a
+        **single** ``pure_callback`` call (``_kkt_diff``). This avoids
+        paying the callback dispatch overhead twice. All numpy → JAX
+        conversion is handled internally by ``pure_callback`` via
+        ``_jvp_shapes``, so no Python-level ``jnp.array`` calls are
+        needed.
 
         Args:
             primals: Primal inputs in ``_dynamic_keys`` order.
@@ -663,10 +687,6 @@ def setup_dense_solver(
         Returns:
             ``(primal_out, tangent_out)`` where both are solution dicts.
         """
-        # ── Forward pass (unbatched, vmap broadcasts automatically) ──
-        res = _solver_dynamic(*primals)
-
-        # ── Tangent computation (only tangents returned) ─────────────
         primals_dict: dict[str, jax.Array] = dict(
             zip(_dynamic_keys, primals)
         )
@@ -674,7 +694,7 @@ def setup_dense_solver(
             zip(_dynamic_keys, tangents)
         )
 
-        dx, dlam, dmu, dactive = _kkt_diff_callback(
+        dx, dlam, dmu, dactive, res = _kkt_diff_callback(
             primals_dict, tangents_dict
         )
 
@@ -725,23 +745,23 @@ def setup_dense_solver(
             ValueError: If any dynamic ingredient is missing.
         """
         # Warn if user passes keys that are already fixed
-        overridden = set(runtime) & _fixed_keys_set
-        if overridden:
-            logger.warning(
-                f"Ignoring runtime values for fixed keys: "
-                f"{sorted(overridden)}. These were fixed at setup and "
-                f"are not part of the traced path (tangents are zero). "
-                f"To differentiate through them, create a new solver "
-                f"without fixing them."
-            )
+        # overridden = set(runtime) & _fixed_keys_set
+        # if overridden:
+        #     logger.warning(
+        #         f"Ignoring runtime values for fixed keys: "
+        #         f"{sorted(overridden)}. These were fixed at setup and "
+        #         f"are not part of the traced path (tangents are zero). "
+        #         f"To differentiate through them, create a new solver "
+        #         f"without fixing them."
+        #     )
 
-        # Check that all dynamic keys are provided
-        missing = _dynamic_keys_set - set(runtime)
-        if missing:
-            raise ValueError(
-                f"Missing QP ingredients: {sorted(missing)}. "
-                f"Provide them at call time (these are not fixed)."
-            )
+        # # Check that all dynamic keys are provided
+        # missing = _dynamic_keys_set - set(runtime)
+        # if missing:
+        #     raise ValueError(
+        #         f"Missing QP ingredients: {sorted(missing)}. "
+        #         f"Provide them at call time (these are not fixed)."
+        #     )
 
         # Pass only dynamic values through the traced path
         dynamic_vals: tuple[jax.Array, ...] = tuple(

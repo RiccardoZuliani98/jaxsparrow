@@ -1,14 +1,14 @@
 import jax.numpy as jnp
 import jax
-from jax import jvp, vmap, jit
-import matplotlib.pyplot as plt
+from jax import jvp, vmap
+from time import perf_counter
 
 import logging
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
 
 jax.config.update("jax_enable_x64", True)
 
-horizon = 30
+horizon = 50
 
 A = jnp.array([[1,1],[0,1]])
 B = jnp.array([[0],[1]])
@@ -26,7 +26,6 @@ N = horizon
 
 nz = (N+1)*nx + N*nu
 
-# cost
 P = jnp.diag(
     jnp.hstack((
         jnp.ones((N+1)*nx) * cost_state,
@@ -36,7 +35,6 @@ P = jnp.diag(
 
 q = jnp.zeros(nz)
 
-# inequality constraints
 G = jnp.vstack((jnp.eye(nz), -jnp.eye(nz)))
 
 h = jnp.hstack((
@@ -46,126 +44,76 @@ h = jnp.hstack((
     -jnp.ones(N*nu)*umin
 ))
 
-# subdiagonal shift matrix
 S = jnp.diag(jnp.ones(N), -1)
-
-# state part
 Ax = jnp.kron(jnp.eye(N+1), jnp.eye(nx)) + jnp.kron(S, -A)
-
-# input part
 Su = jnp.vstack((jnp.zeros((1, N)), jnp.eye(N)))
 Au = jnp.kron(Su, -B)
-
 Aeq = jnp.hstack((Ax, Au))
 
-# parameterized RHS
 def beq(x_init):
-    return jnp.hstack((
-        x_init,
-        jnp.zeros(N*nx)
-    ))
+    return jnp.hstack((x_init, jnp.zeros(N*nx)))
 
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
 from solver_dense.solver_dense import setup_dense_solver
-from time import perf_counter
 
 epsilon = 0.1
-
-x0 = jnp.array([-3.0, -1.0])
+x0 = jnp.array([-2.0, -1.0])
 dx0 = jnp.array([epsilon, 0.0])
 
 solver = setup_dense_solver(n_var=nz, n_ineq=nineq, n_eq=neq)
-solve_mpc = jit(lambda x_init: solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h))
 
-# ── Vmapped JVP: evaluate both +dx0 and -dx0 in one call ────────
-jvp_func_base = lambda x0, dx0: jvp(solve_mpc, (x0,), (dx0,))
-jvp_func = jit(vmap(jvp_func_base, in_axes=(None, 0)))
+def solve_mpc(x_init):
+    return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
 
-perturbations = jnp.vstack((dx0, -dx0))          # (2, nx)
+# ── JVP + vmap setup ────────────────────────────────────────────
+def jvp_func_base(x0, dx0):
+    return jvp(solve_mpc, (x0,), (dx0,))
+
+jvp_func = vmap(jvp_func_base, in_axes=(None, 0))
+
+perturbations = jnp.vstack((dx0, -dx0))  # (2, nx)
+
+# ── Warmup (triggers tracing / compilation) ──────────────────────
+solve_mpc(x0)
+jvp_func(x0, perturbations)
+
+# ── Timed forward solves ─────────────────────────────────────────
+print("Forward solves:")
+n_runs = 5
+key = jax.random.PRNGKey(42)
+keys = jax.random.split(key, n_runs)
+
+for i in range(n_runs):
+    xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
+    start = perf_counter()
+    sol = solve_mpc(xi)
+    elapsed = perf_counter() - start
+    print(f"  Run {i}: {elapsed:.6f}s")
+
+# ── Timed vmapped JVP ───────────────────────────────────────────
+print("\nVmapped JVP:")
+for i in range(n_runs):
+    xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
+    di = jnp.vstack((dx0, -dx0)) * (i + 1)  # different each run
+    start = perf_counter()
+    sol_batch, dsol_batch = jvp_func(xi, di)
+    elapsed = perf_counter() - start
+    print(f"  Run {i}: {elapsed:.6f}s")
+
+# ── Verify correctness ──────────────────────────────────────────
+print("\nCorrectness check:")
 sol_batch, dsol_batch = jvp_func(x0, perturbations)
-start = perf_counter()
-sol_batch, dsol_batch = jvp_func(x0, perturbations)
-print(f"Elapsed: {perf_counter()-start}")
-
-# sol_batch["x"]  has shape (2, nz) — but both rows are the same
-# dsol_batch["x"] has shape (2, nz) — one for +dx0, one for -dx0
-
-# ── Extract base solution (same for both perturbation dirs) ──────
-x_opt_flat = sol_batch["x"][0]                    # (nz,)
-x_opt = x_opt_flat[:(N+1)*nx].reshape(-1, nx).T   # (nx, N+1)
-x1_opt, x2_opt = x_opt[0], x_opt[1]
-
-# ── Extract linearized tangents for +dx0 and -dx0 ───────────────
-labels = ["+dx0", "-dx0"]
-dsol_x = dsol_batch["x"]                          # (2, nz)
-
-# ── Compute true perturbed solutions for comparison ──────────────
-sol_plus  = solve_mpc(x0)
-start = perf_counter()
-sol_plus  = solve_mpc(x0 + dx0)
-print(f"Elapsed: {perf_counter()-start}")
-start = perf_counter()
+sol_plus = solve_mpc(x0 + dx0)
 sol_minus = solve_mpc(x0 - dx0)
-print(f"Elapsed: {perf_counter()-start}")
-perturbed_sols = [sol_plus, sol_minus]
-signs = [1.0, -1.0]
 
-# ── Helper: reshape state trajectory ─────────────────────────────
-def reshape_traj(z_flat):
-    return z_flat[:(N+1)*nx].reshape(-1, nx).T     # (nx, N+1)
-
-# ── Compute errors ───────────────────────────────────────────────
-print("=" * 60)
-for i, label in enumerate(labels):
-    dx_jvp = dsol_x[i] / epsilon                   # normalized tangent
-    dx_fd  = (perturbed_sols[i]["x"] - x_opt_flat) / epsilon
+for i, (label, sol_true) in enumerate([("+dx0", sol_plus), ("-dx0", sol_minus)]):
+    x_opt = sol_batch["x"][0]
+    dx_jvp = dsol_batch["x"][i] / epsilon
+    dx_fd = (sol_true["x"] - x_opt) / epsilon
     rel_err = jnp.linalg.norm(dx_jvp - dx_fd) / jnp.linalg.norm(dx_fd)
     cos_sim = jnp.dot(dx_jvp, dx_fd) / (
         jnp.linalg.norm(dx_jvp) * jnp.linalg.norm(dx_fd)
     )
-    print(f"[{label}]  Relative error: {rel_err:.6e},  "
-          f"Cosine similarity: {cos_sim:.10f}")
-print("=" * 60)
-
-# ── Plot ─────────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-for i, (label, sign) in enumerate(zip(labels, signs)):
-    ax = axes[i]
-
-    # base trajectory
-    ax.plot(x1_opt, x2_opt, 'k-o', markersize=3, label='Nominal')
-
-    # true perturbed trajectory
-    traj_true = reshape_traj(perturbed_sols[i]["x"])
-    ax.plot(traj_true[0], traj_true[1], 's--', markersize=3,
-            label=f'Perturbed ({label})')
-
-    # linearized approximation
-    traj_approx = reshape_traj(x_opt_flat + dsol_x[i])
-    ax.plot(traj_approx[0], traj_approx[1], '^:', markersize=3,
-            label=f'Linear approx ({label})')
-
-    # cosmetics
-    dx_jvp = dsol_x[i] / epsilon
-    dx_fd  = (perturbed_sols[i]["x"] - x_opt_flat) / epsilon
-    rel_err = jnp.linalg.norm(dx_jvp - dx_fd) / jnp.linalg.norm(dx_fd)
-    cos_sim = jnp.dot(dx_jvp, dx_fd) / (
-        jnp.linalg.norm(dx_jvp) * jnp.linalg.norm(dx_fd)
-    )
-    ax.set_title(f'Perturbation {label}\n'
-                 f'rel err = {rel_err:.2e}, cos sim = {cos_sim:.8f}')
-    ax.set_xlabel('$x_1$')
-    ax.set_ylabel('$x_2$')
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-fig.suptitle(
-    f'Vmapped JVP: MPC trajectories (horizon={N}, '
-    f'$\\epsilon$={epsilon})',
-    fontsize=13,
-)
-fig.tight_layout()
-plt.show()
+    print(f"  [{label}] rel_err={rel_err:.6e}  cos_sim={cos_sim:.10f}")
