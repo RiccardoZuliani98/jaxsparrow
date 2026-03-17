@@ -24,6 +24,8 @@ from .solver_dense_options import (
 #   na  = n_active — number of active inequality constraints (runtime)
 #   B   = batch   — batch dimension (JVP vmap path only)
 
+#TODO: solvers and differentiator algorithms should be taken from a libraryù
+# and should have their own custom options
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
