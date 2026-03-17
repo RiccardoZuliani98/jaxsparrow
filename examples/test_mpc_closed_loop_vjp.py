@@ -145,11 +145,15 @@ elapsed_vjp, elapsed_jvp = [], []
 key = jax.random.PRNGKey(42)
 keys = jax.random.split(key, N_RUNS)
 
+solver.timings.reset()
+solver_jvp.timings.reset()
+
 for i in range(N_RUNS):
     xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
     start = perf_counter()
     solve_and_differentiate(xi)
-    elapsed_vjp.append(perf_counter() - start)
+    elapsed = perf_counter()
+    elapsed_vjp.append(elapsed - start)
 
 e_mat = jnp.eye(x0.shape[0],dtype=x0.dtype)
 
@@ -157,8 +161,10 @@ for i in range(N_RUNS):
     xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
     start = perf_counter()
     jvp_func(xi,e_mat)
-    elapsed_jvp.append(perf_counter() - start)
+    elapsed = perf_counter()
+    elapsed_jvp.append(elapsed - start)
 
-print(f"VJP: {jnp.mean(jnp.array(elapsed_vjp))}, JVP: {jnp.mean(jnp.array(elapsed_jvp))}")
+print(f"VJP: {jnp.sum(jnp.array(elapsed_vjp))}, JVP: {jnp.sum(jnp.array(elapsed_jvp))}")
 
 print(solver.timings.summary())
+print(solver_jvp.timings.summary())
