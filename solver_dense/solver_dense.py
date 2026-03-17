@@ -1,4 +1,4 @@
-from jax import custom_jvp, pure_callback
+from jax import custom_jvp, pure_callback, Array
 import jax.numpy as jnp
 from time import perf_counter
 import numpy as np
@@ -10,7 +10,6 @@ from numpy import ndarray
 from jaxtyping import Float, Bool
 
 from .parsing_utils import parse_options
-from .solver_dense_types import DenseProblemIngredients, DenseProblemIngredientsNP
 from .solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
@@ -34,11 +33,23 @@ _EXPECTED_NDIM: dict[str, int] = {
 }
 
 
+def _fmt_times(t: dict[str, float]) -> str:
+    """Format a timing dict into a single-line summary string.
+
+    Args:
+        t: Dict mapping stage names to elapsed seconds.
+
+    Returns:
+        Formatted string, e.g. ``"solve=1.2e-03  active=4.5e-05"``.
+    """
+    return "  ".join(f"{k}={v:.3e}s" for k, v in t.items())
+
+
 def setup_dense_solver(
     n_var: int,
     n_ineq: int = 0,
     n_eq: int = 0,
-    fixed_elements: Optional[DenseProblemIngredients] = None,
+    fixed_elements: Optional[dict[str,ndarray]] = None,
     options: Optional[SolverOptions] = None,
 ):
     """Set up a differentiable dense QP solver.
@@ -84,10 +95,10 @@ def setup_dense_solver(
     _dtype = _options_parsed['dtype']
 
     # parse and process fixed elements if present
-    _fixed: DenseProblemIngredientsNP = {}
+    _fixed: dict[str,ndarray] = {}
     if fixed_elements is not None:
         _fixed = cast(
-            DenseProblemIngredientsNP,
+            dict[str,ndarray],
             {k: np.array(v, dtype=_dtype).squeeze() for k, v in fixed_elements.items()}
         )
 
@@ -127,23 +138,14 @@ def setup_dense_solver(
     _dynamic_keys_set = set(_dynamic_keys)
     _fixed_keys_set = set(_fixed.keys())
 
+    _n_dyn = len(_dynamic_keys)
+
     logger.info(
         f"Setting up QP with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
     )
     logger.info(f"Fixed variables: {_fixed_keys_set or 'none'}")
     logger.info(f"Dynamic variables: {_dynamic_keys_set or 'none'}")
-
-    def _fmt_times(t: dict[str, float]) -> str:
-        """Format a timing dict into a single-line summary string.
-
-        Args:
-            t: Dict mapping stage names to elapsed seconds.
-
-        Returns:
-            Formatted string, e.g. ``"solve=1.2e-03  active=4.5e-05"``.
-        """
-        return "  ".join(f"{k}={v:.3e}s" for k, v in t.items())
 
     # =================================================================
     # SETUP SOLVER
@@ -210,15 +212,17 @@ def setup_dense_solver(
             )
 
         # Validate shapes against declared problem dimensions
-        assert kwargs["P"].shape == (n_var, n_var)
-        assert kwargs["q"].shape == (n_var,)
-        if n_eq > 0:
-            assert kwargs["A"].shape == (n_eq, n_var)
-            assert kwargs["b"].shape == (n_eq,)
-        if n_ineq > 0:
-            assert kwargs["G"].shape == (n_ineq, n_var)
-            assert kwargs["h"].shape == (n_ineq,)
+        if _options_parsed["debug"]:
+            assert kwargs["P"].shape == (n_var, n_var)
+            assert kwargs["q"].shape == (n_var,)
+            if n_eq > 0:
+                assert kwargs["A"].shape == (n_eq, n_var)
+                assert kwargs["b"].shape == (n_eq,)
+            if n_ineq > 0:
+                assert kwargs["G"].shape == (n_ineq, n_var)
+                assert kwargs["h"].shape == (n_ineq,)
 
+        # preallocate dictionary with computation times
         t: dict[str, float] = {}
 
         # Build qpsolvers Problem
@@ -267,7 +271,7 @@ def setup_dense_solver(
 
         return x, lam, mu, active, t
 
-    def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, ndarray]:
+    def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, Array]:
         """Bridge between JAX ``pure_callback`` and the numpy QP solver.
 
         Receives only the **dynamic** QP ingredients (those not in
@@ -310,13 +314,15 @@ def setup_dense_solver(
         t.update(t_solve)
 
         # ── Return numpy arrays directly ─────────────────────────────
-        # pure_callback handles numpy → JAX conversion using _fwd_shapes.
+        # pure_callback handles numpy → JAX conversion using _fwd_shapes.ù
+        start = perf_counter()
         result = {
             "x":      jnp.array(x_np,dtype=_dtype),
             "lam":    jnp.array(lam_np,dtype=_dtype),
             "mu":     jnp.array(mu_np,dtype=_dtype),
             "active": jnp.array(active_np,dtype=jnp.bool_),
         }
+        t["convert_to_jax"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_solve_qp | {_fmt_times(t)}")
@@ -373,11 +379,10 @@ def setup_dense_solver(
         """
         t_start = perf_counter()
         t: dict[str, float] = {}
-        n_dyn = len(_dynamic_keys)
 
         # ── Split positional args into dynamic primals and tangents ──
-        dyn_primal_vals = args[:n_dyn]
-        dyn_tangent_vals = args[n_dyn:]
+        dyn_primal_vals = args[:_n_dyn]
+        dyn_tangent_vals = args[_n_dyn:]
 
         # ── Convert dynamic primals to numpy, squeeze batch-1 dims ───
         start = perf_counter()
@@ -745,23 +750,24 @@ def setup_dense_solver(
             ValueError: If any dynamic ingredient is missing.
         """
         # Warn if user passes keys that are already fixed
-        # overridden = set(runtime) & _fixed_keys_set
-        # if overridden:
-        #     logger.warning(
-        #         f"Ignoring runtime values for fixed keys: "
-        #         f"{sorted(overridden)}. These were fixed at setup and "
-        #         f"are not part of the traced path (tangents are zero). "
-        #         f"To differentiate through them, create a new solver "
-        #         f"without fixing them."
-        #     )
+        if _options_parsed["debug"]:
+            overridden = set(runtime) & _fixed_keys_set
+            if overridden:
+                logger.warning(
+                    f"Ignoring runtime values for fixed keys: "
+                    f"{sorted(overridden)}. These were fixed at setup and "
+                    f"are not part of the traced path (tangents are zero). "
+                    f"To differentiate through them, create a new solver "
+                    f"without fixing them."
+                )
 
-        # # Check that all dynamic keys are provided
-        # missing = _dynamic_keys_set - set(runtime)
-        # if missing:
-        #     raise ValueError(
-        #         f"Missing QP ingredients: {sorted(missing)}. "
-        #         f"Provide them at call time (these are not fixed)."
-        #     )
+            # Check that all dynamic keys are provided
+            missing = _dynamic_keys_set - set(runtime)
+            if missing:
+                raise ValueError(
+                    f"Missing QP ingredients: {sorted(missing)}. "
+                    f"Provide them at call time (these are not fixed)."
+                )
 
         # Pass only dynamic values through the traced path
         dynamic_vals: tuple[jax.Array, ...] = tuple(
