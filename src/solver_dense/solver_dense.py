@@ -24,8 +24,11 @@ from src.solver_dense.solver_dense_options import (
 #   na  = n_active — number of active inequality constraints (runtime)
 #   B   = batch   — batch dimension (JVP vmap path only)
 
-#TODO: solvers and differentiator algorithms should be taken from a libraryù
-# and should have their own custom options
+#TODO: solvers and differentiator algorithms should be taken from a library and 
+# should have their own custom options
+#TODO: I need to verify if vmap is leveraged when computing closed-loop derivatives 
+# of multiple parameters.
+#TODO: should we create a vjp mode?
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
