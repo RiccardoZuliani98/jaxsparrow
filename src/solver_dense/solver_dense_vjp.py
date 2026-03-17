@@ -1,4 +1,4 @@
-from jax import custom_jvp, pure_callback, Array
+from jax import custom_jvp, custom_vjp, pure_callback, Array
 import jax.numpy as jnp
 from time import perf_counter
 import numpy as np
@@ -26,6 +26,9 @@ from src.solver_dense.solver_dense_options import (
 
 #TODO: solvers and differentiator algorithms should be taken from a library and 
 # should have their own custom options
+#TODO: I need to verify if vmap is leveraged when computing closed-loop derivatives 
+# of multiple parameters.
+#TODO: should we create a vjp mode?
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
@@ -126,6 +129,40 @@ def setup_dense_solver(
     _fixed_keys_set = set(_fixed.keys())
 
     _n_dyn = len(_dynamic_keys)
+
+    # Expected shapes for each QP ingredient (unbatched).
+    # Used for VJP backward output shapes and batch detection.
+    _expected_shapes: dict[str, tuple[int, ...]] = {
+        "P": (n_var, n_var),
+        "q": (n_var,),
+        "A": (n_eq, n_var),
+        "b": (n_eq,),
+        "G": (n_ineq, n_var),
+        "h": (n_ineq,),
+    }
+
+    # Number of required keys (used for arg layout in VJP callbacks).
+    _n_req = len(_required_keys)
+
+    # Shapes for the VJP forward callback: solution + active set +
+    # all required problem matrices (already merged with fixed).
+    # Returned as a flat tuple so residuals carry everything the
+    # backward needs — no re-merging with _fixed required.
+    _vjp_fwd_shapes = (
+        jax.ShapeDtypeStruct((n_var,),  _dtype),                          # x
+        jax.ShapeDtypeStruct((n_ineq,), _dtype),                          # lam
+        jax.ShapeDtypeStruct((n_eq,),   _dtype),                          # mu
+        jax.ShapeDtypeStruct((n_ineq,), _options_parsed["bool_dtype"]),   # active
+        *(jax.ShapeDtypeStruct(_expected_shapes[k], _dtype)               # prob
+          for k in _required_keys),
+    )
+
+    # Shapes for the VJP backward callback: one cotangent per dynamic key,
+    # matching the shape of the corresponding primal input.
+    _vjp_bwd_shapes = tuple(
+        jax.ShapeDtypeStruct(_expected_shapes[k], _dtype)
+        for k in _dynamic_keys
+    )
 
     # Mutable warmstart slot. Written by solver() before each call,
     # read by _solve_qp_numpy() inside the callback, cleared after use.
@@ -299,10 +336,6 @@ def setup_dense_solver(
 
         # ── Convert only dynamic JAX arrays to numpy ─────────────────
         start = perf_counter()
-        # dynamic_np = {
-        #     k: np.asarray(v, dtype=_dtype).squeeze()
-        #     for k, v in zip(_dynamic_keys, dynamic_vals)
-        # }
         dynamic_np: dict[str, ndarray] = {}
         for k, v in zip(_dynamic_keys, dynamic_vals):
             arr = np.asarray(v, dtype=_dtype)
@@ -336,8 +369,64 @@ def setup_dense_solver(
     #endregion
 
     # =================================================================
-    # SETUP DIFFERENTIATOR
+    # FORWARD SOLVE FOR VJP PATH
     # =================================================================
+
+    #region
+    def _solve_qp_vjp_fwd(*dynamic_vals: jax.Array) -> tuple:
+        """Forward QP solve that returns both solution and problem data.
+
+        Converts dynamic JAX arrays to numpy **once**, merges with
+        ``_fixed``, solves the QP, and returns the solution, active
+        set, **and** all merged problem matrices as a flat tuple.
+
+        The merged problem matrices are returned so that the VJP
+        backward pass can receive them as residuals and feed them
+        directly to the adjoint solve — no second conversion of
+        ``dynamic_vals`` and no re-merging with ``_fixed`` is needed.
+
+        Args:
+            *dynamic_vals: JAX arrays corresponding to
+                ``_dynamic_keys``, in order.
+
+        Returns:
+            A flat tuple matching ``_vjp_fwd_shapes``::
+
+                (x, lam, mu, active, prob[0], prob[1], ...)
+
+            where ``prob[i]`` are the merged problem matrices in
+            ``_required_keys`` order.
+        """
+        t_start = perf_counter()
+        t: dict[str, float] = {}
+
+        # ── Convert only dynamic JAX arrays to numpy ─────────────────
+        start = perf_counter()
+        dynamic_np: dict[str, ndarray] = {}
+        for k, v in zip(_dynamic_keys, dynamic_vals):
+            arr = np.asarray(v, dtype=_dtype)
+            if arr.ndim > _EXPECTED_NDIM[k]:
+                arr = arr[0]
+            dynamic_np[k] = arr
+        t["convert_to_numpy"] = perf_counter() - start
+
+        # ── Merge with pre-stored fixed arrays (no conversion) ───────
+        prob_np = {**_fixed, **dynamic_np}
+
+        # ── Solve in numpy ───────────────────────────────────────────
+        x_np, lam_np, mu_np, active_np, t_solve = _solve_qp_numpy(**prob_np)
+        t.update(t_solve)
+
+        t["total"] = perf_counter() - t_start
+        logger.info(f"_solve_qp_vjp_fwd | {fmt_times(t)}")
+
+        # ── Return flat tuple: solution + active + merged problem ────
+        return (
+            x_np, lam_np, mu_np, active_np,
+            *(prob_np[k] for k in _required_keys),
+        )
+
+    #endregion
 
     #region
     def _kkt_diff(*args: ndarray) -> tuple[
@@ -389,10 +478,6 @@ def setup_dense_solver(
 
         # ── Convert dynamic primals to numpy, squeeze batch-1 dims ───
         start = perf_counter()
-        # dyn_primals_np: dict[str, ndarray] = {
-        #     k: np.asarray(v, dtype=_dtype).squeeze()
-        #     for k, v in zip(_dynamic_keys, dyn_primal_vals)
-        # }
         dyn_primals_np: dict[str, ndarray] = {}
         for k, v in zip(_dynamic_keys, dyn_primal_vals):
             arr = np.asarray(v, dtype=_dtype)
@@ -644,13 +729,183 @@ def setup_dense_solver(
     #endregion
 
     # =================================================================
+    # SETUP VJP DIFFERENTIATOR
+    # =================================================================
+
+    #region
+    def _kkt_vjp(*args: ndarray) -> tuple[ndarray, ...]:
+        """Adjoint (VJP) differentiation of the KKT conditions.
+
+        Given the pre-merged problem matrices, forward solution,
+        active set, and output cotangents, solves the adjoint KKT
+        system and computes parameter cotangents via implicit
+        differentiation.
+
+        The problem matrices are received **already merged** (dynamic
+        + fixed) from the VJP forward pass residuals — no second
+        conversion of ``dynamic_vals`` or re-merging with ``_fixed``
+        is performed here.
+
+        The adjoint system exploits the symmetry of the KKT matrix:
+        because ``M = M^T``, the adjoint linear system is identical
+        to the forward one, with the cotangent vector as the RHS.
+
+        After solving for the adjoint variables ``v = M^{-1} g``, the
+        parameter cotangents are obtained analytically::
+
+            g_P = -outer(v_x, x)
+            g_q = -v_x
+            g_A = -(outer(mu, v_x) + outer(v_mu, x))
+            g_b = v_mu
+            g_G[active] = -(outer(lam[active], v_x)
+                            + outer(v_lam_a, x))
+            g_h[active] = v_lam_a
+
+        Args:
+            *args: ``_n_req + 7`` arrays laid out as:
+                - ``args[:_n_req]``:       Merged problem matrices
+                  (``_required_keys`` order).
+                - ``args[_n_req]``:        ``x``      (nv,)
+                - ``args[_n_req + 1]``:    ``lam``    (ni,)
+                - ``args[_n_req + 2]``:    ``mu``     (ne,)
+                - ``args[_n_req + 3]``:    ``active`` (ni,) bool
+                - ``args[_n_req + 4]``:    ``g_x``    (nv,)
+                - ``args[_n_req + 5]``:    ``g_lam``  (ni,)
+                - ``args[_n_req + 6]``:    ``g_mu``   (ne,)
+
+        Returns:
+            A tuple of numpy arrays — one cotangent per **dynamic**
+            key, in ``_dynamic_keys`` order.
+        """
+        t_start = perf_counter()
+        t: dict[str, float] = {}
+
+        # ── Unpack arguments ─────────────────────────────────────────
+        # Problem matrices (already merged, no conversion needed)
+        prob_np: dict[str, ndarray] = {
+            k: np.asarray(args[i], dtype=_dtype)
+            for i, k in enumerate(_required_keys)
+        }
+        off = _n_req
+        x_np      = np.asarray(args[off],     dtype=_dtype)
+        lam_np    = np.asarray(args[off + 1], dtype=_dtype)
+        mu_np     = np.asarray(args[off + 2], dtype=_dtype)
+        active_np = np.asarray(args[off + 3], dtype=np.bool_)
+        g_x       = np.asarray(args[off + 4], dtype=_dtype)
+        g_lam     = np.asarray(args[off + 5], dtype=_dtype)
+        g_mu      = np.asarray(args[off + 6], dtype=_dtype)
+
+        # ── Retrieve problem matrices ────────────────────────────────
+        P_np: Float[ndarray, "nv nv"] = prob_np["P"]
+        A_np: Float[ndarray, "ne nv"] = prob_np.get(
+            "A", np.empty((0, n_var), dtype=_dtype)
+        )
+        G_np: Float[ndarray, "ni nv"] = prob_np.get(
+            "G", np.empty((0, n_var), dtype=_dtype)
+        )
+
+        # ── Build KKT matrix LHS (symmetric → adjoint = forward) ────
+        start = perf_counter()
+
+        n_active = int(np.sum(active_np))
+        H_parts: list[Float[ndarray, "_ nv"]] = []
+        if n_eq > 0:
+            H_parts.append(A_np)
+        if n_ineq > 0 and n_active > 0:
+            H_parts.append(G_np[active_np, :])
+
+        if H_parts:
+            H_np: Float[ndarray, "nh nv"] = np.vstack(H_parts)
+        else:
+            H_np = np.empty((0, n_var), dtype=_dtype)
+
+        n_h = H_np.shape[0]
+
+        lhs: Float[ndarray, "nv_nh nv_nh"] = np.block([
+            [P_np,  H_np.T],
+            [H_np,  np.zeros((n_h, n_h), dtype=_dtype)],
+        ])
+
+        # ── Build RHS from cotangent vectors ─────────────────────────
+        rhs_parts: list[Float[ndarray, " _"]] = [g_x]
+        if n_eq > 0:
+            rhs_parts.append(g_mu)
+        if n_ineq > 0 and n_active > 0:
+            rhs_parts.append(g_lam[active_np])
+
+        rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
+
+        t["build_system"] = perf_counter() - start
+
+        # ── Solve the adjoint system: lhs @ v = rhs ──────────────────
+        start = perf_counter()
+        v = np.linalg.solve(lhs, rhs)
+        t["lin_solve"] = perf_counter() - start
+
+        # ── Extract adjoint variables ────────────────────────────────
+        v_x: Float[ndarray, " nv"] = v[:n_var]
+        v_mu: Float[ndarray, " ne"] = (
+            v[n_var:n_var + n_eq]
+            if n_eq > 0
+            else np.empty(0, dtype=_dtype)
+        )
+        v_lam_a: Float[ndarray, " na"] = (
+            v[n_var + n_eq:]
+            if (n_ineq > 0 and n_active > 0)
+            else np.empty(0, dtype=_dtype)
+        )
+
+        # ── Compute parameter cotangents ─────────────────────────────
+        start = perf_counter()
+
+        grads: dict[str, ndarray] = {}
+
+        grads["P"] = -np.outer(v_x, x_np)
+        grads["q"] = -v_x
+
+        if n_eq > 0:
+            grads["A"] = -(
+                np.outer(mu_np, v_x) + np.outer(v_mu, x_np)
+            )
+            grads["b"] = v_mu
+
+        if n_ineq > 0:
+            g_G = np.zeros_like(G_np)
+            g_h_full = np.zeros(n_ineq, dtype=_dtype)
+            if n_active > 0:
+                g_G[active_np, :] = -(
+                    np.outer(lam_np[active_np], v_x)
+                    + np.outer(v_lam_a, x_np)
+                )
+                g_h_full[active_np] = v_lam_a
+            grads["G"] = g_G
+            grads["h"] = g_h_full
+
+        t["compute_grads"] = perf_counter() - start
+
+        t["total"] = perf_counter() - t_start
+        logger.info(f"_kkt_vjp | {fmt_times(t)}")
+
+        # ── Return in _dynamic_keys order ────────────────────────────
+        return tuple(grads[k] for k in _dynamic_keys)
+
+    #endregion
+
+    # =================================================================
     # COMBINE INTO A UNIQUE FUNCTION
     # =================================================================
 
     #region
+
+    # -----------------------------------------------------------------
+    # JVP path (differentiator = "kkt_dense")
+    # -----------------------------------------------------------------
+
     @custom_jvp
-    def _solver_dynamic(*dynamic_vals: jax.Array) -> dict[str, jax.Array]:
-        """Internal solver with positional-only dynamic arguments.
+    def _solver_dynamic_jvp_mode(
+        *dynamic_vals: jax.Array,
+    ) -> dict[str, jax.Array]:
+        """Internal solver (JVP path) with positional-only dynamic args.
 
         Wraps ``_solve_qp`` in a ``pure_callback`` so that the numpy QP
         solver can be called from within JAX-traced code. Only the
@@ -672,12 +927,12 @@ def setup_dense_solver(
         """
         return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
 
-    @_solver_dynamic.defjvp
-    def _solver_dynamic_jvp(
+    @_solver_dynamic_jvp_mode.defjvp
+    def _solver_dynamic_jvp_rule(
         primals: tuple[jax.Array, ...],
         tangents: tuple[jax.Array, ...],
     ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
-        """JVP rule for ``_solver_dynamic`` via implicit differentiation.
+        """JVP rule for ``_solver_dynamic_jvp_mode`` via implicit diff.
 
         Both the forward solve and KKT differentiation happen inside a
         **single** ``pure_callback`` call (``_kkt_diff``). This avoids
@@ -713,6 +968,154 @@ def setup_dense_solver(
 
         return res, tangents_out
 
+    # -----------------------------------------------------------------
+    # VJP path (differentiator = "kkt_dense_vjp")
+    # -----------------------------------------------------------------
+
+    @custom_vjp
+    def _solver_dynamic_vjp_mode(
+        *dynamic_vals: jax.Array,
+    ) -> dict[str, jax.Array]:
+        """Internal solver (VJP path) with positional-only dynamic args.
+
+        Identical forward semantics to the JVP path. The difference
+        is in how derivatives are computed: the VJP path stores the
+        forward solution as residuals and solves the *adjoint* KKT
+        system in the backward pass.
+
+        Args:
+            *dynamic_vals: JAX arrays corresponding to
+                ``_dynamic_keys``, in order.
+
+        Returns:
+            Solution dict with JAX arrays:
+
+                - ``x``      (nv,):  Primal solution.
+                - ``lam``    (ni,):  Inequality duals.
+                - ``mu``     (ne,):  Equality duals.
+        """
+        return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
+
+    def _solver_dynamic_vjp_fwd(
+        *dynamic_vals: jax.Array,
+    ) -> tuple[
+        dict[str, jax.Array],
+        tuple[jax.Array, ...],
+    ]:
+        """Forward pass for ``custom_vjp``.
+
+        Runs the QP solve via a single ``pure_callback`` that converts
+        dynamic inputs to numpy **once**, merges with ``_fixed``,
+        solves the QP, and returns the solution, active set, **and**
+        all merged problem matrices as a flat tuple.
+
+        The merged problem matrices are stored as residuals so that
+        the backward pass can feed them directly to the adjoint
+        solve — no second numpy conversion or re-merging is needed.
+
+        All residuals are JAX arrays that ``custom_vjp`` treats as
+        non-differentiable constants.
+
+        Args:
+            *dynamic_vals: Dynamic primal inputs in
+                ``_dynamic_keys`` order.
+
+        Returns:
+            ``(primal_out, residuals)`` where:
+
+                - ``primal_out``: Solution dict (``x``, ``lam``,
+                  ``mu``).
+                - ``residuals``: Flat tuple
+                  ``(x, lam, mu, active, P, q, [A, b,] [G, h])``.
+                  All JAX arrays, non-differentiable.
+        """
+        result = pure_callback(
+            _solve_qp_vjp_fwd, _vjp_fwd_shapes, *dynamic_vals,
+        )
+
+        # result is a flat tuple: (x, lam, mu, active, prob[0], ...)
+        x, lam, mu, active = result[:4]
+        prob_arrays = result[4:]
+
+        primal_out: dict[str, jax.Array] = {
+            "x":   x,
+            "lam": lam,
+            "mu":  mu,
+        }
+
+        # Residuals: solution + active + merged problem matrices.
+        residuals = (x, lam, mu, active, *prob_arrays)
+
+        return primal_out, residuals
+
+    def _solver_dynamic_vjp_bwd(
+        residuals: tuple[jax.Array, ...],
+        g: dict[str, jax.Array],
+    ) -> tuple[jax.Array, ...]:
+        """Backward pass for ``custom_vjp``.
+
+        Receives the stored residuals (forward solution + active set
+        + pre-merged problem matrices) and the output cotangent dict.
+        Passes the problem matrices, solution, and cotangents through
+        ``_kkt_vjp`` via ``pure_callback`` to solve the adjoint KKT
+        system in numpy and return parameter cotangents.
+
+        Because the problem matrices were already merged with
+        ``_fixed`` during the forward pass, no re-merging or second
+        numpy conversion of dynamic inputs is needed.
+
+        Args:
+            residuals: ``(x, lam, mu, active, P, q, [A, b,] [G, h])``
+                from the forward pass. All JAX arrays.
+            g: Cotangent dict with keys ``x``, ``lam``, ``mu``.
+
+        Returns:
+            A tuple of cotangents, one per dynamic input, in
+            ``_dynamic_keys`` order.
+        """
+        x, lam, mu, active = residuals[:4]
+        prob_arrays = residuals[4:]
+
+        g_x   = g["x"]
+        g_lam = g["lam"]
+        g_mu  = g["mu"]
+
+        # Layout: *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu
+        grad_vals: tuple[jax.Array, ...] = pure_callback(
+            _kkt_vjp,
+            _vjp_bwd_shapes,
+            *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu,
+        )
+
+        return grad_vals
+
+    _solver_dynamic_vjp_mode.defvjp(
+        _solver_dynamic_vjp_fwd,
+        _solver_dynamic_vjp_bwd,
+    )
+
+    # -----------------------------------------------------------------
+    # Select differentiator
+    # -----------------------------------------------------------------
+
+    _diff_name = _options_parsed["differentiator"]
+
+    if _diff_name == "kkt_dense":
+        _solver_dynamic = _solver_dynamic_jvp_mode
+    elif _diff_name == "kkt_dense_vjp":
+        _solver_dynamic = _solver_dynamic_vjp_mode
+    else:
+        raise ValueError(
+            f"Unknown differentiator: {_diff_name!r}. "
+            f"Supported: 'kkt_dense' (JVP), 'kkt_dense_vjp' (VJP)."
+        )
+
+    logger.info(f"Differentiator: {_diff_name}")
+
+    # -----------------------------------------------------------------
+    # Public solver callable
+    # -----------------------------------------------------------------
+
     def solver(
         *,
         warmstart: Optional[jax.Array] = None,
@@ -728,6 +1131,14 @@ def setup_dense_solver(
         JAX's trace. This avoids unnecessary conversions but means
         their tangents are always zero. To differentiate through an
         element, supply it at runtime instead of fixing it at setup.
+
+        The differentiation mode (JVP or VJP) is selected at setup
+        time via the ``differentiator`` option:
+
+            - ``"kkt_dense"``     — forward-mode (JVP), compatible
+              with ``jax.jvp`` and ``jax.vmap(jax.jvp(...))``.
+            - ``"kkt_dense_vjp"`` — reverse-mode (VJP), compatible
+              with ``jax.grad`` and ``jax.value_and_grad``.
 
         Args:
             warmstart: Optional initial guess for the primal solution,
