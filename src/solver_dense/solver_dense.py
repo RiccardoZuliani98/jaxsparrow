@@ -26,10 +26,15 @@ from src.solver_dense.solver_dense_options import (
 #   B   = batch   — batch dimension (JVP vmap path only)
 
 #TODO: solvers and differentiator algorithms should be taken from a library and 
-# should have their own custom options
-#TODO: I need to verify if vmap is leveraged when computing closed-loop derivatives 
-# of multiple parameters.
-#TODO: should we create a vjp mode?
+# should have their own custom options. Note that this requires a better
+# handling of options, and possibly also the definition of more classes, which
+# will interface with the dense solver.
+#TODO: add better type annotations using the types in solver_dense_types
+#TODO: add a finite difference utility similar in principle to TimingRecorder.
+# this should only use the numpy sub-solver and therefore not contribute to 
+# the overall timings
+#TODO: add reverse mode tests
+#TODO: add value function and envelope theorem?
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
