@@ -16,6 +16,7 @@ from src.solver_dense.solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
 )
+from src.solver_dense.solvers import create_dense_qp_solver
 
 # Dimension key (used in jaxtyping annotations throughout):
 #
@@ -96,14 +97,6 @@ def setup_dense_solver(
     # extract dtype for simplicity
     _dtype = _options_parsed['dtype']
 
-    # parse and process fixed elements if present
-    _fixed: dict[str,ndarray] = {}
-    if fixed_elements is not None:
-        _fixed = cast(
-            dict[str,ndarray],
-            {k: np.array(v, dtype=_dtype).squeeze() for k, v in fixed_elements.items()}
-        )
-
     # form shapes of problem solution
     _fwd_shapes = {
         "x":        jax.ShapeDtypeStruct((n_var,),  _dtype),
@@ -129,14 +122,16 @@ def setup_dense_solver(
     if n_ineq > 0:
         _required_keys += ("G", "h")
 
+    # gather fixed keys
+    _fixed_keys_set = set(fixed_elements.keys()) if fixed_elements is not None else {}
+
     # gather keys required at runtime (i.e., not fixed).
     # Only these flow through JAX's traced path.
-    _dynamic_keys = tuple(k for k in _required_keys if k not in _fixed)
+    _dynamic_keys = tuple(k for k in _required_keys if k not in _fixed_keys_set)
 
     # transform to sets for speed
     _required_keys_set = set(_required_keys)
     _dynamic_keys_set = set(_dynamic_keys)
-    _fixed_keys_set = set(_fixed.keys())
 
     _n_dyn = len(_dynamic_keys)
 
@@ -179,6 +174,24 @@ def setup_dense_solver(
     # Stored as a one-element list so nested functions can mutate it.
     _warmstart: list[Optional[ndarray]] = [None]
 
+    # check shape of fixed_elements if present
+    if fixed_elements is not None:
+        for key,val in fixed_elements.items():
+            assert val.shape == _expected_shapes[key]
+
+    # choose numpy solver and store it in _solve_qp_numpy. Note that
+    # the fixed elements are passed to the solver and will never be 
+    # seen again, since they will get hard-coded inside the solver.
+    if _options_parsed["solver_type"] == "qp_solvers":
+        _solve_qp_numpy = create_dense_qp_solver(
+            n_eq=n_eq, 
+            n_ineq=n_ineq, 
+            options=_options_parsed["solver"],
+            fixed_elements=fixed_elements
+        )
+    else:
+        raise ValueError("Only qp_solvers is available as 'solver_type'")
+
     logger.info(
         f"Setting up QP with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
@@ -191,136 +204,6 @@ def setup_dense_solver(
     # =================================================================
 
     #region
-
-    #TODO: this can be moved elsewhere, the only thing is that inputs-outputs
-    # match some specification, in this case qp_inputs / qp_outputs
-    def _solve_qp_numpy(**kwargs: ndarray) -> tuple[
-        Float[ndarray, " nv"],      # x
-        Float[ndarray, " ni"],      # lam
-        Float[ndarray, " ne"],      # mu
-        Bool[ndarray, " ni"],       # active
-        dict[str, float],           # timing
-    ]:
-        """Solve the QP in pure numpy via ``qpsolvers``.
-
-        All required ingredients must be present in ``kwargs``; no merging
-        with ``_fixed`` is performed here (that happens upstream).
-
-        When the problem has no equality constraints (``n_eq == 0``),
-        ``A``, ``b``, and ``mu`` are absent / empty. Likewise, when
-        there are no inequality constraints (``n_ineq == 0``), ``G``,
-        ``h``, ``lam``, and ``active`` are absent / empty.
-
-        Args:
-            **kwargs: Numpy arrays for the QP ingredients:
-
-                - ``P`` (nv, nv): Positive semi-definite cost matrix.
-                - ``q`` (nv,): Linear cost vector.
-                - ``A`` (ne, nv): Equality constraint matrix
-                  (required when ``n_eq > 0``).
-                - ``b`` (ne,): Equality constraint vector
-                  (required when ``n_eq > 0``).
-                - ``G`` (ni, nv): Inequality constraint matrix
-                  (required when ``n_ineq > 0``).
-                - ``h`` (ni,): Inequality constraint vector
-                  (required when ``n_ineq > 0``).
-
-        Returns:
-            A tuple ``(x, lam, mu, active, t)`` where:
-
-                - ``x`` (nv,): Primal solution.
-                - ``lam`` (ni,): Dual variables for inequality
-                  constraints. Empty when ``n_ineq == 0``.
-                - ``mu`` (ne,): Dual variables for equality
-                  constraints. Empty when ``n_eq == 0``.
-                - ``active`` (ni,): Boolean mask of active inequality
-                  constraints. Empty when ``n_ineq == 0``.
-                - ``t``: Timing dict with keys ``problem_setup``,
-                  ``solve``, ``retrieve``, ``active_set``.
-
-        Raises:
-            ValueError: If any required ingredient is missing.
-            AssertionError: If the solver fails or array shapes are
-                inconsistent with declared problem dimensions.
-        """
-        # Safety check — all required keys should already be present
-        missing = _required_keys_set - set(kwargs)
-        if missing:
-            raise ValueError(
-                f"Missing QP ingredients: {sorted(missing)}. "
-                f"Provide them either via fixed_elements at setup or "
-                f"at call time."
-            )
-
-        # Validate shapes against declared problem dimensions
-        if _options_parsed["debug"]:
-            assert kwargs["P"].shape == (n_var, n_var)
-            assert kwargs["q"].shape == (n_var,)
-            if n_eq > 0:
-                assert kwargs["A"].shape == (n_eq, n_var)
-                assert kwargs["b"].shape == (n_eq,)
-            if n_ineq > 0:
-                assert kwargs["G"].shape == (n_ineq, n_var)
-                assert kwargs["h"].shape == (n_ineq,)
-
-        # preallocate dictionary with computation times
-        t: dict[str, float] = {}
-
-        # Build qpsolvers Problem
-        start = perf_counter()
-        prob = Problem(**kwargs)
-        t["problem_setup"] = perf_counter() - start
-
-        # Solve QP
-        start = perf_counter()
-        sol = solve_problem(
-            prob,
-            solver=_options_parsed["solver"],
-            initvals=_warmstart[0],
-        )
-        assert sol.found, "QP solver failed to find a solution."
-        t["solve"] = perf_counter() - start
-
-        # Clear warmstart after use so it doesn't persist
-        _warmstart[0] = None
-
-        # Recover primal / dual variables
-        start = perf_counter()
-        x: Float[ndarray, " nv"] = (
-            np.asarray(sol.x, dtype=_dtype).reshape(-1)
-        )
-
-        if n_eq > 0:
-            mu: Float[ndarray, " ne"] = (
-                np.asarray(sol.y, dtype=_dtype).reshape(-1)
-            )
-        else:
-            mu = np.empty(0, dtype=_dtype)
-
-        if n_ineq > 0:
-            lam: Float[ndarray, " ni"] = (
-                np.asarray(sol.z, dtype=_dtype).reshape(-1)
-            )
-        else:
-            lam = np.empty(0, dtype=_dtype)
-        t["retrieve"] = perf_counter() - start
-
-        # Determine active set: |Gx − h| <= tolerance
-        start = perf_counter()
-        if n_ineq > 0:
-            active: Bool[ndarray, " ni"] = np.asarray(
-                np.abs(kwargs["G"] @ sol.x - kwargs["h"])
-                <= _options_parsed["cst_tol"],
-                dtype=np.bool_,
-            ).reshape(-1)
-        else:
-            active = np.empty(0, dtype=np.bool_)
-        t["active_set"] = perf_counter() - start
-
-        return x, lam, mu, active, t
-
-    #TODO: this should remain as it is, no modification even if we swap
-    # the QP solver
     def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, Array]:
         """Bridge between JAX ``pure_callback`` and the numpy QP solver.
 
@@ -358,11 +241,31 @@ def setup_dense_solver(
             dynamic_np[k] = arr
         t["convert_to_numpy"] = perf_counter() - start
 
-        # ── Merge with pre-stored fixed arrays (no conversion) ───────
-        prob_np = {**_fixed, **dynamic_np}
+        # ── Run checks ───────────────────────────────────────────────
+        if _options_parsed["debug"]:
+            missing = _required_keys_set - set(dynamic_np)
+            if missing:
+                raise ValueError(
+                    f"Missing QP ingredients: {sorted(missing)}. "
+                    f"Provide them either via fixed_elements at setup or "
+                    f"at call time."
+                )
+
+            # Validate shapes against declared problem dimensions
+            for key in _dynamic_keys_set:
+                assert dynamic_np[key].shape == _expected_shapes[key]
+
+        # ── Add warmstarting ─────────────────────────────────────────
+        if _warmstart[0] is not None:
+            prob_np = dynamic_np | {"warmstart": _warmstart[0]}
 
         # ── Solve in numpy ───────────────────────────────────────────
         x_np, lam_np, mu_np, _, t_solve = _solve_qp_numpy(**prob_np)
+
+        # Clear warmstart after use so it doesn't persist
+        _warmstart[0] = None
+
+        # store time
         t.update(t_solve)
 
         # ── Return numpy arrays directly ─────────────────────────────
@@ -388,8 +291,6 @@ def setup_dense_solver(
     # =================================================================
 
     #region
-
-    #TODO: no change even when the qp_solver / differentiator is swapped
     def _solve_qp_vjp_fwd(*dynamic_vals: jax.Array) -> tuple:
         """Forward QP solve that returns both solution and problem data.
 
@@ -426,12 +327,32 @@ def setup_dense_solver(
                 arr = arr[0]
             dynamic_np[k] = arr
         t["convert_to_numpy"] = perf_counter() - start
+        
+        # ── Run checks ───────────────────────────────────────────────
+        if _options_parsed["debug"]:
+            missing = _required_keys_set - set(dynamic_np)
+            if missing:
+                raise ValueError(
+                    f"Missing QP ingredients: {sorted(missing)}. "
+                    f"Provide them either via fixed_elements at setup or "
+                    f"at call time."
+                )
 
-        # ── Merge with pre-stored fixed arrays (no conversion) ───────
-        prob_np = {**_fixed, **dynamic_np}
+            # Validate shapes against declared problem dimensions
+            for key in _dynamic_keys_set:
+                assert dynamic_np[key].shape == _expected_shapes[key]
+
+        # ── Add warmstarting ─────────────────────────────────────────
+        if _warmstart[0] is not None:
+            prob_np = dynamic_np | {"warmstart": _warmstart[0]}
 
         # ── Solve in numpy ───────────────────────────────────────────
         x_np, lam_np, mu_np, active_np, t_solve = _solve_qp_numpy(**prob_np)
+
+        # Clear warmstart after use so it doesn't persist
+        _warmstart[0] = None
+
+        # store time
         t.update(t_solve)
 
         t["total"] = perf_counter() - t_start
@@ -439,6 +360,8 @@ def setup_dense_solver(
         _timings.record("_solve_qp_vjp_fwd", t)
 
         # ── Return flat tuple: solution + active + merged problem ────
+        #TODO: here we are returning numpy arrays directly. Should we take
+        # control of the conversion?
         return (
             x_np, lam_np, mu_np, active_np,
             *(prob_np[k] for k in _required_keys),
