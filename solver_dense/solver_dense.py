@@ -10,6 +10,7 @@ from numpy import ndarray
 from jaxtyping import Float, Bool
 
 from .parsing_utils import parse_options
+from .printing_utils import fmt_times
 from .solver_dense_options import (
     DEFAULT_SOLVER_OPTIONS, 
     SolverOptions, 
@@ -31,18 +32,6 @@ from .solver_dense_options import (
 _EXPECTED_NDIM: dict[str, int] = {
     "P": 2, "q": 1, "A": 2, "b": 1, "G": 2, "h": 1,
 }
-
-
-def _fmt_times(t: dict[str, float]) -> str:
-    """Format a timing dict into a single-line summary string.
-
-    Args:
-        t: Dict mapping stage names to elapsed seconds.
-
-    Returns:
-        Formatted string, e.g. ``"solve=1.2e-03  active=4.5e-05"``.
-    """
-    return "  ".join(f"{k}={v:.3e}s" for k, v in t.items())
 
 
 def setup_dense_solver(
@@ -325,7 +314,7 @@ def setup_dense_solver(
         t["convert_to_jax"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
-        logger.info(f"_solve_qp | {_fmt_times(t)}")
+        logger.info(f"_solve_qp | {fmt_times(t)}")
 
         return result
 
@@ -337,11 +326,11 @@ def setup_dense_solver(
 
     #region
     def _kkt_diff(*args: ndarray) -> tuple[
-        Float[ndarray, " nv"],      # dx
-        Float[ndarray, " ni"],      # dlam
-        Float[ndarray, " ne"],      # dmu
-        ndarray,                    # dactive (float0)
-        dict[str, ndarray],         # sol (numpy, not JAX)
+        Float[Array, " nv"],      # dx
+        Float[Array, " ni"],      # dlam
+        Float[Array, " ne"],      # dmu
+        Array,                    # dactive (float0)
+        dict[str, Array],         # sol (numpy, not JAX)
     ]:
         """Implicit differentiation of the KKT conditions.
 
@@ -408,7 +397,7 @@ def setup_dense_solver(
         t["convert_tangents"] = perf_counter() - start
 
         # ── Detect batching ──────────────────────────────────────────
-        if n_dyn > 0:
+        if _n_dyn > 0:
             first_key = _dynamic_keys[0]
             batched = (
                 dyn_tangents_np[first_key].ndim
@@ -570,33 +559,35 @@ def setup_dense_solver(
         # ── Build solution dict (numpy only) ─────────────────────────
         # np.broadcast_to returns a read-only view (zero cost).
         # .copy() materializes a contiguous array for pure_callback.
-        # No jnp.array calls — pure_callback handles numpy → JAX.
         start = perf_counter()
         if batch_size > 0:
-            res: dict[str, ndarray] = {
-                "x":      np.broadcast_to(x_np, (batch_size, n_var)).copy(),
-                "lam":    np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(),
-                "mu":     np.broadcast_to(mu_np, (batch_size, n_eq)).copy(),
-                "active": np.broadcast_to(active_np, (batch_size, n_ineq)).copy(),
+            res: dict[str, Array] = {
+                "x":      jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(),dtype=_dtype),
+                "lam":    jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(),dtype=_dtype),
+                "mu":     jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(),dtype=_dtype),
+                "active": jnp.array(np.broadcast_to(active_np, (batch_size, n_ineq)).copy(),dtype=jnp.bool_),
             }
         else:
             res = {
-                "x":      x_np,
-                "lam":    lam_np,
-                "mu":     mu_np,
-                "active": active_np,
+                "x":      jnp.array(x_np,dtype=_dtype),
+                "lam":    jnp.array(lam_np,dtype=_dtype),
+                "mu":     jnp.array(mu_np,dtype=_dtype),
+                "active": jnp.array(active_np,dtype=jnp.bool_),
             }
+        dx = jnp.array(dx_np, dtype=_dtype)
+        dlam = jnp.array(dlam_np, dtype=_dtype)
+        dmu = jnp.array(dmu_np, dtype=_dtype)
         t["build_sol"] = perf_counter() - start
 
         # Active-set mask is not differentiable — zero tangent
-        dactive = np.zeros(
+        dactive = jnp.zeros(
             res["active"].shape, dtype=jax.dtypes.float0
         )
 
         t["total"] = perf_counter() - t_start
-        logger.info(f"_kkt_diff | {_fmt_times(t)}")
+        logger.info(f"_kkt_diff | {fmt_times(t)}")
 
-        return dx_np, dlam_np, dmu_np, dactive, res
+        return dx, dlam, dmu, dactive, res
 
     def _kkt_diff_callback(
         primals_dict: dict[str, jax.Array],

@@ -25,7 +25,6 @@ Similar for the differentiator.
 
 from typing import TypedDict, Final
 import jax.numpy as jnp
-import numpy as np
 
 class SolverOptions(TypedDict, total=False):
     differentiator: str
@@ -34,6 +33,7 @@ class SolverOptions(TypedDict, total=False):
     bool_dtype: jnp.dtype
     cst_tol: float
     verbose: bool
+    debug: bool
 
 class SolverOptionsFull(TypedDict):
     differentiator: str
@@ -42,6 +42,7 @@ class SolverOptionsFull(TypedDict):
     bool_dtype: jnp.dtype
     cst_tol: float
     verbose: bool
+    debug: bool
 
 DEFAULT_SOLVER_OPTIONS: Final[SolverOptionsFull] = {
     "differentiator": "kkt_dense",
@@ -49,5 +50,6 @@ DEFAULT_SOLVER_OPTIONS: Final[SolverOptionsFull] = {
     "dtype": jnp.float64,
     "bool_dtype": jnp.bool_,
     "cst_tol": 1e-8,
-    "verbose": True
+    "verbose": True,
+    "debug": True
 }
