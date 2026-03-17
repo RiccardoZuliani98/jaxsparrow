@@ -6,6 +6,12 @@ from time import perf_counter
 import logging
 # logging.basicConfig(level=logging.INFO)
 
+from pathlib import Path
+import sys
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
 jax.config.update("jax_enable_x64", True)
 
 horizon = 50
@@ -56,7 +62,7 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.solver_dense import setup_dense_solver
 
 epsilon = 0.1
 x0 = jnp.array([-2.0, -1.0])
