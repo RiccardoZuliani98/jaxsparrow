@@ -192,6 +192,8 @@ def setup_dense_solver(
 
     #region
 
+    #TODO: this can be moved elsewhere, the only thing is that inputs-outputs
+    # match some specification, in this case qp_inputs / qp_outputs
     def _solve_qp_numpy(**kwargs: ndarray) -> tuple[
         Float[ndarray, " nv"],      # x
         Float[ndarray, " ni"],      # lam
@@ -317,6 +319,8 @@ def setup_dense_solver(
 
         return x, lam, mu, active, t
 
+    #TODO: this should remain as it is, no modification even if we swap
+    # the QP solver
     def _solve_qp(*dynamic_vals: jax.Array) -> dict[str, Array]:
         """Bridge between JAX ``pure_callback`` and the numpy QP solver.
 
@@ -384,6 +388,8 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+
+    #TODO: no change even when the qp_solver / differentiator is swapped
     def _solve_qp_vjp_fwd(*dynamic_vals: jax.Array) -> tuple:
         """Forward QP solve that returns both solution and problem data.
 
@@ -441,6 +447,11 @@ def setup_dense_solver(
     #endregion
 
     #region
+
+    #TODO: ok here we need to remove the second half of this function and
+    # move it elsewhere, right after the conversion to numpy and the merge
+    # with fixed. Or better just move everything to kkt callback and remove
+    # this function entirely.
     def _kkt_diff(*args: ndarray) -> tuple[
         Float[Array, " nv"],      # dx
         Float[Array, " ni"],      # dlam
@@ -746,6 +757,8 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+
+    #TODO: this should be moved outside
     def _kkt_vjp(*args: ndarray) -> tuple[ndarray, ...]:
         """Adjoint (VJP) differentiation of the KKT conditions.
 
