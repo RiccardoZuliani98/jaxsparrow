@@ -19,6 +19,7 @@ DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
 
 #TODO: annotate output
 #TODO: docstrings
+#TODO: add options for different linear solvers
 def create_dense_kkt_differentiator_fwd(
     n_var:int,
     n_eq:int,
@@ -219,13 +220,41 @@ def create_dense_kkt_differentiator_fwd(
     
     return kkt_differentiator_fwd
 
-def create_dense_kkt_differentiator_rev(n_var, n_eq, n_ineq, options):
+
+#TODO: annotate output
+#TODO: docstrings
+def create_dense_kkt_differentiator_rev(
+    n_var:int,
+    n_eq:int,
+    n_ineq:int,
+    options:Optional[DifferentiatorOptions]=None,
+    fixed_elements:Optional[DenseQPIngredientsNP]=None
+):
 
     # parse options
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
         
+    # store fixed elements when the user passes a "fixed_elements" argument
+    _fixed : DenseQPIngredientsNP = {}
+
+    # store fixed elements
+    if fixed_elements is not None:
+        _fixed = cast(DenseQPIngredientsNP, {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
+
+    # add zero matrices / vectors if equality / inequality constraints are missing
+    if n_eq == 0:
+        _fixed["A"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _fixed["b"] = np.zeros((0,), dtype=options_parsed["dtype"])
+    if n_ineq == 0:
+        _fixed["G"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
+
+    # choose lienar system solver
+    def _solve_linear_system(a,b):
+        return np.linalg.lstsq(a,b)[0]
+        
     def kkt_differentiator_rev(
-        prob_np,
+        dyn_primals_np,
         x_np,
         lam_np,
         mu_np,
@@ -236,54 +265,66 @@ def create_dense_kkt_differentiator_rev(n_var, n_eq, n_ineq, options):
         batch_size
     ):
         
-        # start counting time
-        start = perf_counter()
+        # start timing
         t : dict[str, float] = {}
+        start = perf_counter()
 
-        # ── Retrieve problem matrices ────────────────────────────────
-        P_np: Float[ndarray, "n_var n_var"] = prob_np["P"]
-        A_np: Float[ndarray, "n_eq n_var"] = prob_np.get(
-            "A", np.empty((0, n_var), dtype=options_parsed["dtype"])
-        )
-        G_np: Float[ndarray, "n_ineq n_var"] = prob_np.get(
-            "G", np.empty((0, n_var), dtype=options_parsed["dtype"])
-        )
+        # bool representing batching for simplicity
+        batched = batch_size > 0
 
-        # ── Build KKT matrix LHS (symmetric → adjoint = forward) ────
 
+        # ── Parse ingredients ────────────────────────────────────────
+
+        # merge qp ingredients too
+        prob_np = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
+
+        # count active constraints
         n_active = int(np.sum(active_np))
-        H_parts: list[Float[ndarray, "_ n_var"]] = []
+
+
+        # ── Build LHS ────────────────────────────────────────────────
+
+        # construct H matrix
+        H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
-            H_parts.append(A_np)
+            H_parts.append(prob_np["A"])
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(G_np[active_np, :])
+            H_parts.append(prob_np["G"][active_np, :])
 
         if H_parts:
-            H_np: Float[ndarray, "nh n_var"] = np.vstack(H_parts)
+            H_np: Float[ndarray, "nh nv"] = np.vstack(H_parts)
         else:
             H_np = np.empty((0, n_var), dtype=options_parsed["dtype"])
 
         n_h = H_np.shape[0]
 
+        # build lhs
         lhs: Float[ndarray, "nv_nh nv_nh"] = np.block([
-            [P_np,  H_np.T],
+            [prob_np["P"],  H_np.T],
             [H_np,  np.zeros((n_h, n_h), dtype=options_parsed["dtype"])],
         ])
 
-        # ── Build RHS from cotangent vectors ─────────────────────────
-        rhs_parts: list[Float[ndarray, " _"]] = [g_x]
-        if n_eq > 0:
-            rhs_parts.append(g_mu)
-        if n_ineq > 0 and n_active > 0:
-            rhs_parts.append(g_lam[active_np])
 
-        rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
+        # ── Build RHS from cotangent vectors ─────────────────────────
+
+        if batched:
+            raise NotImplementedError("Batched mode rev not implemented.")
+        else:
+            rhs_parts: list[Float[ndarray, " _"]] = [g_x]
+            if n_eq > 0:
+                rhs_parts.append(g_mu)
+            if n_ineq > 0 and n_active > 0:
+                rhs_parts.append(g_lam[active_np])
+
+            rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
 
         t["build_system"] = perf_counter() - start
 
+
         # ── Solve the adjoint system: lhs @ v = rhs ──────────────────
+
         start = perf_counter()
-        v = np.linalg.solve(lhs, rhs)
+        v = _solve_linear_system(lhs, rhs)
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract adjoint variables ────────────────────────────────
@@ -314,7 +355,7 @@ def create_dense_kkt_differentiator_rev(n_var, n_eq, n_ineq, options):
             grads["b"] = v_mu
 
         if n_ineq > 0:
-            g_G = np.zeros_like(G_np)
+            g_G = np.zeros_like(prob_np["G"])
             g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
             if n_active > 0:
                 g_G[active_np, :] = -(
@@ -326,5 +367,7 @@ def create_dense_kkt_differentiator_rev(n_var, n_eq, n_ineq, options):
             grads["h"] = g_h_full
 
         t["compute_grads"] = perf_counter() - start
+
+        return grads, t
 
     return kkt_differentiator_rev

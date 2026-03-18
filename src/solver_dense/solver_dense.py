@@ -17,9 +17,11 @@ from src.solver_dense.solver_dense_options import (
     ConstructorOptions
 )
 from src.solver_dense.solvers import create_dense_qp_solver
-from src.solver_dense.differentiators import create_dense_kkt_differentiator_fwd
+from src.solver_dense.differentiators import create_dense_kkt_differentiator_fwd, create_dense_kkt_differentiator_rev
 from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, QPDiffOut, QPOutput, DenseQPIngredientsTangentsNP
 
+#TODO: create sparse solver, I left some TODOs in this file pointing at
+# where changes should be made
 #TODO: add a finite difference utility similar in principle to TimingRecorder.
 # this should only use the numpy sub-solver and therefore not contribute to 
 # the overall timings
@@ -188,7 +190,7 @@ def setup_dense_solver(
     
     # choose differentiator, once again some elements will be fixed
     # insider for speed
-    if _options_parsed["differentiator_type"] == "kkt_fwd":
+    if _options_parsed["differentiator_type"] == "kkt":
         _diff_forward_numpy = create_dense_kkt_differentiator_fwd(
             n_var=n_var,
             n_eq=n_eq,
@@ -196,8 +198,15 @@ def setup_dense_solver(
             options=_options_parsed["differentiator"],
             fixed_elements=fixed_elements
         )
+        _diff_reverse_numpy = create_dense_kkt_differentiator_rev(
+            n_var=n_var,
+            n_eq=n_eq,
+            n_ineq=n_ineq,
+            options=_options_parsed["differentiator"],
+            fixed_elements=fixed_elements
+        )
     else:
-        raise ValueError("Only differentiator available is 'kkt_fwd'")
+        raise ValueError("Only differentiator available is 'kkt'")
 
     logger.info(
         f"Setting up QP with {n_var} variables, "
@@ -550,13 +559,13 @@ def setup_dense_solver(
         # ── Call differentiator ──────────────────────────────────────
 
         grads_np, t_diff = _diff_reverse_numpy(
-            prob_np=prob_np,
-            x_np=x_np
-            lam_np=lam_np
-            mu_np=mu_np
-            active_np=active_np
-            g_x=g_x
-            g_lam=g_lam
+            dyn_primals_np=prob_np,
+            x_np=x_np,
+            lam_np=lam_np,
+            mu_np=mu_np,
+            active_np=active_np,
+            g_x=g_x,
+            g_lam=g_lam,
             g_mu=g_mu,
             batch_size=batch_size
         )
@@ -567,7 +576,7 @@ def setup_dense_solver(
 
         # convert solution back to jax
         #TODO: this should change in sparse mode
-        grads = (jnp.array(grads_np[k],dtype=_dtype) for k in _dynamic_keys)
+        grads = cast(tuple[Array, ...], (jnp.asarray(grads_np[k], dtype=_dtype) for k in _dynamic_keys))
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")
