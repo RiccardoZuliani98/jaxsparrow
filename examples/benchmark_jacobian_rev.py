@@ -100,9 +100,9 @@ wall_elapsed = []
 
 x0_i = jnp.array(x0_samples[0])
 
-with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-    sol, jac = jacobian_fn(x0_i)
-    sol.block_until_ready()
+# with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
+#     sol, jac = jacobian_fn(x0_i)
+#     sol.block_until_ready()
 
 for i in range(N_SAMPLES):
     x0_i = jnp.array(x0_samples[i])
