@@ -3,7 +3,12 @@ from time import perf_counter
 from jaxtyping import Float, Bool
 import numpy as np
 from typing import cast, Optional
-from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, DenseQPIngredientsNPFull, QPOutputNP, QPDiffOutNP, DenseQPIngredientsTangentsNP
+from src.solver_dense.solver_dense_types import (
+    DenseQPIngredientsNP, 
+    DenseQPIngredientsNPFull, 
+    QPOutputNP, 
+    QPDiffOutNP, 
+    DenseQPIngredientsTangentsNP)
 from src.solver_dense.solver_dense_options import DifferentiatorOptions
 from src.utils.parsing_utils import parse_options
 
@@ -260,14 +265,14 @@ def create_dense_kkt_differentiator_rev(
         return np.linalg.lstsq(a,b)[0]
         
     def kkt_differentiator_rev(
-        dyn_primals_np,
-        x_np,
-        lam_np,
-        mu_np,
-        g_x,
-        g_lam,
-        g_mu,
-        batch_size
+        dyn_primals_np:DenseQPIngredientsNP,
+        x_np:ndarray,
+        lam_np:ndarray,
+        mu_np:ndarray,
+        g_x:ndarray,
+        g_lam:ndarray,
+        g_mu:ndarray,
+        batch_size:int
     ):
         
         # start timing

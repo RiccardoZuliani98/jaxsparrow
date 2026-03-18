@@ -6,7 +6,6 @@ import jax
 import logging
 from typing import Optional, cast
 from numpy import ndarray
-from jaxtyping import Float, Bool
 
 from src.utils.parsing_utils import parse_options
 from src.utils.printing_utils import fmt_times
@@ -17,8 +16,16 @@ from src.solver_dense.solver_dense_options import (
     ConstructorOptions
 )
 from src.solver_dense.solvers import create_dense_qp_solver
-from src.solver_dense.differentiators import create_dense_kkt_differentiator_fwd, create_dense_kkt_differentiator_rev
-from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, QPDiffOut, QPOutput, DenseQPIngredientsTangentsNP
+from src.solver_dense.differentiators import (
+    create_dense_kkt_differentiator_fwd, 
+    create_dense_kkt_differentiator_rev
+)
+from src.solver_dense.solver_dense_types import (
+    DenseQPIngredientsNP, 
+    QPDiffOut, 
+    QPOutput, 
+    DenseQPIngredientsTangentsNP
+)
 
 #TODO: create sparse solver, I left some TODOs in this file pointing at
 # where changes should be made
@@ -694,11 +701,11 @@ def setup_dense_solver(
         start = perf_counter()
 
         # Problem matrices (only dynamic entries)
-        prob_np: dict[str, ndarray] = {
+        prob_np = cast(DenseQPIngredientsNP,{
             #TODO: update this for sparse mode
             k: np.asarray(args[i], dtype=_dtype)
             for i, k in enumerate(_dynamic_keys)
-        }
+        })
         off = _n_dyn
         x_np      = np.asarray(args[off],     dtype=_dtype)
         lam_np    = np.asarray(args[off + 1], dtype=_dtype)
@@ -1175,7 +1182,7 @@ def setup_dense_solver(
             solution is broadcast (not tiled) to match the batch dimension,
             as the primal solution is identical for all batch elements.
         """
-        
+
         # Store warmstart in the mutable closure slot (converted to
         # numpy). _solve_qp_numpy reads it and clears it after use.
         if warmstart is not None:
