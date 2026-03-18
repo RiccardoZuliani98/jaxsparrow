@@ -30,9 +30,6 @@ from src.utils.fd_recorder import FiniteDifferenceRecorder
 
 #TODO: create sparse solver, I left some TODOs in this file pointing at
 # where changes should be made
-#TODO: add a finite difference utility similar in principle to TimingRecorder.
-# this should only use the numpy sub-solver and therefore not contribute to 
-# the overall timings
 #TODO: add value function and envelope theorem?
 #TODO: fix test for vmapped vjp unconstrained => what is going wrong?
 
@@ -182,6 +179,7 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+    #TODO_SPARSE: this input type has to change
     def _solve_qp(*dynamic_vals: jax.Array) -> QPOutput:
 
         t_start = perf_counter()
@@ -189,10 +187,10 @@ def setup_dense_solver(
 
         # ── Convert only dynamic JAX arrays to numpy ─────────────────
         start = perf_counter()
+        #TODO_SPARSE
         dynamic_np: dict[str, ndarray] = {}
         for k, v in zip(_dynamic_keys, dynamic_vals):
-            #TODO: this is the only line that has to change for sparse mode,
-            # can we keep a unique solver skeleton?
+            #TODO_SPARSE: 
             arr = np.asarray(v, dtype=_dtype)
             if arr.ndim > _EXPECTED_NDIM[k]:
                 arr = arr[0]  # all batch entries are identical for primals
@@ -250,6 +248,7 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+    #TODO_SPARSE
     def _diff_forward(*args: ndarray) -> tuple[QPDiffOut, QPOutput]:
 
         t_start = perf_counter()
@@ -263,7 +262,7 @@ def setup_dense_solver(
         start = perf_counter()
         dyn_primals_np: DenseQPIngredientsNP = {}
         for k, v in zip(_dynamic_keys, dyn_primal_vals):
-            #TODO: adapt this to the sparse case
+            #TODO_SPARSE
             arr = np.asarray(v, dtype=_dtype)
             if arr.ndim > _EXPECTED_NDIM[k]:
                 arr = arr[0]  # all batch entries are identical for primals
@@ -285,6 +284,7 @@ def setup_dense_solver(
                 assert dyn_primals_np[key].shape == _expected_shapes[key]
 
         # ── Add warmstarting ─────────────────────────────────────────
+        #TODO_SPARSE
         prob_np = cast(dict[str,ndarray], dyn_primals_np.copy())
         if _warmstart[0] is not None: 
             prob_np["warmstart"] = _warmstart[0]
@@ -302,7 +302,7 @@ def setup_dense_solver(
         # ── Convert dynamic tangents to numpy (keep batch dim) ───────
         start = perf_counter()
         dyn_tangents_np = cast(DenseQPIngredientsTangentsNP, {
-            #TODO: here for sparse too
+            #TODO_SPARSE
             k: np.asarray(v, dtype=_dtype)
             for k, v in zip(_dynamic_keys, dyn_tangent_vals)
         })
@@ -406,6 +406,7 @@ def setup_dense_solver(
     # =================================================================
 
     #region
+    #TODO_SPARSE
     def _diff_reverse(*args: ndarray) -> dict[str, Array]:
 
         t_start = perf_counter()
@@ -417,7 +418,7 @@ def setup_dense_solver(
 
         # Problem matrices (only dynamic entries)
         prob_np = cast(DenseQPIngredientsNP,{
-            #TODO: update this for sparse mode
+            #TODO_SPARSE
             k: np.asarray(args[i], dtype=_dtype)
             for i, k in enumerate(_dynamic_keys)
         })
@@ -468,7 +469,7 @@ def setup_dense_solver(
         # ── Build solution dict ──────────────────────────────────────
 
         # convert solution back to jax
-        #TODO: this should change in sparse mode
+        #TODO_SPARSE
         grads = {k: jnp.asarray(grads_np[k], dtype=_dtype) for k in _dynamic_keys}
 
         t["total"] = perf_counter() - t_start
@@ -515,12 +516,14 @@ def setup_dense_solver(
     # -----------------------------------------------------------------
 
     @custom_jvp
+    #TODO_SPARSE
     def _solver_dynamic_jvp_mode(
         *dynamic_vals: jax.Array,
     ) -> QPOutput:
         return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
 
     @_solver_dynamic_jvp_mode.defjvp
+    #TODO_SPARSE
     def _solver_dynamic_jvp_rule(
         primals: tuple[jax.Array, ...],
         tangents: tuple[jax.Array, ...],
@@ -542,6 +545,7 @@ def setup_dense_solver(
     # -----------------------------------------------------------------
 
     @custom_vjp
+    #TODO_SPARSE
     def _solver_dynamic_vjp_mode(
         *dynamic_vals: jax.Array,
     ) -> QPOutput:
@@ -553,6 +557,7 @@ def setup_dense_solver(
             # vmap_method="broadcast_all"
         )
 
+    #TODO_SPARSE
     def _solver_dynamic_vjp_fwd(
         *dynamic_vals: jax.Array,
     ) -> tuple[QPOutput,tuple[jax.Array, ...],
@@ -575,6 +580,7 @@ def setup_dense_solver(
 
         return result, residuals
 
+    #TODO_SPARSE
     def _solver_dynamic_vjp_bwd(
         residuals: tuple[jax.Array, ...],
         g: dict[str, jax.Array],
@@ -620,6 +626,7 @@ def setup_dense_solver(
 
     logger.info(f"Differentiator: {_diff_name}")
 
+    #TODO_SPARSE
     def solver(
         *,
         warmstart: Optional[jax.Array] = None,
@@ -654,6 +661,7 @@ def setup_dense_solver(
                 )
 
         # Pass only dynamic values through the traced path
+        #TODO_SPARSE
         dynamic_vals: tuple[jax.Array, ...] = tuple(
             runtime[k] for k in _dynamic_keys
         )
