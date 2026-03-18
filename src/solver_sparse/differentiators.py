@@ -62,6 +62,9 @@ def create_sparse_kkt_differentiator_fwd(
     _fixed: dict[str, ndarray] = {}
     _d_fixed: dict[str, ndarray] = {}
 
+    #TODO: this does not work, we need to maintain the sparsity pattern
+    # when passing to differentiator. Should we store _d_fixed as sparse
+    # too?
     if fixed_elements is not None:
         for k, v in fixed_elements.items():
             _fixed[k] = np.asarray(_to_dense(v), dtype=_dtype).squeeze()
@@ -99,6 +102,8 @@ def create_sparse_kkt_differentiator_fwd(
         x_np, lam_np, mu_np, active_np = sol_np
 
         # ── Merge & densify primals ──────────────────────────────────
+        #TODO: also no, we don't want to densify online as this takes
+        # a lot of time
         dyn_dense = {
             k: np.asarray(_to_dense(v), dtype=_dtype).squeeze()
             for k, v in dyn_primals_np.items()
@@ -114,6 +119,8 @@ def create_sparse_kkt_differentiator_fwd(
         n_active = int(np.sum(active_np))
 
         # ── Build LHS (identical to dense) ───────────────────────────
+        #TODO: not sure if numpy is the correct choice here, since we want to 
+        # preserve the sparsity
         H_parts: list[ndarray] = []
         if n_eq > 0:
             H_parts.append(prob_np["A"])
@@ -129,6 +136,7 @@ def create_sparse_kkt_differentiator_fwd(
         ])
 
         # ── Build RHS ────────────────────────────────────────────────
+        #TODO: probably ok to keep numpy for RHSs as this is usually a low amount
         dL_np = d_np["P"] @ x_np + d_np["q"]
         rhs_pieces = []
 
