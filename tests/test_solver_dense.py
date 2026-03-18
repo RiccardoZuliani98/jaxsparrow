@@ -629,7 +629,7 @@ class TestWarmstart:
         G = jax.random.normal(k4, (n_ineq, n_var))
         h = G @ jnp.ones(n_var) + 1.0  # feasible with slack
 
-        solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":"osqp"})
+        solver = setup_dense_solver(n_var=n_var, n_eq=n_eq, n_ineq=n_ineq, options={"solver":{"solver_name":"osqp"}})
 
         # Get the true solution for a "good" warmstart
         sol = solver(P=P, q=q, A=A, b=b, G=G, h=h)
@@ -1448,3 +1448,790 @@ class TestJVPVmapFiniteDifferences:
         np.testing.assert_allclose(
             batched["mu"], jnp.stack(seq_mus), atol=1e-12
         )
+
+# =====================================================================
+# VJP vs Finite Differences
+# =====================================================================
+
+class TestVJPFiniteDifferences:
+    """Verify VJP cotangents against central finite differences."""
+
+    EPS = 1e-6
+    ATOL_X = 1e-4
+    ATOL_DUAL = 1e-3
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _fd_grad(solve_fn, param, cotangent_key, cotangent_vec, eps):
+        """Compute grad via central FD: sum_i g_i * (f_i(p+e) - f_i(p-e)) / 2e.
+        
+        This computes the VJP product g^T @ (df/dp) by finite-differencing
+        each element of param independently.
+        """
+        flat_param = param.reshape(-1)
+        grad = np.zeros_like(flat_param)
+        for j in range(flat_param.size):
+            e = np.zeros_like(flat_param)
+            e[j] = 1.0
+            dp = e.reshape(param.shape)
+            sol_plus = solve_fn(param + eps * dp)
+            sol_minus = solve_fn(param - eps * dp)
+            df = (sol_plus[cotangent_key] - sol_minus[cotangent_key]) / (2.0 * eps)
+            grad[j] = jnp.dot(cotangent_vec.reshape(-1), df.reshape(-1))
+        return grad.reshape(param.shape)
+
+    @staticmethod
+    def _vjp_grad(solve_fn, param, cotangent_key, cotangent_vec):
+        """Compute VJP gradient for a single parameter."""
+        _, vjp_fn = jax.vjp(solve_fn, param)
+        cotangent = {
+            "x": jnp.zeros_like(solve_fn(param)["x"]),
+            "lam": jnp.zeros_like(solve_fn(param)["lam"]),
+            "mu": jnp.zeros_like(solve_fn(param)["mu"]),
+        }
+        cotangent[cotangent_key] = cotangent_vec
+        (grad,) = vjp_fn(cotangent)
+        return grad
+
+    # -----------------------------------------------------------------
+    # Unconstrained: VJP w.r.t. q, P
+    # -----------------------------------------------------------------
+
+    def test_vjp_dq_unconstrained(self, unconstrained_2d):
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val)
+
+        grad = self._vjp_grad(solve_q, d["q"], "x", g_x)
+        fd = self._fd_grad(solve_q, d["q"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_dP_unconstrained(self, unconstrained_2d):
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_P(P_val):
+            return solver(P=P_val, q=d["q"])
+
+        grad = self._vjp_grad(solve_P, d["P"], "x", g_x)
+        fd = self._fd_grad(solve_P, d["P"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Equality only: VJP w.r.t. q, b, A
+    # -----------------------------------------------------------------
+
+    def test_vjp_dq_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"])
+
+        grad = self._vjp_grad(solve_q, d["q"], "x", g_x)
+        fd = self._fd_grad(solve_q, d["q"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_db_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val)
+
+        grad = self._vjp_grad(solve_b, d["b"], "x", g_x)
+        fd = self._fd_grad(solve_b, d["b"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_dA_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_A(A_val):
+            return solver(P=d["P"], q=d["q"], A=A_val, b=d["b"])
+
+        grad = self._vjp_grad(solve_A, d["A"], "x", g_x)
+        fd = self._fd_grad(solve_A, d["A"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Inequality only: VJP w.r.t. q, h, G
+    # -----------------------------------------------------------------
+
+    def test_vjp_dq_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([0.0, 1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, G=d["G"], h=d["h"])
+
+        grad = self._vjp_grad(solve_q, d["q"], "x", g_x)
+        fd = self._fd_grad(solve_q, d["q"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_dh_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        g_x = jnp.array([0.0, 1.0, 0.0])
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], G=d["G"], h=h_val)
+
+        grad = self._vjp_grad(solve_h, d["h"], "x", g_x)
+        fd = self._fd_grad(solve_h, d["h"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_dG_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(42)
+        g_x = jax.random.normal(key, (d["n_var"],))
+
+        def solve_G(G_val):
+            return solver(P=d["P"], q=d["q"], G=G_val, h=d["h"])
+
+        grad = self._vjp_grad(solve_G, d["G"], "x", g_x)
+        fd = self._fd_grad(solve_G, d["G"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Full QP: VJP w.r.t. q, b, h
+    # -----------------------------------------------------------------
+
+    def test_vjp_dq_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        grad = self._vjp_grad(solve_q, d["q"], "x", g_x)
+        fd = self._fd_grad(solve_q, d["q"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_db_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val,
+                          G=d["G"], h=d["h"])
+
+        grad = self._vjp_grad(solve_b, d["b"], "x", g_x)
+        fd = self._fd_grad(solve_b, d["b"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    def test_vjp_dh_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        g_x = jnp.array([0.1, 0.0])
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=h_val)
+
+        grad = self._vjp_grad(solve_h, d["h"], "x", g_x)
+        fd = self._fd_grad(solve_h, d["h"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # MPC: VJP w.r.t. b (parametric initial condition)
+    # -----------------------------------------------------------------
+
+    def test_vjp_db_mpc(self, mpc_problem):
+        d = mpc_problem
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"],
+                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(99)
+        g_x = jax.random.normal(key, (d["n_var"],))
+
+        def solve_b(b_val):
+            return solver(b=b_val)
+
+        grad = self._vjp_grad(solve_b, d["b"], "x", g_x)
+        fd = self._fd_grad(solve_b, d["b"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Random cotangent direction on full QP
+    # -----------------------------------------------------------------
+
+    def test_vjp_random_cotangent_full(self, full_qp):
+        """VJP with random cotangent on x matches FD on full QP."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(7)
+        g_x = jax.random.normal(key, (d["n_var"],))
+
+        def solve_qbh(q_val, b_val, h_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=b_val,
+                          G=d["G"], h=h_val)
+
+        sol0 = solve_qbh(d["q"], d["b"], d["h"])
+        _, vjp_fn = jax.vjp(solve_qbh, d["q"], d["b"], d["h"])
+        cotangent = {
+            "x": g_x,
+            "lam": jnp.zeros_like(sol0["lam"]),
+            "mu": jnp.zeros_like(sol0["mu"]),
+        }
+        grad_q, grad_b, grad_h = vjp_fn(cotangent)
+
+        fd_q = self._fd_grad(
+            lambda q: solve_qbh(q, d["b"], d["h"]),
+            d["q"], "x", g_x, self.EPS
+        )
+        fd_b = self._fd_grad(
+            lambda b: solve_qbh(d["q"], b, d["h"]),
+            d["b"], "x", g_x, self.EPS
+        )
+        fd_h = self._fd_grad(
+            lambda h: solve_qbh(d["q"], d["b"], h),
+            d["h"], "x", g_x, self.EPS
+        )
+
+        np.testing.assert_allclose(grad_q, fd_q, atol=self.ATOL_X)
+        np.testing.assert_allclose(grad_b, fd_b, atol=self.ATOL_X)
+        np.testing.assert_allclose(grad_h, fd_h, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Fixed elements: VJP only flows through dynamic keys
+    # -----------------------------------------------------------------
+
+    def test_vjp_fixed_P_q_diff_through_b(self, full_qp):
+        """With P, q fixed, VJP w.r.t. b still matches FD."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"]},
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        g_x = jnp.array([1.0, 0.0])
+
+        def solve_b(b_val):
+            return solver(A=d["A"], b=b_val, G=d["G"], h=d["h"])
+
+        grad = self._vjp_grad(solve_b, d["b"], "x", g_x)
+        fd = self._fd_grad(solve_b, d["b"], "x", g_x, self.EPS)
+
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
+
+
+# =====================================================================
+# VJP under vmap (batched cotangents) vs Finite Differences
+# =====================================================================
+
+class TestVJPVmapFiniteDifferences:
+    """Verify that vmapped VJP cotangents match per-direction finite differences."""
+
+    EPS = 1e-6
+    ATOL_X = 1e-4
+    ATOL_DUAL = 1e-3
+    N_DIRS = 3
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _fd_grad(solve_fn, param, cotangent_key, cotangent_vec, eps):
+        """Compute grad via central FD for a single cotangent."""
+        flat_param = param.reshape(-1)
+        grad = np.zeros_like(flat_param)
+        for j in range(flat_param.size):
+            e = np.zeros_like(flat_param)
+            e[j] = 1.0
+            dp = e.reshape(param.shape)
+            sol_plus = solve_fn(param + eps * dp)
+            sol_minus = solve_fn(param - eps * dp)
+            df = (sol_plus[cotangent_key] - sol_minus[cotangent_key]) / (2.0 * eps)
+            grad[j] = jnp.dot(cotangent_vec.reshape(-1), df.reshape(-1))
+        return grad.reshape(param.shape)
+
+    def _fd_batch_vjp(self, solve_fn, param, cotangent_key, cotangent_vecs, eps):
+        """Run FD VJP for each cotangent vector, stack results."""
+        return jnp.stack([
+            self._fd_grad(solve_fn, param, cotangent_key, g, eps)
+            for g in cotangent_vecs
+        ])
+
+    # -----------------------------------------------------------------
+    # Unconstrained: vmap VJP w.r.t. q, P
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_dq_unconstrained(self, unconstrained_2d):
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(100)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_q, d["q"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(0), "mu": jnp.zeros(0)}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_q, d["q"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_dP_unconstrained(self, unconstrained_2d):
+        d = unconstrained_2d
+        solver = setup_dense_solver(n_var=d["n_var"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(101)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_P(P_val):
+            return solver(P=P_val, q=d["q"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_P, d["P"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(0), "mu": jnp.zeros(0)}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_P, d["P"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Equality only: vmap VJP w.r.t. q, b, A
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_dq_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(110)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_q, d["q"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(0), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_q, d["q"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_db_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(111)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_b, d["b"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(0), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_b, d["b"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_dA_equality(self, equality_only):
+        d = equality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(112)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_A(A_val):
+            return solver(P=d["P"], q=d["q"], A=A_val, b=d["b"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_A, d["A"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(0), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_A, d["A"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Inequality only: vmap VJP w.r.t. q, h, G
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_dq_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(120)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, G=d["G"], h=d["h"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_q, d["q"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(0)}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_q, d["q"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_dh_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(121)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], G=d["G"], h=h_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_h, d["h"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(0)}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_h, d["h"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_dG_inequality(self, inequality_only):
+        d = inequality_only
+        solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
+                                     options={"differentiator_type": "kkt_rev"})
+
+        key = jax.random.PRNGKey(122)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_G(G_val):
+            return solver(P=d["P"], q=d["q"], G=G_val, h=d["h"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_G, d["G"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(0)}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_G, d["G"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Full QP: vmap VJP w.r.t. q, b, h
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_dq_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(130)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_q, d["q"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_q, d["q"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_db_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(131)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_b(b_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=b_val,
+                          G=d["G"], h=d["h"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_b, d["b"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_b, d["b"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    def test_vmap_vjp_dh_full(self, full_qp):
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(132)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_h(h_val):
+            return solver(P=d["P"], q=d["q"], A=d["A"], b=d["b"],
+                          G=d["G"], h=h_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_h, d["h"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_h, d["h"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # MPC: vmap VJP w.r.t. b
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_db_mpc(self, mpc_problem):
+        d = mpc_problem
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            fixed_elements={"P": d["P"], "q": d["q"],
+                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(140)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_b(b_val):
+            return solver(b=b_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_b, d["b"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+        fd = self._fd_batch_vjp(solve_b, d["b"], "x", g_xs, self.EPS)
+
+        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Multi-parameter: vmap VJP over cotangents, multiple params
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_multi_param_full(self, full_qp):
+        """Batched VJP over cotangent directions, joint (q, b, h)."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(150)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_qbh(q_val, b_val, h_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=b_val,
+                          G=d["G"], h=h_val)
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_qbh, d["q"], d["b"], d["h"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            return vjp_fn(cotangent)
+
+        batched_grads = jax.vmap(vjp_one)(g_xs)
+        # batched_grads is a tuple of 3 arrays: (grad_q, grad_b, grad_h)
+
+        for i in range(self.N_DIRS):
+            fd_q = self._fd_grad(
+                lambda q: solve_qbh(q, d["b"], d["h"]),
+                d["q"], "x", g_xs[i], self.EPS
+            )
+            fd_b = self._fd_grad(
+                lambda b: solve_qbh(d["q"], b, d["h"]),
+                d["b"], "x", g_xs[i], self.EPS
+            )
+            fd_h = self._fd_grad(
+                lambda h: solve_qbh(d["q"], d["b"], h),
+                d["h"], "x", g_xs[i], self.EPS
+            )
+
+            np.testing.assert_allclose(batched_grads[0][i], fd_q, atol=self.ATOL_X)
+            np.testing.assert_allclose(batched_grads[1][i], fd_b, atol=self.ATOL_X)
+            np.testing.assert_allclose(batched_grads[2][i], fd_h, atol=self.ATOL_X)
+
+    # -----------------------------------------------------------------
+    # Consistency: vmap VJP matches sequential VJP calls
+    # -----------------------------------------------------------------
+
+    def test_vmap_vjp_matches_sequential(self, full_qp):
+        """vmap(vjp) should produce identical results to sequential vjp calls."""
+        d = full_qp
+        solver = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+
+        key = jax.random.PRNGKey(160)
+        g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
+
+        def solve_q(q_val):
+            return solver(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                          G=d["G"], h=d["h"])
+
+        def vjp_one(g_x):
+            sol, vjp_fn = jax.vjp(solve_q, d["q"])
+            cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+            (grad,) = vjp_fn(cotangent)
+            return grad
+
+        batched = jax.vmap(vjp_one)(g_xs)
+
+        seq = []
+        for i in range(self.N_DIRS):
+            seq.append(vjp_one(g_xs[i]))
+
+        np.testing.assert_allclose(batched, jnp.stack(seq), atol=1e-12)
+
+    # -----------------------------------------------------------------
+    # Cross-check: VJP vs JVP consistency
+    # -----------------------------------------------------------------
+
+    def test_vjp_jvp_consistency(self, full_qp):
+        """g^T @ J @ d  should be the same computed via JVP or VJP."""
+        d = full_qp
+
+        solver_rev = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_rev"},
+        )
+        solver_fwd = setup_dense_solver(
+            n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
+            options={"differentiator_type": "kkt_fwd"},
+        )
+
+        key = jax.random.PRNGKey(170)
+        k1, k2 = jax.random.split(key)
+        dq = jax.random.normal(k1, (d["n_var"],))
+        g_x = jax.random.normal(k2, (d["n_var"],))
+
+        def solve_q_rev(q_val):
+            return solver_rev(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                              G=d["G"], h=d["h"])
+
+        def solve_q_fwd(q_val):
+            return solver_fwd(P=d["P"], q=q_val, A=d["A"], b=d["b"],
+                              G=d["G"], h=d["h"])
+
+        # JVP: J @ dq, then dot with g_x
+        _, tangents = jax.jvp(solve_q_fwd, (d["q"],), (dq,))
+        jvp_val = jnp.dot(g_x, tangents["x"])
+
+        # VJP: J^T @ g_x, then dot with dq
+        _, vjp_fn = jax.vjp(solve_q_rev, d["q"])
+        sol0 = solve_q_rev(d["q"])
+        cotangent = {"x": g_x, "lam": jnp.zeros(d["n_ineq"]), "mu": jnp.zeros(d["n_eq"])}
+        (grad,) = vjp_fn(cotangent)
+        vjp_val = jnp.dot(grad, dq)
+
+        np.testing.assert_allclose(jvp_val, vjp_val, atol=1e-8)
