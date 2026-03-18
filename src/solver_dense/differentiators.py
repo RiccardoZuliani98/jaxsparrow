@@ -423,15 +423,15 @@ def create_dense_kkt_differentiator_rev(
         if batched:
 
             if _need("P"):
-                grads["P"] = -np.einsum('bi,j->bij', v_x, x_np)
+                grads["P"] = -(v_x[:, :, None] * x_np[None, None, :])
 
             if _need("q"):
                 grads["q"] = -v_x
 
             if n_eq > 0:
                 if _need("A"):
-                    term1 = np.einsum('i,bj->bij', mu_np, v_x)
-                    term2 = np.einsum('bi,j->bij', v_mu, x_np)
+                    term1 = mu_np[None, :, None] * v_x[:, None, :]
+                    term2 = v_mu[:, :, None] * x_np[None, None, :]
                     grads["A"] = -(term1 + term2)
 
                 if _need("b"):
@@ -441,8 +441,9 @@ def create_dense_kkt_differentiator_rev(
                 if _need("G"):
                     g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
                     if n_active > 0:
-                        term1 = np.einsum('i,bj->bij', lam_np[active_np], v_x)
-                        term2 = np.einsum('bi,j->bij', v_lam_a, x_np)
+                        lam_active = lam_np[active_np]
+                        term1 = lam_active[None, :, None] * v_x[:, None, :]
+                        term2 = v_lam_a[:, :, None] * x_np[None, None, :]
                         g_G[:, active_np, :] = -(term1 + term2)
                     grads["G"] = g_G
 
