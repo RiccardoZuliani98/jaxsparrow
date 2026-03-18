@@ -88,7 +88,7 @@ def solve_mpc_jvp(x_init):
 x0 = jnp.array([-3.0,-1.0])
 dx0 = jnp.array([EPSILON,0])
 
-@jit
+#@jit
 def closed_loop(x0):
 
     x_cl = [x0]
@@ -101,7 +101,7 @@ def closed_loop(x0):
 
     return jnp.hstack(x_cl), jnp.hstack(u_cl)
 
-@jit
+#@jit
 def closed_loop_jvp(x0):
 
     x_cl = [x0]
@@ -114,16 +114,16 @@ def closed_loop_jvp(x0):
 
     return jnp.hstack(x_cl), jnp.hstack(u_cl)
 
-@jit
+#@jit
 def cost_fun(x_cl,u_cl):
     return jnp.dot(x_cl,x_cl)*cost_state +  jnp.dot(u_cl,u_cl)*cost_input
 
-@jit
+#@jit
 def cl_cost(x0):
     x_cl, u_cl = closed_loop(x0)
     return cost_fun(x_cl,u_cl)
 
-@jit
+#@jit
 def cl_cost_jvp(x0):
     x_cl, u_cl = closed_loop_jvp(x0)
     return cost_fun(x_cl,u_cl)
@@ -134,17 +134,31 @@ def solve_and_differentiate(x0):
     jac = vjp_func(1.0)
     return cost, jac
 
+#@jit
 def jvp_func_base(x0,dx0):
     return jvp(cl_cost_jvp,(x0,),(dx0,))
 
+# jvp_func = vmap(jvp_func_base, in_axes=(None,0))
 jvp_func = jit(vmap(jvp_func_base, in_axes=(None,0)))
 
-solve_and_differentiate(0.9*x0)
-
-elapsed_vjp, elapsed_jvp = [], []
+e_mat = jnp.eye(x0.shape[0],dtype=x0.dtype)
 
 key = jax.random.PRNGKey(42)
 keys = jax.random.split(key, N_RUNS)
+
+x0 = jax.random.uniform(keys[0], shape=(2,), minval=-2.0, maxval=2.0)
+x1 = jax.random.uniform(keys[1], shape=(2,), minval=-2.0, maxval=2.0)
+jvp_func(x0,e_mat)
+solve_and_differentiate(0.9*x0)
+
+# with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
+#   # Run the operations to be profiled
+#   start = perf_counter()
+#   out1, out2 = jvp_func(x1,e_mat)
+#   print(perf_counter()-start)
+# #   out1.block_until_ready()
+
+elapsed_vjp, elapsed_jvp = [], []
 
 solver.timings.reset()
 solver_jvp.timings.reset()
@@ -155,8 +169,6 @@ for i in range(N_RUNS):
     solve_and_differentiate(xi)
     elapsed = perf_counter()
     elapsed_vjp.append(elapsed - start)
-
-e_mat = jnp.eye(x0.shape[0],dtype=x0.dtype)
 
 for i in range(N_RUNS):
     xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)

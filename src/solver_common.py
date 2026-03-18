@@ -518,7 +518,7 @@ def build_solver(
             _diff_reverse,
             _vjp_bwd_shapes,
             *residuals, g_x, g_lam, g_mu,
-            vmap_method="broadcast_all",
+            vmap_method="expand_dims",
         )
         return tuple(grad_vals[k] for k in _dynamic_keys)
 
