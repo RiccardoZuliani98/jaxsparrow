@@ -2,7 +2,7 @@ from numpy import ndarray
 from time import perf_counter
 from jaxtyping import Float, Bool
 import numpy as np
-from typing import cast, Optional
+from typing import cast, Optional, Sequence
 from src.solver_dense.types import (
     DenseQPIngredientsNP, 
     DenseQPIngredientsNPFull, 
@@ -16,7 +16,6 @@ from src.solver_dense.linear_solvers import get_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings
-#TODO: add options for different linear solvers
 def create_dense_kkt_differentiator_fwd(
     n_var:int,
     n_eq:int,
@@ -63,7 +62,7 @@ def create_dense_kkt_differentiator_fwd(
     # store a batched version where the first dimension is expanded
     _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
-    # choose lienar system solver
+    # choose linear system solver
     _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
 
 
@@ -230,7 +229,8 @@ def create_dense_kkt_differentiator_rev(
     n_eq:int,
     n_ineq:int,
     options:Optional[DifferentiatorOptions]=None,
-    fixed_elements:Optional[DenseQPIngredientsNP]=None
+    fixed_elements:Optional[DenseQPIngredientsNP]=None,
+    dynamic_keys:Optional[Sequence[str]]=None
 ):
 
     # parse options
@@ -256,8 +256,19 @@ def create_dense_kkt_differentiator_rev(
 
     # choose linear system solver
     _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
-    
-    #TODO: reverse mode is slow
+
+    # Pre-compute which groups of keys are dynamic for fast lookup
+    # in the inner function. If dynamic_keys is None, assume all
+    # required keys are dynamic (backward-compatible).
+    if dynamic_keys is not None:
+        _dyn_set = frozenset(dynamic_keys)
+    else:
+        _dyn_set = None  # means "compute everything"
+
+    def _need(key: str) -> bool:
+        """Return True if we need to compute the gradient for *key*."""
+        return _dyn_set is None or key in _dyn_set
+
     def kkt_differentiator_rev(
         dyn_primals_np:DenseQPIngredientsNP,
         x_np:ndarray,
@@ -271,7 +282,6 @@ def create_dense_kkt_differentiator_rev(
         
         # start timing
         t : dict[str, float] = {}
-        start = perf_counter()
 
         # bool representing batching for simplicity
         batched = batch_size > 0
@@ -279,11 +289,12 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Parse ingredients ────────────────────────────────────────
 
+        start = perf_counter()
+
         # merge qp ingredients too
         prob_np = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
 
         # get active constraints
-        start = perf_counter()
         if n_ineq > 0:
             active_np: Bool[ndarray, "n_ineq"] = np.asarray(
                 np.abs(prob_np["G"] @ x_np - prob_np["h"])
@@ -299,6 +310,8 @@ def create_dense_kkt_differentiator_rev(
 
 
         # ── Build LHS ────────────────────────────────────────────────
+
+        start = perf_counter()
 
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
@@ -370,6 +383,8 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Extract adjoint variables ────────────────────────────────
 
+        start = perf_counter()
+
         if batched:
             # v has shape (n_var + n_h, batch_size)
             v_x = v[:n_var, :].T  # Shape: (batch_size, n_var)
@@ -396,70 +411,77 @@ def create_dense_kkt_differentiator_rev(
                 else np.empty(0, dtype=options_parsed["dtype"])
             )
 
+        t["extract_adjoint"] = perf_counter() - start
+
         # ── Compute parameter cotangents ─────────────────────────────
+        # Only compute gradients for dynamic keys. Fixed keys have zero
+        # gradient by definition and are never read by the caller.
         start = perf_counter()
 
         grads: dict[str, ndarray] = {}
 
         if batched:
-            # Batched cotangent computation
-            # g_P: for each batch element, compute -outer(v_x[b], x)
-            # Shape: (batch_size, n_var, n_var)
-            grads["P"] = -np.einsum('bi,j->bij', v_x, x_np)
-            
-            # g_q: -v_x for each batch element
-            # Shape: (batch_size, n_var)
-            grads["q"] = -v_x
+
+            if _need("P"):
+                grads["P"] = -np.einsum('bi,j->bij', v_x, x_np)
+
+            if _need("q"):
+                grads["q"] = -v_x
 
             if n_eq > 0:
-                # g_A: for each batch element, -(outer(μ, v_x[b]) + outer(v_mu[b], x))
-                # Shape: (batch_size, n_eq, n_var)
-                term1 = np.einsum('i,bj->bij', mu_np, v_x)
-                term2 = np.einsum('bi,j->bij', v_mu, x_np)
-                grads["A"] = -(term1 + term2)
-                
-                # g_b: v_mu for each batch element
-                # Shape: (batch_size, n_eq)
-                grads["b"] = v_mu
+                if _need("A"):
+                    term1 = np.einsum('i,bj->bij', mu_np, v_x)
+                    term2 = np.einsum('bi,j->bij', v_mu, x_np)
+                    grads["A"] = -(term1 + term2)
+
+                if _need("b"):
+                    grads["b"] = v_mu
 
             if n_ineq > 0:
-                # Initialize gradients with zeros
-                g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
-                g_h_full = np.zeros((batch_size, n_ineq), dtype=options_parsed["dtype"])
-                
-                if n_active > 0:
-                    # For active constraints:
-                    # g_G[active] = -(outer(λ[active], v_x[b]) + outer(v_lam_a[b], x))
-                    term1 = np.einsum('i,bj->bij', lam_np[active_np], v_x)
-                    term2 = np.einsum('bi,j->bij', v_lam_a, x_np)
-                    g_G[:, active_np, :] = -(term1 + term2)
-                    
-                    # g_h[active] = v_lam_a for each batch element
-                    g_h_full[:, active_np] = v_lam_a
-                
-                grads["G"] = g_G
-                grads["h"] = g_h_full
+                if _need("G"):
+                    g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        term1 = np.einsum('i,bj->bij', lam_np[active_np], v_x)
+                        term2 = np.einsum('bi,j->bij', v_lam_a, x_np)
+                        g_G[:, active_np, :] = -(term1 + term2)
+                    grads["G"] = g_G
+
+                if _need("h"):
+                    g_h_full = np.zeros((batch_size, n_ineq), dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        g_h_full[:, active_np] = v_lam_a
+                    grads["h"] = g_h_full
 
         else:
-            # Unbatched cotangent computation (original implementation)
-            grads["P"] = -np.outer(v_x, x_np)
-            grads["q"] = -v_x
+
+            if _need("P"):
+                grads["P"] = -np.outer(v_x, x_np)
+
+            if _need("q"):
+                grads["q"] = -v_x
 
             if n_eq > 0:
-                grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
-                grads["b"] = v_mu
+                if _need("A"):
+                    grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
+
+                if _need("b"):
+                    grads["b"] = v_mu
 
             if n_ineq > 0:
-                g_G = np.zeros_like(prob_np["G"])
-                g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
-                if n_active > 0:
-                    g_G[active_np, :] = -(
-                        np.outer(lam_np[active_np], v_x)
-                        + np.outer(v_lam_a, x_np)
-                    )
-                    g_h_full[active_np] = v_lam_a
-                grads["G"] = g_G
-                grads["h"] = g_h_full
+                if _need("G"):
+                    g_G = np.zeros_like(prob_np["G"])
+                    if n_active > 0:
+                        g_G[active_np, :] = -(
+                            np.outer(lam_np[active_np], v_x)
+                            + np.outer(v_lam_a, x_np)
+                        )
+                    grads["G"] = g_G
+
+                if _need("h"):
+                    g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        g_h_full[active_np] = v_lam_a
+                    grads["h"] = g_h_full
 
         t["compute_grads"] = perf_counter() - start
 

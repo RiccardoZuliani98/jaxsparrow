@@ -381,6 +381,7 @@ def build_solver(
         )
 
         # ── Differentiate ────────────────────────────────────────────
+        start = perf_counter()
         grads_np, t_diff = _diff_reverse_numpy(
             dyn_primals_np=prob_np,
             x_np=x_np, lam_np=lam_np, mu_np=mu_np,
@@ -388,12 +389,15 @@ def build_solver(
             batch_size=batch_size,
         )
         t.update(t_diff)
+        t["total_numpy_operations"] = perf_counter()-start
 
         # ── Convert back to JAX ──────────────────────────────────────
+        start = perf_counter()
         grads = {
             k: _grad_to_jax(k, grads_np[k], _dtype)
             for k in _dynamic_keys
         }
+        t["convert_to_jax"] = perf_counter()-start
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")

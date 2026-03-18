@@ -61,6 +61,17 @@ def setup_dense_solver(
         for key, val in fixed_elements.items():
             assert val.shape == expected_shapes[key]  # type: ignore
 
+    # gather all required keys
+    required_keys: tuple[str,...] = ("P", "q")
+    if n_eq > 0:
+        required_keys += ("A", "b")
+    if n_ineq > 0:
+        required_keys += ("G", "h")
+
+    # gather keys required at runtime (i.e., not fixed).
+    # Only these flow through JAX's traced path.
+    dynamic_keys = tuple(k for k in required_keys if k not in fixed_keys_set)
+
     # ── Create numpy solver ──────────────────────────────────────────
     if options_parsed["solver_type"] == "qp_solvers":
         solve_qp_numpy = create_dense_qp_solver(
@@ -71,7 +82,7 @@ def setup_dense_solver(
         )
     else:
         raise ValueError("Only qp_solvers is available as 'solver_type'")
-
+ 
     # ── Create differentiators ───────────────────────────────────────
     if options_parsed["differentiator_type"] in ("kkt_fwd", "kkt_rev"):
         diff_forward_numpy = create_dense_kkt_differentiator_fwd(
@@ -83,23 +94,25 @@ def setup_dense_solver(
             n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
             options=options_parsed["differentiator"],
             fixed_elements=fixed_elements,
+            dynamic_keys=dynamic_keys,
         )
     else:
         raise ValueError("Only differentiator available is 'kkt'")
-
+ 
     # ── FD recorder ──────────────────────────────────────────────────
     fd_check = FiniteDifferenceRecorder(
         enabled=options_parsed.get("fd_check", False),
         eps=options_parsed.get("fd_eps", 1e-6),
     )
-
+ 
     # ── Log ──────────────────────────────────────────────────────────
     logger.info(
         f"Setting up dense QP with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
     )
     logger.info(f"Fixed variables: {fixed_keys_set or 'none'}")
-
+    logger.info(f"Dynamic variables: {dynamic_keys or 'none'}")
+ 
     # ── Delegate to common builder ───────────────────────────────────
     return build_solver(
         n_var=n_var,

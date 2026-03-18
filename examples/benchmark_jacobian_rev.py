@@ -72,7 +72,7 @@ solver = setup_dense_solver(
 def get_x(x_init):
     return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)["x"]
 
-I = jnp.eye(nz)
+I = jnp.eye(nz)[0:3,:]
 
 def get_jacobian_vjp(x0):
     """Compute Jacobian using VJP with identity cotangents."""
@@ -102,7 +102,7 @@ x0_i = jnp.array(x0_samples[0])
 
 with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
     sol, jac = jacobian_fn(x0_i)
-    # sol.block_until_ready()
+    sol.block_until_ready()
 
 for i in range(N_SAMPLES):
     x0_i = jnp.array(x0_samples[i])
