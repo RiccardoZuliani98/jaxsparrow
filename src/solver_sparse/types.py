@@ -11,6 +11,8 @@ from typing import TypedDict, Union
 from numpy import ndarray
 from scipy.sparse import csc_matrix
 from jaxtyping import Float
+from jax.experimental.sparse import BCOO
+from jax import Array
 
 # --------------------------------------------------------------------------
 # Numpy-side ingredients (what the solver / differentiator receive)
@@ -31,6 +33,26 @@ class SparseQPIngredientsNPFull(TypedDict):
     b: Float[ndarray, "n_eq"]
     G: csc_matrix
     h: Float[ndarray, "n_ineq"]
+
+# --------------------------------------------------------------------------
+# Jax-side ingredients (used as inputs-outputs)
+# --------------------------------------------------------------------------
+
+class SparseQPIngredients(TypedDict, total=False):
+    P: BCOO
+    q: Float[Array, "n_var"]
+    A: BCOO
+    b: Float[Array, "n_eq"]
+    G: BCOO
+    h: Float[Array, "n_ineq"]
+
+class SparseQPIngredientsFull(TypedDict):
+    P: BCOO
+    q: Float[Array, "n_var"]
+    A: BCOO
+    b: Float[Array, "n_eq"]
+    G: BCOO
+    h: Float[Array, "n_ineq"]
 
 # --------------------------------------------------------------------------
 # Tangents for the forward (JVP) path — numpy side.

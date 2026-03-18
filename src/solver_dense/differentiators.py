@@ -12,7 +12,7 @@ from src.types_common import QPOutputNP, QPDiffOutNP
 from src.solver_dense.options import DifferentiatorOptions
 from src.utils.parsing_utils import parse_options
 from src.solver_dense.options import DEFAULT_DIFF_OPTIONS
-from src.solver_dense.linear_solvers import get_linear_solver
+from utils.linear_solvers import get_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings
