@@ -47,7 +47,6 @@ def create_dense_qp_solver(
     else:
         _fixed = {}
 
-    #TODO: change output
     def solve_qp_numpy(**kwargs: ndarray) -> tuple[QPOutputNP,dict[str, float]]:
 
         # preallocate dictionary with computation times

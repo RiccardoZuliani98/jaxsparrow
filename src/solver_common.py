@@ -42,13 +42,49 @@ from scipy.sparse import csc_matrix
 QPInputNP = Union[ndarray, csc_matrix]
 QPInput = Union[jax.Array, BCOO]
 
-# ── Constants ────────────────────────────────────────────────────────
 
+# ── Constants ────────────────────────────────────────────────────────
+ 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP / VJP paths.
 EXPECTED_NDIM: dict[str, int] = {
     "P": 2, "q": 1, "A": 2, "b": 1, "G": 2, "h": 1,
 }
+ 
+# Expected shapes for each QP ingredient (unbatched), given problem dims.
+def make_expected_shapes(
+    n_var: int, n_eq: int, n_ineq: int
+) -> dict[str, tuple[int, ...]]:
+    return {
+        "P": (n_var, n_var),
+        "q": (n_var,),
+        "A": (n_eq, n_var),
+        "b": (n_eq,),
+        "G": (n_ineq, n_var),
+        "h": (n_ineq,),
+    }
+ 
+ 
+# ── Key partitioning helpers ─────────────────────────────────────────
+ 
+def compute_required_keys(
+    n_eq: int, n_ineq: int
+) -> tuple[str, ...]:
+    """Return the tuple of QP ingredient names required by the problem."""
+    keys: tuple[str, ...] = ("P", "q")
+    if n_eq > 0:
+        keys += ("A", "b")
+    if n_ineq > 0:
+        keys += ("G", "h")
+    return keys
+ 
+ 
+def compute_dynamic_keys(
+    required_keys: tuple[str, ...],
+    fixed_keys: set[str],
+) -> tuple[str, ...]:
+    """Keys that are *not* fixed and must flow through JAX's traced path."""
+    return tuple(k for k in required_keys if k not in fixed_keys)
 
 # ── Converter protocol ───────────────────────────────────────────────
 #
@@ -116,32 +152,11 @@ def build_solver(
     )
 
     # ── Key partitioning ─────────────────────────────────────────────
-    # gather all required keys
-    _required_keys: tuple[str,...] = ("P", "q")
-    if n_eq > 0:
-        _required_keys += ("A", "b")
-    if n_ineq > 0:
-        _required_keys += ("G", "h")
-
-    # gather keys required at runtime (i.e., not fixed).
-    # Only these flow through JAX's traced path.
-    _dynamic_keys = tuple(k for k in _required_keys if k not in fixed_keys_set)
-
-    # transform to sets for speed
+    _required_keys = compute_required_keys(n_eq, n_ineq)
+    _dynamic_keys = compute_dynamic_keys(_required_keys, fixed_keys_set)
     _dynamic_keys_set = set(_dynamic_keys)
-
     _n_dyn = len(_dynamic_keys)
-
-    # Expected shapes for each QP ingredient (unbatched).
-    # Used for VJP backward output shapes and batch detection.
-    _expected_shapes: dict[str, tuple[int, ...]] = {
-        "P": (n_var, n_var),
-        "q": (n_var,),
-        "A": (n_eq, n_var),
-        "b": (n_eq,),
-        "G": (n_ineq, n_var),
-        "h": (n_ineq,),
-    }
+    _expected_shapes = make_expected_shapes(n_var, n_eq, n_ineq)
 
     # ── JAX shape structs for pure_callback ──────────────────────────
     _fwd_shapes = {

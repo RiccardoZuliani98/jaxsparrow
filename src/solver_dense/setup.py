@@ -24,7 +24,12 @@ from src.solver_dense.differentiators import (
     create_dense_kkt_differentiator_rev,
 )
 from src.solver_dense.types import DenseQPIngredientsNP
-from src.solver_common import build_solver
+from src.solver_common import (
+    build_solver, 
+    make_expected_shapes, 
+    compute_required_keys, 
+    compute_dynamic_keys
+)
 from src.solver_dense.converters import (
     dense_primal_converter,
     dense_tangent_converter,
@@ -46,14 +51,7 @@ def setup_dense_solver(
     options_parsed = parse_options(options, DEFAULT_CONSTRUCTOR_OPTIONS)
 
     # ── Validate fixed elements ──────────────────────────────────────
-    expected_shapes: dict[str, tuple[int, ...]] = {
-        "P": (n_var, n_var),
-        "q": (n_var,),
-        "A": (n_eq, n_var),
-        "b": (n_eq,),
-        "G": (n_ineq, n_var),
-        "h": (n_ineq,),
-    }
+    expected_shapes = make_expected_shapes(n_var, n_eq, n_ineq)
     fixed_keys_set: set[str] = set()
 
     if fixed_elements is not None:
@@ -62,15 +60,11 @@ def setup_dense_solver(
             assert val.shape == expected_shapes[key]  # type: ignore
 
     # gather all required keys
-    required_keys: tuple[str,...] = ("P", "q")
-    if n_eq > 0:
-        required_keys += ("A", "b")
-    if n_ineq > 0:
-        required_keys += ("G", "h")
+    required_keys = compute_required_keys(n_eq, n_ineq)
 
     # gather keys required at runtime (i.e., not fixed).
     # Only these flow through JAX's traced path.
-    dynamic_keys = tuple(k for k in required_keys if k not in fixed_keys_set)
+    dynamic_keys = compute_dynamic_keys(required_keys, fixed_keys_set)
 
     # ── Create numpy solver ──────────────────────────────────────────
     if options_parsed["solver_type"] == "qp_solvers":

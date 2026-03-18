@@ -108,7 +108,7 @@ def setup_sparse_solver(
     if fixed_elements is not None:
         fixed_keys_set = set(fixed_elements.keys())
         for key, val in fixed_elements.items():
-            shape = val.shape  # works for both csc_matrix and ndarray
+            shape = val.shape  # works for both csc_matrix and ndarray #type:ignore
             assert shape == expected_shapes[key], (
                 f"Fixed element '{key}' has shape {shape}, "
                 f"expected {expected_shapes[key]}"
