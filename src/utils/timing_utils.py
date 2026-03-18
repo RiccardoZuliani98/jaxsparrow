@@ -23,8 +23,8 @@ The recorder is automatically attached to the solver callable as
     solver.timings.reset()
 
 The ``summary()`` method returns a string with one section per
-function, showing count / mean / std / min / max for every timing
-key in that function.
+function, showing count / mean / std / min / max / sum / % for every
+timing key in that function.
 """
 
 from __future__ import annotations
@@ -174,6 +174,11 @@ class TimingRecorder:
         else:
             return f"{s:8.4f}  s"
 
+    @staticmethod
+    def _fmt_pct(pct: float) -> str:
+        """Format a percentage value."""
+        return f"{pct:6.1f}%"
+
     def summary(
         self,
         func_name: Optional[str] = None,
@@ -181,7 +186,11 @@ class TimingRecorder:
         """Return a formatted multi-section summary table.
 
         Each section corresponds to one function and lists every
-        timing key with count, mean, std, min, max columns.
+        timing key with count, mean, std, min, max, sum, and
+        percentage-of-total columns.
+
+        The percentage is computed as ``sum(key) / sum(total) * 100``.
+        If no ``total`` key is present, percentages are omitted.
 
         The ``total`` key (if present) is always printed last and
         separated by a thin rule, so the per-step breakdown is
@@ -203,11 +212,16 @@ class TimingRecorder:
         for fname, key_stats in all_stats.items():
             n_calls = len(self.records[fname])
             header = f"  {fname}  ({n_calls} calls)"
-            sep = "  " + "─" * 90
+            sep = "  " + "─" * 98
 
             lines: list[str] = [sep, header, sep]
 
+            # Check if we have a total for percentage computation
+            has_total = "total" in key_stats
+            total_sum = key_stats["total"]["sum"] if has_total else 0.0
+
             # Column header
+            pct_hdr = f"{'%':>8s}" if has_total else ""
             lines.append(
                 f"  {'key':<24s}"
                 f"{'count':>6s}"
@@ -216,15 +230,18 @@ class TimingRecorder:
                 f"{'min':>12s}"
                 f"{'max':>12s}"
                 f"{'sum':>12s}"
+                f"{pct_hdr}"
             )
-            lines.append("  " + "─" * 86)
+            lines.append("  " + "─" * (86 + (8 if has_total else 0)))
 
             # Sort keys: "total" last, rest in insertion order
             ordered_keys = [k for k in key_stats if k != "total"]
-            has_total = "total" in key_stats
 
             for k in ordered_keys:
                 s = key_stats[k]
+                pct_str = ""
+                if has_total and total_sum > 0:
+                    pct_str = f"{self._fmt_pct(s['sum'] / total_sum * 100):>8s}"
                 lines.append(
                     f"  {k:<24s}"
                     f"{int(s['count']):>6d}"
@@ -233,10 +250,11 @@ class TimingRecorder:
                     f"{self._fmt_seconds(s['min']):>12s}"
                     f"{self._fmt_seconds(s['max']):>12s}"
                     f"{self._fmt_seconds(s['sum']):>12s}"
+                    f"{pct_str}"
                 )
 
             if has_total:
-                lines.append("  " + "─" * 86)
+                lines.append("  " + "─" * 94)
                 s = key_stats["total"]
                 lines.append(
                     f"  {'total':<24s}"
@@ -246,6 +264,7 @@ class TimingRecorder:
                     f"{self._fmt_seconds(s['min']):>12s}"
                     f"{self._fmt_seconds(s['max']):>12s}"
                     f"{self._fmt_seconds(s['sum']):>12s}"
+                    f"{ '100.0%':>8s}"
                 )
 
             lines.append(sep)
