@@ -29,7 +29,7 @@ class ConstructorOptionsFull(TypedDict):
     debug: bool
 
 DEFAULT_CONSTRUCTOR_OPTIONS: Final[ConstructorOptionsFull] = {
-    "differentiator_type": "kkt",
+    "differentiator_type": "kkt_fwd",
     "solver_type": "qp_solvers",
     "solver":{},
     "differentiator":{},

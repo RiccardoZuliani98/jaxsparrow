@@ -82,15 +82,7 @@ def solve_mpc(x_init):
     return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
 
 def solve_mpc_jvp(x_init):
-    return solver_jvp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)["x"][0]
-
-from jax import vjp
-
-_ , vjp_func = vjp(solve_mpc,jnp.array([-1.0,-1.0]))
-vjp_func(1.0)
-
-raise Exception
-
+    return solver_jvp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
 
 
 x0 = jnp.array([-3.0,-1.0])
