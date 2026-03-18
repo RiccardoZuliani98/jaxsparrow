@@ -19,5 +19,5 @@ DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
     "dtype": np.float64,
     "bool_dtype":np.bool_,
     "cst_tol": 1e-8,
-    "linear_solver": "lu"
+    "linear_solver": "solve"
 }
