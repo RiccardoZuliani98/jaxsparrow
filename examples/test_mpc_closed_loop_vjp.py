@@ -75,14 +75,23 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_dense_vjp"})
-solver_jvp = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_dense"})
+solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_rev"})
+solver_jvp = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_fwd"})
 
 def solve_mpc(x_init):
     return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
 
 def solve_mpc_jvp(x_init):
-    return solver_jvp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+    return solver_jvp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)["x"][0]
+
+from jax import vjp
+
+_ , vjp_func = vjp(solve_mpc,jnp.array([-1.0,-1.0]))
+vjp_func(1.0)
+
+raise Exception
+
+
 
 x0 = jnp.array([-3.0,-1.0])
 dx0 = jnp.array([EPSILON,0])

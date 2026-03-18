@@ -28,6 +28,7 @@ DEFAULT_SOLVER_OPTIONS : DenseQPSolverOptionsFull = {
     "cst_tol": 1e-8
 }
 
+#TODO: active set should be determined when differentiating
 def create_dense_qp_solver(
     n_eq:int,
     n_ineq:int,

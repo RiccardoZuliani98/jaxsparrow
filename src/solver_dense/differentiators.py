@@ -1,6 +1,6 @@
 from numpy import ndarray
 from time import perf_counter
-from jaxtyping import Float
+from jaxtyping import Float, Bool
 import numpy as np
 from typing import cast, Optional
 from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, DenseQPIngredientsNPFull, QPOutputNP, QPDiffOutNP, DenseQPIngredientsTangentsNP
@@ -9,12 +9,18 @@ from src.utils.parsing_utils import parse_options
 
 class DenseKKTfwdOptions(DifferentiatorOptions):
     dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
 
 class DenseKKTfwdOptionsFull(DifferentiatorOptions,total=True):
     dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
 
 DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
     "dtype": np.float64,
+    "bool_dtype":np.bool_,
+    "cst_tol": 1e-8
 }
 
 #TODO: annotate output
@@ -258,7 +264,6 @@ def create_dense_kkt_differentiator_rev(
         x_np,
         lam_np,
         mu_np,
-        active_np,
         g_x,
         g_lam,
         g_mu,
@@ -277,6 +282,18 @@ def create_dense_kkt_differentiator_rev(
 
         # merge qp ingredients too
         prob_np = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
+
+        # get active constraints
+        start = perf_counter()
+        if n_ineq > 0:
+            active_np: Bool[ndarray, "n_ineq"] = np.asarray(
+                np.abs(prob_np["G"] @ x_np - prob_np["h"])
+                <= options_parsed["cst_tol"],
+                dtype=options_parsed["bool_dtype"],
+            ).reshape(-1)
+        else:
+            active_np : Bool[ndarray, "n_ineq"] = np.empty(0, dtype=options_parsed["bool_dtype"])
+        t["active_set"] = perf_counter() - start
 
         # count active constraints
         n_active = int(np.sum(active_np))

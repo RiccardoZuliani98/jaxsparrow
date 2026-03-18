@@ -145,19 +145,6 @@ def setup_dense_solver(
     # Number of required keys (used for arg layout in VJP callbacks).
     _n_req = len(_required_keys)
 
-    # Shapes for the VJP forward callback: solution + active set +
-    # all required problem matrices (already merged with fixed).
-    # Returned as a flat tuple so residuals carry everything the
-    # backward needs — no re-merging with _fixed required.
-    _vjp_fwd_shapes = (
-        jax.ShapeDtypeStruct((n_var,),  _dtype),                          # x
-        jax.ShapeDtypeStruct((n_ineq,), _dtype),                          # lam
-        jax.ShapeDtypeStruct((n_eq,),   _dtype),                          # mu
-        jax.ShapeDtypeStruct((n_ineq,), _options_parsed["bool_dtype"]),   # active
-        *(jax.ShapeDtypeStruct(_expected_shapes[k], _dtype)               # prob
-          for k in _required_keys),
-    )
-
     # Shapes for the VJP backward callback: one cotangent per dynamic key,
     # matching the shape of the corresponding primal input.
     _vjp_bwd_shapes = tuple(
@@ -190,7 +177,7 @@ def setup_dense_solver(
     
     # choose differentiator, once again some elements will be fixed
     # insider for speed
-    if _options_parsed["differentiator_type"] == "kkt":
+    if _options_parsed["differentiator_type"] == "kkt_fwd" or "kkt_rev":
         _diff_forward_numpy = create_dense_kkt_differentiator_fwd(
             n_var=n_var,
             n_eq=n_eq,
@@ -505,10 +492,9 @@ def setup_dense_solver(
                 - ``args[_n_req]``:        ``x``      (n_var,)
                 - ``args[_n_req + 1]``:    ``lam``    (n_ineq,)
                 - ``args[_n_req + 2]``:    ``mu``     (n_eq,)
-                - ``args[_n_req + 3]``:    ``active`` (n_ineq,) bool
-                - ``args[_n_req + 4]``:    ``g_x``    (n_var,)
-                - ``args[_n_req + 5]``:    ``g_lam``  (n_ineq,)
-                - ``args[_n_req + 6]``:    ``g_mu``   (n_eq,)
+                - ``args[_n_req + 3]``:    ``g_x``    (n_var,)
+                - ``args[_n_req + 4]``:    ``g_lam``  (n_ineq,)
+                - ``args[_n_req + 5]``:    ``g_mu``   (n_eq,)
 
         Returns:
             A tuple of numpy arrays — one cotangent per **dynamic**
@@ -532,10 +518,9 @@ def setup_dense_solver(
         x_np      = np.asarray(args[off],     dtype=_dtype)
         lam_np    = np.asarray(args[off + 1], dtype=_dtype)
         mu_np     = np.asarray(args[off + 2], dtype=_dtype)
-        active_np = np.asarray(args[off + 3], dtype=np.bool_)
-        g_x       = np.asarray(args[off + 4], dtype=_dtype)
-        g_lam     = np.asarray(args[off + 5], dtype=_dtype)
-        g_mu      = np.asarray(args[off + 6], dtype=_dtype)
+        g_x       = np.asarray(args[off + 3], dtype=_dtype)
+        g_lam     = np.asarray(args[off + 4], dtype=_dtype)
+        g_mu      = np.asarray(args[off + 5], dtype=_dtype)
 
         t["convert_to_numpy"] = perf_counter() - start
 
@@ -563,7 +548,6 @@ def setup_dense_solver(
             x_np=x_np,
             lam_np=lam_np,
             mu_np=mu_np,
-            active_np=active_np,
             g_x=g_x,
             g_lam=g_lam,
             g_mu=g_mu,
@@ -718,12 +702,13 @@ def setup_dense_solver(
                   All JAX arrays, non-differentiable.
         """
         result = pure_callback(
-            _solve_qp, _vjp_fwd_shapes, *dynamic_vals,
+            _solve_qp, _fwd_shapes, *dynamic_vals,
         )
 
         # result is a flat tuple: (x, lam, mu, active, prob[0], ...)
-        x, lam, mu, active = result[:4]
-        prob_arrays = result[4:]
+        x = result["x"]
+        lam = result["lam"]
+        mu = result["mu"]
 
         primal_out: dict[str, jax.Array] = {
             "x":   x,
@@ -732,7 +717,7 @@ def setup_dense_solver(
         }
 
         # Residuals: solution + active + merged problem matrices.
-        residuals = (x, lam, mu, active, *prob_arrays)
+        residuals = (*dynamic_vals, x, lam, mu)
 
         return primal_out, residuals
 
@@ -761,18 +746,16 @@ def setup_dense_solver(
             A tuple of cotangents, one per dynamic input, in
             ``_dynamic_keys`` order.
         """
-        x, lam, mu, active = residuals[:4]
-        prob_arrays = residuals[4:]
 
         g_x   = g["x"]
         g_lam = g["lam"]
         g_mu  = g["mu"]
 
         # Layout: *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu
-        grad_vals: tuple[jax.Array, ...] = pure_callback(
+        grad_vals = pure_callback(
             _diff_reverse,
             _vjp_bwd_shapes,
-            *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu,
+            *residuals, g_x, g_lam, g_mu,
         )
 
         return grad_vals
@@ -790,12 +773,12 @@ def setup_dense_solver(
 
     if _diff_name == "kkt_fwd":
         _solver_dynamic = _solver_dynamic_jvp_mode
-    elif _diff_name == "kkt_bwd":
+    elif _diff_name == "kkt_rev":
         _solver_dynamic = _solver_dynamic_vjp_mode
     else:
         raise ValueError(
             f"Unknown differentiator: {_diff_name!r}. "
-            f"Supported: 'kkt_fwd' (JVP), 'kkt_bwd' (VJP)."
+            f"Supported: 'kkt_fwd' (JVP), 'kkt_rev' (VJP)."
         )
 
     logger.info(f"Differentiator: {_diff_name}")
