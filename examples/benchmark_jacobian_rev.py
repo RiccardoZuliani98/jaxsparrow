@@ -69,21 +69,20 @@ solver = setup_dense_solver(
     options={"differentiator_type": "kkt_rev"},
 )
 
-def solve_mpc(x_init):
-    return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+def get_x(x_init):
+    return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)["x"]
+
+I = jnp.eye(nz)
 
 def get_jacobian_vjp(x0):
     """Compute Jacobian using VJP with identity cotangents."""
-    def get_x(x_init):
-        return solve_mpc(x_init)["x"]
 
     sol, vjp_func = vjp(get_x, x0)
-    I = jnp.eye(nz)
     jac = vmap(vjp_func)(I)  # tuple of length 1, each entry (nz, nx)
 
     return sol, jac[0]  # unpack the single-arg tuple
 
-jacobian_fn = jit(get_jacobian_vjp)
+jacobian_fn = get_jacobian_vjp
 
 # ─── Warmup (JIT compilation) ────────────────────────────────────────
 
@@ -97,21 +96,28 @@ x0_samples = rng.uniform(-1.0, 1.0, size=(N_SAMPLES, nx))
 
 solver.timings.reset()
 
-wall_start = perf_counter()
+wall_elapsed = []
 
-for i in range(N_SAMPLES):
-    x0_i = jnp.array(x0_samples[i])
+x0_i = jnp.array(x0_samples[0])
+
+with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
     sol, jac = jacobian_fn(x0_i)
+    sol.block_until_ready()
 
-wall_elapsed = perf_counter() - wall_start
+# for i in range(N_SAMPLES):
+#     x0_i = jnp.array(x0_samples[i])
+#     start = perf_counter()
+#     sol, jac = jacobian_fn(x0_i)
+#     wall_elapsed.append(perf_counter() - start)
 
-# ─── Results ─────────────────────────────────────────────────────────
 
-print(f"\n{'=' * 60}")
-print(f"  MPC Jacobian benchmark (VJP)")
-print(f"  horizon = {horizon}, n_var = {nz}, n_eq = {neq}, n_ineq = {nineq}")
-print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(vjp)")
-print(f"{'=' * 60}")
-print(f"\n  Wall-clock total : {wall_elapsed:.4f} s")
-print(f"  Wall-clock / call: {wall_elapsed / N_SAMPLES * 1e3:.3f} ms\n")
-print(solver.timings.summary())
+# # ─── Results ─────────────────────────────────────────────────────────
+
+# print(f"\n{'=' * 60}")
+# print(f"  MPC Jacobian benchmark (VJP)")
+# print(f"  horizon = {horizon}, n_var = {nz}, n_eq = {neq}, n_ineq = {nineq}")
+# print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(vjp)")
+# print(f"{'=' * 60}")
+# print(f"\n  Wall-clock total : {np.sum(wall_elapsed):.4f} s")
+# print(f"  Wall-clock / call: {np.sum(wall_elapsed) / N_SAMPLES * 1e3:.3f} ms\n")
+# print(solver.timings.summary())
