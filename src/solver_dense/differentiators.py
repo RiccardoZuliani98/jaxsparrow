@@ -51,10 +51,16 @@ def create_dense_kkt_differentiator_fwd(
     if fixed_elements is not None:
 
         # store fixed elements
-        _fixed = cast(DenseQPIngredientsNP, {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
+        _fixed = cast(DenseQPIngredientsNP, {
+            k: np.array(v, dtype=options_parsed["dtype"]).squeeze() 
+            for k, v in fixed_elements.items()
+        })
 
         # store zero differentials for such elements
-        _d_fixed = cast(DenseQPIngredientsTangentsNP, {k: np.zeros_like(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
+        _d_fixed = cast(DenseQPIngredientsTangentsNP, {
+            k: np.zeros_like(v, dtype=options_parsed["dtype"]).squeeze() 
+            for k, v in fixed_elements.items()
+        })
 
     # add zero matrices / vectors if equality / inequality constraints are missing
     if n_eq == 0:
@@ -250,7 +256,10 @@ def create_dense_kkt_differentiator_rev(
 
     # store fixed elements
     if fixed_elements is not None:
-        _fixed = cast(DenseQPIngredientsNP, {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
+        _fixed = cast(DenseQPIngredientsNP, {
+            k: np.array(v, dtype=options_parsed["dtype"]).squeeze() 
+            for k, v in fixed_elements.items()
+        })
 
     # add zero matrices / vectors if equality / inequality constraints are missing
     if n_eq == 0:
@@ -273,7 +282,7 @@ def create_dense_kkt_differentiator_rev(
         g_lam:ndarray,
         g_mu:ndarray,
         batch_size:int
-    ):
+    ) -> tuple[dict[str, ndarray], dict[str, float]]:
         
         # start timing
         t : dict[str, float] = {}
@@ -330,8 +339,33 @@ def create_dense_kkt_differentiator_rev(
         # ── Build RHS from cotangent vectors ─────────────────────────
 
         if batched:
-            raise NotImplementedError("Batched mode rev not implemented.")
+            
+            # Batched mode: g_x, g_lam, g_mu have shape (batch_size, ...)
+            if g_x.shape[0] == 1 and g_x.ndim > 1:
+                g_x = np.broadcast_to(g_x, (batch_size,) + g_x.shape[1:])
+            if g_lam.shape[0] == 1 and g_lam.ndim > 1:
+                g_lam = np.broadcast_to(g_lam, (batch_size,) + g_lam.shape[1:])
+            if g_mu.shape[0] == 1 and g_mu.ndim > 1:
+                g_mu = np.broadcast_to(g_mu, (batch_size,) + g_mu.shape[1:])
+            
+            # Start with g_x as the first block
+            rhs_parts = [g_x.T]  # Shape: (n_var, batch_size)
+            
+            if n_eq > 0:
+                # Add g_mu block
+                rhs_parts.append(g_mu.T)  # Shape: (n_eq, batch_size)
+            
+            if n_ineq > 0 and n_active > 0:
+                # Add active part of g_lam
+                rhs_parts.append(g_lam[:, active_np].T)  # Shape: (n_active, batch_size)
+            
+            # Stack vertically to form RHS matrix
+            # Each column corresponds to one batch element
+            rhs = np.vstack(rhs_parts)  # Shape: (n_var + n_eq + n_active, batch_size)
+
         else:
+
+            # unbatched mode
             rhs_parts: list[Float[ndarray, " _"]] = [g_x]
             if n_eq > 0:
                 rhs_parts.append(g_mu)
@@ -350,43 +384,97 @@ def create_dense_kkt_differentiator_rev(
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract adjoint variables ────────────────────────────────
-        v_x: Float[ndarray, " n_var"] = v[:n_var]
-        v_mu: Float[ndarray, " n_eq"] = (
-            v[n_var:n_var + n_eq]
-            if n_eq > 0
-            else np.empty(0, dtype=options_parsed["dtype"])
-        )
-        v_lam_a: Float[ndarray, " n_active"] = (
-            v[n_var + n_eq:]
-            if (n_ineq > 0 and n_active > 0)
-            else np.empty(0, dtype=options_parsed["dtype"])
-        )
+
+        if batched:
+            # v has shape (n_var + n_h, batch_size)
+            v_x = v[:n_var, :].T  # Shape: (batch_size, n_var)
+            v_mu = (
+                v[n_var:n_var + n_eq, :].T
+                if n_eq > 0
+                else np.empty((batch_size, 0), dtype=options_parsed["dtype"])
+            )
+            v_lam_a = (
+                v[n_var + n_eq:, :].T
+                if (n_ineq > 0 and n_active > 0)
+                else np.empty((batch_size, 0), dtype=options_parsed["dtype"])
+            )
+        else:
+            v_x: Float[ndarray, " n_var"] = v[:n_var]
+            v_mu: Float[ndarray, " n_eq"] = (
+                v[n_var:n_var + n_eq]
+                if n_eq > 0
+                else np.empty(0, dtype=options_parsed["dtype"])
+            )
+            v_lam_a: Float[ndarray, " n_active"] = (
+                v[n_var + n_eq:]
+                if (n_ineq > 0 and n_active > 0)
+                else np.empty(0, dtype=options_parsed["dtype"])
+            )
 
         # ── Compute parameter cotangents ─────────────────────────────
         start = perf_counter()
 
         grads: dict[str, ndarray] = {}
 
-        grads["P"] = -np.outer(v_x, x_np)
-        grads["q"] = -v_x
+        if batched:
+            # Batched cotangent computation
+            # g_P: for each batch element, compute -outer(v_x[b], x)
+            # Shape: (batch_size, n_var, n_var)
+            grads["P"] = -np.einsum('bi,j->bij', v_x, x_np)
+            
+            # g_q: -v_x for each batch element
+            # Shape: (batch_size, n_var)
+            grads["q"] = -v_x
 
-        if n_eq > 0:
-            grads["A"] = -(
-                np.outer(mu_np, v_x) + np.outer(v_mu, x_np)
-            )
-            grads["b"] = v_mu
+            if n_eq > 0:
+                # g_A: for each batch element, -(outer(μ, v_x[b]) + outer(v_mu[b], x))
+                # Shape: (batch_size, n_eq, n_var)
+                term1 = np.einsum('i,bj->bij', mu_np, v_x)
+                term2 = np.einsum('bi,j->bij', v_mu, x_np)
+                grads["A"] = -(term1 + term2)
+                
+                # g_b: v_mu for each batch element
+                # Shape: (batch_size, n_eq)
+                grads["b"] = v_mu
 
-        if n_ineq > 0:
-            g_G = np.zeros_like(prob_np["G"])
-            g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
-            if n_active > 0:
-                g_G[active_np, :] = -(
-                    np.outer(lam_np[active_np], v_x)
-                    + np.outer(v_lam_a, x_np)
-                )
-                g_h_full[active_np] = v_lam_a
-            grads["G"] = g_G
-            grads["h"] = g_h_full
+            if n_ineq > 0:
+                # Initialize gradients with zeros
+                g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
+                g_h_full = np.zeros((batch_size, n_ineq), dtype=options_parsed["dtype"])
+                
+                if n_active > 0:
+                    # For active constraints:
+                    # g_G[active] = -(outer(λ[active], v_x[b]) + outer(v_lam_a[b], x))
+                    term1 = np.einsum('i,bj->bij', lam_np[active_np], v_x)
+                    term2 = np.einsum('bi,j->bij', v_lam_a, x_np)
+                    g_G[:, active_np, :] = -(term1 + term2)
+                    
+                    # g_h[active] = v_lam_a for each batch element
+                    g_h_full[:, active_np] = v_lam_a
+                
+                grads["G"] = g_G
+                grads["h"] = g_h_full
+
+        else:
+            # Unbatched cotangent computation (original implementation)
+            grads["P"] = -np.outer(v_x, x_np)
+            grads["q"] = -v_x
+
+            if n_eq > 0:
+                grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
+                grads["b"] = v_mu
+
+            if n_ineq > 0:
+                g_G = np.zeros_like(prob_np["G"])
+                g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
+                if n_active > 0:
+                    g_G[active_np, :] = -(
+                        np.outer(lam_np[active_np], v_x)
+                        + np.outer(v_lam_a, x_np)
+                    )
+                    g_h_full[active_np] = v_lam_a
+                grads["G"] = g_G
+                grads["h"] = g_h_full
 
         t["compute_grads"] = perf_counter() - start
 
