@@ -284,6 +284,10 @@ def build_solver(
         t.update(t_solve)
 
         # ── Convert tangents ─────────────────────────────────────────
+        
+        dyn_tangents_np_unconverted: dict[str, Any] = {
+            k:v for k, v in zip(_dynamic_keys, dyn_tangent_vals)
+        }
         start = perf_counter()
         dyn_tangents_np: dict[str, Any] = {
             k: _tangent_conv(k, v, _dtype)

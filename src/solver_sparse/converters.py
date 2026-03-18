@@ -45,6 +45,13 @@ def is_sparse_key(key: str) -> bool:
 SparsityEntry = dict  # {"rows": ndarray, "cols": ndarray, "shape": tuple, "nnz": int}
 SparsityInfo  = dict[str, SparsityEntry]
 
+def bcoo_to_csc(mat: BCOO, dtype) -> csc_matrix:
+    """Convert a JAX BCOO matrix to a SciPy CSC matrix."""
+    idx = np.asarray(mat.indices)
+    data = np.asarray(mat.data, dtype=dtype)
+    rows = idx[:, 0]
+    cols = idx[:, 1]
+    return csc_matrix((data, (rows, cols)), shape=mat.shape)
 
 def build_sparsity_info(
     sparsity_patterns: dict[str, BCOO],
@@ -82,30 +89,20 @@ def build_sparsity_info(
 # converter function with the signature expected by solver_common.
 
 
-def make_sparse_primal_converter(
-    sparsity_info: SparsityInfo,
-):
-    """
-    Return a primal converter: (key, jax_val, dtype) -> ndarray | csc_matrix.
-
-    Sparse keys (P, A, G):
-        Extracts ``.data`` from the BCOO, builds a CSC using the
-        pre-stored index arrays.
-    Dense keys (q, b, h):
-        Plain ``np.asarray``, squeezing batch-1 leading dims.
-    """
-
+def make_sparse_primal_converter(sparsity_info: SparsityInfo):
     def converter(key: str, val, dtype) -> ndarray | csc_matrix:
         if is_sparse_key(key) and key in sparsity_info:
             si = sparsity_info[key]
-            # BCOO .data is a (nnz,) or (1, nnz) array
-            data = np.asarray(val.data, dtype=dtype).ravel()
+            # BCOO may have a batch dim from expand_dims — squeeze it
+            # since primals are identical across batch
+            data = np.asarray(val.data, dtype=dtype)
+            while data.ndim > 1:
+                data = data[0]
             return csc_matrix(
                 (data, (si["rows"], si["cols"])),
                 shape=si["shape"],
             )
         else:
-            # Dense vector path
             arr = np.asarray(val, dtype=dtype)
             if arr.ndim > EXPECTED_NDIM[key]:
                 arr = arr[0]
@@ -114,27 +111,29 @@ def make_sparse_primal_converter(
     return converter
 
 
-def make_sparse_tangent_converter(
-    sparsity_info: SparsityInfo,
-):
-    """
-    Return a tangent converter: (key, jax_val, dtype) -> ndarray.
-
-    For sparse keys the tangent is a BCOO with the same sparsity
-    pattern. We convert to a dense ndarray because the KKT RHS
-    computation uses dense linear algebra.
-
-    The batch dimension (if present) is preserved.
-    """
-
-    def converter(key: str, val, dtype) -> ndarray:
+def make_sparse_tangent_converter(sparsity_info: SparsityInfo):
+    def converter(key: str, val, dtype) -> ndarray | csc_matrix:
         if is_sparse_key(key) and key in sparsity_info:
-            # BCOO tangent → dense ndarray
-            # .todense() handles both batched and unbatched BCOO
-            if hasattr(val, "todense"):
-                return np.asarray(val.todense(), dtype=dtype)
+            si = sparsity_info[key]
+            data = np.asarray(val.data, dtype=dtype)
+
+            if data.ndim == 1:
+                # Unbatched: (nnz,) → CSC
+                return csc_matrix(
+                    (data, (si["rows"], si["cols"])),
+                    shape=si["shape"],
+                )
+            elif data.ndim == 2:
+                # Batched: (batch, nnz) → dense (batch, m, n)
+                # scipy.sparse is 2-D only
+                batch_size = data.shape[0]
+                out = np.zeros((batch_size, *si["shape"]), dtype=dtype)
+                out[:, si["rows"], si["cols"]] = data
+                return out
             else:
-                return np.asarray(val, dtype=dtype)
+                raise ValueError(
+                    f"Unexpected tangent data ndim={data.ndim} for key '{key}'"
+                )
         else:
             return np.asarray(val, dtype=dtype)
 
