@@ -42,25 +42,26 @@ def create_dense_kkt_differentiator_fwd(
         _fixed = cast(DenseQPIngredientsNP, {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
 
         # store zero differentials for such elements
-        _d_fixed = cast(DenseQPIngredientsTangentsNP, {k: np.empty_like(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
+        _d_fixed = cast(DenseQPIngredientsTangentsNP, {k: np.zeros_like(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
 
     # add zero matrices / vectors if equality / inequality constraints are missing
     if n_eq == 0:
-        _fixed["A"] = np.empty((0, n_var), dtype=options_parsed["dtype"])
-        _fixed["b"] = np.empty((0,), dtype=options_parsed["dtype"])
-        _d_fixed["A"] = np.empty((0, n_var), dtype=options_parsed["dtype"])
-        _d_fixed["b"] = np.empty((0,), dtype=options_parsed["dtype"])
+        _fixed["A"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _fixed["b"] = np.zeros((0,), dtype=options_parsed["dtype"])
+        _d_fixed["A"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _d_fixed["b"] = np.zeros((0,), dtype=options_parsed["dtype"])
     if n_ineq == 0:
-        _fixed["G"] = np.empty((0, n_var), dtype=options_parsed["dtype"])
-        _fixed["h"] = np.empty((0,), dtype=options_parsed["dtype"])
-        _d_fixed["G"] = np.empty((0, n_var), dtype=options_parsed["dtype"])
-        _d_fixed["h"] = np.empty((0,), dtype=options_parsed["dtype"])
+        _fixed["G"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
+        _d_fixed["G"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
+        _d_fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
 
     # store a batched version where the first dimension is expanded
     _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
     # choose lienar system solver
-    _solve_linear_system = np.linalg.solve
+    def _solve_linear_system(a,b):
+        return np.linalg.lstsq(a,b)[0]
 
 
     def kkt_differentiator_fwd(
@@ -134,7 +135,7 @@ def create_dense_kkt_differentiator_fwd(
             if n_eq > 0:
 
                 # add equality constraints to gradient of Lagrangian
-                dL_np += d_np["A"].transpose(0, 2, 1) @ mu_np
+                dL_np = dL_np + d_np["A"].transpose(0, 2, 1) @ mu_np
 
                 # add equality block of KKT conditions
                 rhs_pieces.append( d_np["A"] @ x_np - d_np["b"] )
@@ -144,7 +145,7 @@ def create_dense_kkt_differentiator_fwd(
                 dG_active = d_np["G"][:, active_np, :]
 
                 # add inequality constraints to gradient of Lagrangian
-                dL_np += dG_active.transpose(0, 2, 1) @ lam_np[active_np]
+                dL_np = dL_np + dG_active.transpose(0, 2, 1) @ lam_np[active_np]
 
                 # add inequality block of KKT conditions
                 rhs_pieces.append( dG_active @ x_np - d_np["h"][:, active_np] )
