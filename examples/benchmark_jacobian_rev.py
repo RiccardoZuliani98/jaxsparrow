@@ -100,24 +100,24 @@ wall_elapsed = []
 
 x0_i = jnp.array(x0_samples[0])
 
-with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-    sol, jac = jacobian_fn(x0_i)
-    sol.block_until_ready()
-
-# for i in range(N_SAMPLES):
-#     x0_i = jnp.array(x0_samples[i])
-#     start = perf_counter()
+# with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
 #     sol, jac = jacobian_fn(x0_i)
-#     wall_elapsed.append(perf_counter() - start)
+#     sol.block_until_ready()
+
+for i in range(N_SAMPLES):
+    x0_i = jnp.array(x0_samples[i])
+    start = perf_counter()
+    sol, jac = jacobian_fn(x0_i)
+    wall_elapsed.append(perf_counter() - start)
 
 
-# # ─── Results ─────────────────────────────────────────────────────────
+# ─── Results ─────────────────────────────────────────────────────────
 
-# print(f"\n{'=' * 60}")
-# print(f"  MPC Jacobian benchmark (VJP)")
-# print(f"  horizon = {horizon}, n_var = {nz}, n_eq = {neq}, n_ineq = {nineq}")
-# print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(vjp)")
-# print(f"{'=' * 60}")
-# print(f"\n  Wall-clock total : {np.sum(wall_elapsed):.4f} s")
-# print(f"  Wall-clock / call: {np.sum(wall_elapsed) / N_SAMPLES * 1e3:.3f} ms\n")
-# print(solver.timings.summary())
+print(f"\n{'=' * 60}")
+print(f"  MPC Jacobian benchmark (VJP)")
+print(f"  horizon = {horizon}, n_var = {nz}, n_eq = {neq}, n_ineq = {nineq}")
+print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(vjp)")
+print(f"{'=' * 60}")
+print(f"\n  Wall-clock total : {np.sum(wall_elapsed):.4f} s")
+print(f"  Wall-clock / call: {np.sum(wall_elapsed) / N_SAMPLES * 1e3:.3f} ms\n")
+print(solver.timings.summary())

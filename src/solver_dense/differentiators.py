@@ -12,6 +12,7 @@ from src.types_common import QPOutputNP, QPDiffOutNP
 from src.solver_dense.options import DifferentiatorOptions
 from src.utils.parsing_utils import parse_options
 from src.solver_dense.options import DEFAULT_DIFF_OPTIONS
+from src.solver_dense.linear_solvers import get_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings
@@ -63,8 +64,7 @@ def create_dense_kkt_differentiator_fwd(
     _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
     # choose lienar system solver
-    def _solve_linear_system(a,b):
-        return np.linalg.lstsq(a,b)[0]
+    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
 
 
     def kkt_differentiator_fwd(
@@ -254,10 +254,10 @@ def create_dense_kkt_differentiator_rev(
         _fixed["G"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
         _fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
 
-    # choose lienar system solver
-    def _solve_linear_system(a,b):
-        return np.linalg.lstsq(a,b)[0]
-        
+    # choose linear system solver
+    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
+    
+    #TODO: reverse mode is slow
     def kkt_differentiator_rev(
         dyn_primals_np:DenseQPIngredientsNP,
         x_np:ndarray,
