@@ -26,6 +26,7 @@ from src.solver_dense.solver_dense_types import (
     QPOutput, 
     DenseQPIngredientsTangentsNP
 )
+from src.utils.fd_recorder import FiniteDifferenceRecorder
 
 #TODO: create sparse solver, I left some TODOs in this file pointing at
 # where changes should be made
@@ -59,6 +60,12 @@ def setup_dense_solver(
 
     # parse user options
     _options_parsed = parse_options(options, DEFAULT_CONSTRUCTOR_OPTIONS)
+
+    # create finite difference recorder
+    _fd_check = FiniteDifferenceRecorder(
+        enabled=_options_parsed.get("fd_check", False),
+        eps=_options_parsed.get("fd_eps", 1e-6),
+    )
 
     # extract dtype for simplicity
     _dtype = _options_parsed['dtype']
@@ -361,6 +368,36 @@ def setup_dense_solver(
         logger.info(f"_kkt_diff | {fmt_times(t)}")
         _timings.record("_kkt_diff", t)
 
+
+        # ── Finite-difference check (pure NumPy, no JAX) ────────────
+        if _options_parsed["fd_check"]:
+            
+            # Only runs when enabled; unbatched tangents only.
+            if not batched:
+                _fd_check.check_jvp(
+                    solve_fn=_solve_qp_numpy,
+                    dyn_primals_np=dyn_primals_np,
+                    dyn_tangents_np=dyn_tangents_np,
+                    dx_analytic=dx_np,
+                    dlam_analytic=dlam_np,
+                    dmu_analytic=dmu_np,
+                    dynamic_keys=_dynamic_keys,
+                )
+            else:
+                # For batched JVP, check the first direction only
+                first_tangents = {
+                    k: v[0] for k, v in dyn_tangents_np.items() #type:ignore
+                }
+                _fd_check.check_jvp(
+                    solve_fn=_solve_qp_numpy,
+                    dyn_primals_np=dyn_primals_np,
+                    dyn_tangents_np=first_tangents,
+                    dx_analytic=dx_np[0] if dx_np.ndim > 1 else dx_np,
+                    dlam_analytic=dlam_np[0] if dlam_np.ndim > 1 else dlam_np,
+                    dmu_analytic=dmu_np[0] if dmu_np.ndim > 1 else dmu_np,
+                    dynamic_keys=_dynamic_keys,
+                )
+
         return diff_out, res
     #endregion
 
@@ -437,6 +474,31 @@ def setup_dense_solver(
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")
         _timings.record("_kkt_vjp", t)
+
+        # ── Finite-difference check (pure NumPy, no JAX) ────────────
+        if _options_parsed["fd_check"]:
+
+            if not batched:
+                _fd_check.check_vjp(
+                    solve_fn=_solve_qp_numpy,
+                    dyn_primals_np=prob_np,
+                    grads_analytic=grads_np,
+                    g_x=g_x,
+                    g_lam=g_lam,
+                    g_mu=g_mu,
+                    dynamic_keys=_dynamic_keys,
+                )
+            else:
+                # For batched VJP, check the first cotangent direction
+                _fd_check.check_vjp(
+                    solve_fn=_solve_qp_numpy,
+                    dyn_primals_np=prob_np,
+                    grads_analytic={k: v[0] for k, v in grads_np.items()},
+                    g_x=g_x[0],
+                    g_lam=g_lam[0],
+                    g_mu=g_mu[0],
+                    dynamic_keys=_dynamic_keys,
+                )
 
         return grads
 
@@ -600,5 +662,6 @@ def setup_dense_solver(
     #endregion
 
     solver.timings = _timings
+    solver.fd_check = _fd_check
 
     return solver
