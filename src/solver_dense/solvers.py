@@ -5,8 +5,9 @@ from numpy import ndarray
 from jaxtyping import Float, Bool
 from typing import cast, Optional
 from src.utils.parsing_utils import parse_options
-from src.solver_dense.solver_dense_options import SolverOptions
-from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, DenseQPIngredientsNPFull, QPOutputNP
+from src.options_common import SolverOptions
+from src.solver_dense.types import DenseQPIngredientsNP, DenseQPIngredientsNPFull
+from src.types_common import QPOutputNP
 
 #TODO: docstrintgs
 class DenseQPSolverOptions(SolverOptions):

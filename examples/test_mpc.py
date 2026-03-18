@@ -70,7 +70,7 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from src.solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.setup import setup_dense_solver
 
 epsilon = 0.1
 

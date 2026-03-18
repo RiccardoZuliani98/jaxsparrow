@@ -60,7 +60,7 @@ def beq(x_init):
 
 # ─── Solver setup ────────────────────────────────────────────────────
 
-from src.solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.setup import setup_dense_solver
 
 solver = setup_dense_solver(n_var=nz, n_ineq=nineq, n_eq=neq)
 

@@ -10,7 +10,7 @@ from numpy import ndarray
 from src.utils.parsing_utils import parse_options
 from src.utils.printing_utils import fmt_times
 from src.utils.timing_utils import TimingRecorder
-from src.solver_dense.solver_dense_options import (
+from src.solver_dense.options import (
     DEFAULT_CONSTRUCTOR_OPTIONS, 
     ConstructorOptions,
     ConstructorOptions
@@ -590,8 +590,6 @@ def setup_dense_solver(
         g_x   = g["x"]
         g_lam = g["lam"]
         g_mu  = g["mu"]
-
-        print(f"Shapes of cotangent: {g_x.shape}, {g_lam.shape}, {g_mu.shape}")
 
         # Layout: *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu
         grad_vals = pure_callback(

@@ -22,7 +22,7 @@ import logging
 
 jax.config.update("jax_enable_x64", True)
 
-from src.solver_dense.solver_dense import setup_dense_solver
+from src.solver_dense.setup import setup_dense_solver
 
 
 # =====================================================================
