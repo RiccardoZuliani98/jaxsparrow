@@ -85,7 +85,7 @@ _ = jvp_jacobian(x0_warmup, I_nx)
 rng = np.random.default_rng(42)
 x0_samples = rng.uniform(-1.0, 1.0, size=(N_SAMPLES, nx))
 
-# solver.timings.reset()
+solver.timings.reset()
 
 wall_start = perf_counter()
 

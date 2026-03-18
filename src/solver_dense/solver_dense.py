@@ -879,7 +879,12 @@ def setup_dense_solver(
             - Warmstarting is supported via the `warmstart` argument to the
             public `solver()` function, but is not part of the traced path.
         """
-        return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
+        return pure_callback(
+            _solve_qp, 
+            _fwd_shapes, 
+            *dynamic_vals, 
+            vmap_method="sequential"
+        )
 
     def _solver_dynamic_vjp_fwd(
         *dynamic_vals: jax.Array,
@@ -930,7 +935,10 @@ def setup_dense_solver(
             part of the ``custom_vjp`` machinery.
         """
         result = pure_callback(
-            _solve_qp, _fwd_shapes, *dynamic_vals,
+            _solve_qp, 
+            _fwd_shapes, 
+            *dynamic_vals,
+            vmap_method="sequential"
         )
 
         # result is a flat tuple: (x, lam, mu, active, prob[0], ...)
@@ -1018,6 +1026,7 @@ def setup_dense_solver(
             _diff_reverse,
             _vjp_bwd_shapes,
             *residuals, g_x, g_lam, g_mu,
+            vmap_method="expand_dims"
         )
 
         return tuple(grad_vals[k] for k in _dynamic_keys)
