@@ -50,142 +50,6 @@ def setup_dense_solver(
     fixed_elements: Optional[DenseQPIngredientsNP] = None,
     options: Optional[ConstructorOptions] = None,
 ):
-    """Set up a differentiable dense QP solver with configurable differentiation mode.
-    
-    Creates and returns a callable ``solver(**runtime)`` that solves quadratic
-    programs of the form::
-    
-        minimize    (1/2) xᵀ P x + qᵀ x
-        subject to  A x = b
-                    G x ≤ h
-    
-    The solver supports both forward-mode (JVP) and reverse-mode (VJP)
-    automatic differentiation via implicit differentiation of the KKT
-    optimality conditions. The differentiation mode is selected at setup
-    time via the ``differentiator_type`` option.
-    
-    **Differentiation Modes:**
-    
-        - ``"kkt_fwd"`` (JVP): Forward-mode autodiff. Efficient for functions
-          with few inputs relative to outputs. Compatible with ``jax.jvp``
-          and ``jax.vmap(jax.jvp(...))``.
-          
-        - ``"kkt_rev"`` (VJP): Reverse-mode autodiff. Efficient for functions
-          with many inputs and few outputs. Compatible with ``jax.grad``,
-          ``jax.value_and_grad``, and ``jax.vjp``.
-    
-    **Fixed Elements for Performance:**
-    
-    Elements declared in ``fixed_elements`` are stored as numpy arrays and
-    are **never** converted to JAX or routed through the traced path. This
-    avoids unnecessary Python-JAX round-trips and numpy conversions, but
-    means that fixed elements are treated as constants for differentiation —
-    their tangents/cotangents are always zero.
-    
-    To differentiate through an element, it must be supplied at runtime
-    (not fixed). This gives you fine-grained control over the trade-off
-    between performance and differentiability.
-    
-    **Warm-starting:**
-    
-    The solver supports warm-starting via an optional ``warmstart`` argument
-    at call time. The warmstart initial guess is passed to the underlying
-    numpy solver and cleared after each solve. It is **not** differentiated
-    through and does not affect the computed derivatives.
-    
-    **Timing and Profiling:**
-    
-    The returned solver object has a ``.timings`` attribute that collects
-    detailed timing information across calls. This is useful for profiling
-    and debugging performance bottlenecks.
-    
-    Args:
-        n_var: Number of decision variables. Must be positive.
-        
-        n_ineq: Number of inequality constraints. May be 0 if no inequalities.
-            Defaults to 0.
-            
-        n_eq: Number of equality constraints. May be 0 if no equalities.
-            Defaults to 0.
-            
-        fixed_elements: Optional dictionary of QP ingredients that remain
-            constant across all solver calls. Valid keys are:
-            
-            - ``"P"``: Cost matrix, shape ``(n_var, n_var)``
-            - ``"q"``: Linear cost vector, shape ``(n_var,)``
-            - ``"A"``: Equality constraint matrix, shape ``(n_eq, n_var)``
-            - ``"b"``: Equality RHS vector, shape ``(n_eq,)``
-            - ``"G"``: Inequality constraint matrix, shape ``(n_ineq, n_var)``
-            - ``"h"``: Inequality RHS vector, shape ``(n_ineq,)``
-            
-            Fixed elements are treated as constants for differentiation and
-            are never converted to JAX arrays.
-            
-        options: Optional configuration dictionary controlling the solver and
-            differentiator behavior. Supports the following keys:
-            
-            - ``"dtype"``: Data type for arrays (e.g., ``np.float64``).
-              Defaults to ``np.float64``.
-              
-            - ``"solver_type"``: Backend QP solver. Currently only
-              ``"qp_solvers"`` is supported.
-              
-            - ``"solver"``: Solver-specific options passed to the underlying
-              QP solver (e.g., tolerances, max iterations).
-              
-            - ``"differentiator_type"``: Differentiation mode. One of:
-              ``"kkt_fwd"`` (JVP) or ``"kkt_rev"`` (VJP). Defaults to
-              ``"kkt_fwd"``.
-              
-            - ``"differentiator"``: Differentiator-specific options (e.g.,
-              regularization, linear solver type).
-              
-            - ``"debug"``: If True, enables additional shape and consistency
-              checks. Defaults to False.
-            
-            See ``solver_dense_options.py`` for defaults and available options.
-    
-    Returns:
-        Callable[[**runtime], QPOutput]: A solver function with signature:
-        
-            ``solver(*, warmstart: Optional[jax.Array] = None, **runtime: jax.Array) -> QPOutput``
-        
-        The returned solver also has a ``.timings`` attribute (a ``TimingRecorder``
-        instance) that accumulates timing information across calls.
-    
-    Raises:
-        ValueError: If an unsupported solver type or differentiator is requested,
-            or if fixed elements have incorrect shapes.
-        AssertionError: If debug mode is enabled and shape validation fails.
-    
-    Example:
-        >>> # Set up a solver with fixed cost matrices
-        >>> solver = setup_dense_solver(
-        ...     n_var=2, n_eq=1,
-        ...     fixed_elements={
-        ...         "P": np.array([[4., 1.], [1., 2.]]),
-        ...         "A": np.array([[1., 1.]]),
-        ...     }
-        ... )
-        >>> 
-        >>> # Solve with varying linear cost and RHS
-        >>> q = jnp.array([1., 2.])
-        >>> b = jnp.array([1.])
-        >>> sol = solver(q=q, b=b)
-        >>> 
-        >>> # Compute gradients via reverse-mode
-        >>> grad_q = jax.grad(lambda q, b: solver(q=q, b=b)["x"].sum())(q, b)
-    
-    Notes:
-        - The solver is **not** jit-compilable due to the use of ``pure_callback``.
-          It is designed for use inside JAX-transformed functions where the
-          callback overhead is acceptable.
-        - Batching is supported only in differentiation (via JVP/VJP), not in
-          the forward solve itself. When batched tangents/cotangents are provided,
-          the linear systems are solved with matrix RHS for efficiency.
-        - The active set from the QP solution is used internally but never
-          exposed to the user.
-    """
 
     # start logging
     logger = logging.getLogger(__name__)
@@ -281,7 +145,7 @@ def setup_dense_solver(
     
     # choose differentiator, once again some elements will be fixed
     # insider for speed
-    if _options_parsed["differentiator_type"] == "kkt_fwd" or "kkt_rev":
+    if _options_parsed["differentiator_type"] in ("kkt_fwd", "kkt_rev"):
         _diff_forward_numpy = create_dense_kkt_differentiator_fwd(
             n_var=n_var,
             n_eq=n_eq,
@@ -313,45 +177,7 @@ def setup_dense_solver(
 
     #region
     def _solve_qp(*dynamic_vals: jax.Array) -> QPOutput:
-        """Bridge between JAX ``pure_callback`` and the numpy QP solver.
-        
-        This function is designed to be called via ``pure_callback``. It receives
-        only the **dynamic** QP ingredients (those not in ``fixed_elements``) as
-        positional JAX arrays in ``_dynamic_keys`` order, converts them to numpy,
-        merges them with the pre-stored fixed numpy arrays, and delegates to the
-        underlying numpy solver ``_solve_qp_numpy``.
-        
-        The function handles warm-starting by reading from the mutable
-        ``_warmstart`` slot and clears it after use. Timing information is
-        collected and recorded via ``_timings``.
-        
-        Args:
-            *dynamic_vals: Variable-length argument list of JAX arrays.
-                Must contain exactly ``len(_dynamic_keys)`` arrays, in the order
-                specified by ``_dynamic_keys``. Each array corresponds to a
-                dynamic QP ingredient (P, q, A, b, G, h) that was not fixed at
-                setup time.
-        
-        Returns:
-            QPOutput: A dictionary containing the solution as JAX arrays:
 
-                - ``x``      (n_var,):  Primal solution.
-                - ``lam``    (n_ineq,):  Inequality duals.
-                - ``mu``     (n_eq,):  Equality duals.
-
-        Raises:
-            ValueError: If debug mode is enabled and any dynamic ingredient is
-                missing or has incorrect shape.
-    
-        Notes:
-            - Batching is **not** supported in the primal solve path. If batched
-            inputs are detected (via extra leading dimension), only the first
-            batch element is used. This is because the primal solution should
-            be identical across the batch when differentiating.
-            - The warmstart array, if provided, is converted to numpy and passed
-            to the underlying solver. It is cleared after each solve to prevent
-            accidental reuse.
-        """
         t_start = perf_counter()
         t: dict[str, float] = {}
 
@@ -419,77 +245,6 @@ def setup_dense_solver(
 
     #region
     def _diff_forward(*args: ndarray) -> tuple[QPDiffOut, QPOutput]:
-        """Forward-mode implicit differentiation of the KKT conditions.
-        
-        This function is designed to be called via ``pure_callback`` from the JVP
-        rule. It performs two tasks in a single numpy-side computation:
-        
-        1. Solves the forward QP problem to obtain the primal/dual solution
-        2. Differentiates through the KKT optimality conditions to compute
-        tangents of the solution with respect to the input parameters
-        
-        The function receives both primal inputs and their tangents for all
-        dynamic parameters, solves the linearized KKT system, and returns both
-        the primal solution and the tangents of the solution variables.
-        
-        Batching is handled efficiently: when tangents carry an extra batch
-        dimension (compared to the primals), the linear system is solved once
-        with a matrix right-hand side, yielding tangents for all batch elements
-        simultaneously.
-        
-        Args:
-            *args: Variable-length argument list of numpy arrays.
-                The first ``len(_dynamic_keys)`` arrays are the primal values
-                of the dynamic QP ingredients (P, q, A, b, G, h) in order.
-                The next ``len(_dynamic_keys)`` arrays are the corresponding
-                tangents for each dynamic ingredient.
-                
-                Example: If ``_dynamic_keys = ('P', 'q')``, then:
-                    - ``args[0]``: P (primal)
-                    - ``args[1]``: q (primal)
-                    - ``args[2]``: tangent of P
-                    - ``args[3]``: tangent of q
-        
-        Returns:
-            
-            - ``tangents_out`` (QPDiffOut): Dictionary containing the tangents
-            of the solution variables:
-            
-                * ``x``: Tangent of primal solution.
-                Shape ``(n_var,)`` if unbatched, or ``(batch_size, n_var)``
-                if batched.
-                * ``lam``: Tangent of inequality duals.
-                Shape ``(n_ineq,)`` if unbatched, or ``(batch_size, n_ineq)``
-                if batched.
-                * ``mu``: Tangent of equality duals.
-                Shape ``(n_eq,)`` if unbatched, or ``(batch_size, n_eq)``
-                if batched.
-                
-            - ``solution`` (QPOutput): Dictionary containing the primal
-            solution (the result of the forward QP solve):
-            
-                * ``x``: Primal solution vector.
-                Shape ``(n_var,)`` if unbatched, or broadcast to
-                ``(batch_size, n_var)`` if batched.
-                * ``lam``: Inequality dual variables.
-                Shape ``(n_ineq,)`` if unbatched, or broadcast to
-                ``(batch_size, n_ineq)`` if batched.
-                * ``mu``: Equality dual variables.
-                Shape ``(n_eq,)`` if unbatched, or broadcast to
-                ``(batch_size, n_eq)`` if batched.
-        
-        Notes:
-            - Fixed elements (provided at setup) are **not** passed as arguments.
-            Their tangents are implicitly zero and are handled inside the
-            differentiator implementation.
-            - The primal solution is broadcast (not tiled) to match the batch
-            dimension when batching is detected, as the primal solution is
-            identical for all batch elements.
-            - This function returns numpy arrays; ``pure_callback`` handles the
-            conversion to JAX arrays using ``_jvp_shapes``.
-            - The active set from the QP solution is used internally for
-            inequality handling but is not returned.
-        """
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -616,82 +371,6 @@ def setup_dense_solver(
 
     #region
     def _diff_reverse(*args: ndarray) -> dict[str, Array]:
-        """Reverse-mode (VJP) implicit differentiation of the KKT conditions.
-        
-        This function is designed to be called via ``pure_callback`` from the VJP
-        backward pass. It solves the adjoint KKT system to compute cotangents
-        (gradients) of the solution with respect to all dynamic input parameters.
-        
-        The function leverages the symmetry of the KKT matrix: because the KKT
-        matrix M is symmetric (M = M^T), the adjoint linear system is identical
-        to the forward system used in JVP differentiation. The only difference
-        is the right-hand side: instead of tangents, we use the output cotangents
-        (g_x, g_lam, g_mu) from the reverse pass.
-        
-        After solving M·v = [g_x; g_lam; g_mu] for the adjoint variables v,
-        the parameter cotangents are computed analytically using matrix calculus:
-        
-            g_P = -outer(v_x, x)
-            g_q = -v_x
-            g_A = -(outer(mu, v_x) + outer(v_mu, x))
-            g_b = v_mu
-            g_G[active] = -(outer(lam[active], v_x) + outer(v_lam_a, x))
-            g_h[active] = v_lam_a
-        
-        where v = [v_x; v_lam; v_mu] is the solution of the adjoint system, and
-        `active` is the set of active inequality constraints from the forward solve.
-        
-        Batching is supported: when the input cotangents carry an extra batch
-        dimension (indicated by g_x.ndim == 2), the adjoint system is solved once
-        with a matrix right-hand side, and parameter cotangents are computed for
-        all batch elements simultaneously.
-        
-        Args:
-            *args: Variable-length argument list of numpy arrays with the following
-                layout (where N = len(_dynamic_keys)):
-                
-                - ``args[0:N]``: Dynamic problem matrices in ``_dynamic_keys`` order.
-                    These are the **merged** matrices (dynamic + fixed) from the
-                    forward pass, already converted to numpy.
-                
-                - ``args[N]``:     ``x``      - Primal solution, shape ``(n_var,)``
-                - ``args[N+1]``:   ``lam``    - Inequality duals, shape ``(n_ineq,)``
-                - ``args[N+2]``:   ``mu``     - Equality duals, shape ``(n_eq,)``
-                - ``args[N+3]``:   ``g_x``    - Cotangent of x, shape ``(n_var,)`` or ``(batch_size, n_var)``
-                - ``args[N+4]``:   ``g_lam``  - Cotangent of lam, shape ``(n_ineq,)`` or ``(batch_size, n_ineq)``
-                - ``args[N+5]``:   ``g_mu``   - Cotangent of mu, shape ``(n_eq,)`` or ``(batch_size, n_eq)``
-                
-                Note: The active set is not passed explicitly; it is reconstructed
-                inside the differentiator from the solution and problem data.
-        
-        Returns:
-            Dict[str, Array]: A dictionary mapping each dynamic key to its cotangent
-            (gradient) as a JAX array. The returned dictionary has exactly the keys
-            in ``_dynamic_keys``, with shapes:
-            
-                - For matrix inputs (P, A, G): same shape as the primal input
-                - For vector inputs (q, b, h): same shape as the primal input
-            
-            When batched, the cotangents have shape ``(batch_size, ...)`` matching
-            the batch dimension of the input cotangents.
-        
-        Raises:
-            ValueError: If the input arguments cannot be unpacked correctly or if
-                the differentiator fails (propagated from ``_diff_reverse_numpy``).
-        
-        Notes:
-            - This function receives **merged** problem matrices (dynamic + fixed)
-            as residuals from the forward pass. This avoids re-converting dynamic
-            inputs to numpy and re-merging with fixed elements in the backward pass.
-            - Fixed elements (provided at setup) are **not** present in the input
-            arguments and do **not** receive cotangents (their gradients are zero).
-            - The active set from the forward solve is used to handle inequality
-            constraints correctly but is not exposed in the public API.
-            - This function returns JAX arrays directly; ``pure_callback`` handles
-            the conversion from numpy using ``_vjp_bwd_shapes``.
-            - Warmstarting is **not** used in the reverse pass, as it only affects
-            the forward solve.
-        """
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -706,10 +385,21 @@ def setup_dense_solver(
             k: np.asarray(args[i], dtype=_dtype)
             for i, k in enumerate(_dynamic_keys)
         })
+
+        for k in prob_np:
+            while prob_np[k].ndim > _EXPECTED_NDIM[k]:
+                prob_np[k] = prob_np[k][0]
+
         off = _n_dyn
         x_np      = np.asarray(args[off],     dtype=_dtype)
         lam_np    = np.asarray(args[off + 1], dtype=_dtype)
         mu_np     = np.asarray(args[off + 2], dtype=_dtype)
+
+        # Squeeze solution vectors too (expected: 1-D)
+        while x_np.ndim > 1:   x_np   = x_np[0]
+        while lam_np.ndim > 1:  lam_np = lam_np[0]
+        while mu_np.ndim > 1:   mu_np  = mu_np[0]
+
         g_x       = np.asarray(args[off + 3], dtype=_dtype)
         g_lam     = np.asarray(args[off + 4], dtype=_dtype)
         g_mu      = np.asarray(args[off + 5], dtype=_dtype)
@@ -722,7 +412,7 @@ def setup_dense_solver(
         batched = (g_x.ndim == 2) if _n_dyn > 0 else False
 
         # get batch size
-        batch_size : int = max(v.shape[0] for v in dyn_tangents_np.values()) if batched else 0 # type: ignore[union-attr]
+        batch_size = max([g_x.shape[0],g_lam.shape[0],g_mu.shape[0]]) if batched else 0 
 
 
         # ── Call differentiator ──────────────────────────────────────
@@ -767,26 +457,6 @@ def setup_dense_solver(
     def _solver_dynamic_jvp_mode(
         *dynamic_vals: jax.Array,
     ) -> QPOutput:
-        """Internal solver (JVP path) with positional-only dynamic args.
-
-        Wraps ``_solve_qp`` in a ``pure_callback`` so that the numpy QP
-        solver can be called from within JAX-traced code. Only the
-        **dynamic** (non-fixed) ingredients are passed positionally in
-        ``_dynamic_keys`` order; fixed ingredients are merged inside
-        ``_solve_qp`` from the ``_fixed`` closure without any
-        JAX-to-numpy conversion.
-
-        Args:
-            *dynamic_vals: JAX arrays corresponding to
-                ``_dynamic_keys``, in order.
-
-        Returns:
-            Solution dict with JAX arrays:
-
-                - ``x``      (n_var,):  Primal solution.
-                - ``lam``    (n_ineq,):  Inequality duals.
-                - ``mu``     (n_eq,):  Equality duals.
-        """
         return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
 
     @_solver_dynamic_jvp_mode.defjvp
@@ -794,23 +464,6 @@ def setup_dense_solver(
         primals: tuple[jax.Array, ...],
         tangents: tuple[jax.Array, ...],
     ) -> tuple[QPOutput, QPDiffOut]:
-        """JVP rule for ``_solver_dynamic_jvp_mode`` via implicit diff.
-
-        Both the forward solve and KKT differentiation happen inside a
-        **single** ``pure_callback`` call (``_kkt_diff``). This avoids
-        paying the callback dispatch overhead twice. All numpy → JAX
-        conversion is handled internally by ``pure_callback`` via
-        ``_jvp_shapes``, so no Python-level ``jnp.array`` calls are
-        needed.
-
-        Args:
-            primals: Primal inputs in ``_dynamic_keys`` order.
-            tangents: Tangent inputs with the same structure as
-                ``primals``.
-
-        Returns:
-            ``(primal_out, tangent_out)`` where both are solution dicts.
-        """
 
         # call forward differentiator
         tangents_out, res = pure_callback(
@@ -831,114 +484,24 @@ def setup_dense_solver(
     def _solver_dynamic_vjp_mode(
         *dynamic_vals: jax.Array,
     ) -> QPOutput:
-        """Internal solver for reverse-mode differentiation (VJP path).
-        
-        This function provides the forward pass for reverse-mode automatic
-        differentiation via `custom_vjp`. It has identical forward semantics to
-        the JVP path (`_solver_dynamic_jvp_mode`), but stores additional residuals
-        for use in the backward pass.
-        
-        The function is designed to be called with only the **dynamic** QP
-        ingredients (those not fixed at setup). Fixed ingredients are merged
-        inside the numpy callback without ever entering JAX's tracing mechanism.
-        
-        The differentiation behavior is:
-            - Compatible with `jax.grad`, `jax.value_and_grad`, and `jax.vjp`
-            - Uses implicit differentiation of the KKT conditions
-            - More memory-efficient than JVP for functions with many inputs
-            - May be slower than JVP for functions with many outputs
-        
-        Args:
-            *dynamic_vals: Variable-length argument list of JAX arrays.
-                Must contain exactly ``len(_dynamic_keys)`` arrays, in the order
-                specified by ``_dynamic_keys``. Each array corresponds to a
-                dynamic QP ingredient (P, q, A, b, G, h) that was not fixed at
-                setup time.
-                
-                Example: If ``_dynamic_keys = ('P', 'q', 'G', 'h')``, then:
-                    - ``dynamic_vals[0]``: P matrix, shape ``(n_var, n_var)``
-                    - ``dynamic_vals[1]``: q vector, shape ``(n_var,)``
-                    - ``dynamic_vals[2]``: G matrix, shape ``(n_ineq, n_var)``
-                    - ``dynamic_vals[3]``: h vector, shape ``(n_ineq,)``
 
-        Returns:
-            QPOutput: A dictionary containing the solution as JAX arrays:
-            
-                - ``x``:   Primal solution vector, shape ``(n_var,)``
-                - ``lam``: Inequality dual variables, shape ``(n_ineq,)``
-                - ``mu``:  Equality dual variables, shape ``(n_eq,)``
-        
-        Notes:
-            - This function **does not** support batching in the forward pass.
-            If batched inputs are provided, only the first batch element is used
-            for the solve. This is because the primal solution must be identical
-            across the batch for differentiation to be meaningful.
-            - The function stores the dynamic inputs, solution, and (implicitly)
-            the active set as residuals for the backward pass. This avoids
-            re-computing or re-converting these values.
-            - Warmstarting is supported via the `warmstart` argument to the
-            public `solver()` function, but is not part of the traced path.
-        """
         return pure_callback(
             _solve_qp, 
             _fwd_shapes, 
             *dynamic_vals, 
-            vmap_method="sequential"
+            # vmap_method="broadcast_all"
         )
 
     def _solver_dynamic_vjp_fwd(
         *dynamic_vals: jax.Array,
     ) -> tuple[QPOutput,tuple[jax.Array, ...],
     ]:
-        """Forward pass for custom VJP, saving residuals for backward differentiation.
-        
-        This function is called by JAX during the forward pass of reverse-mode
-        differentiation. It solves the QP problem and packages the results along
-        with all necessary residuals for the backward pass.
-        
-        The residuals include:
-            1. The dynamic input arrays (to avoid re-converting them in backward)
-            2. The primal solution (x, lam, mu) (to compute analytical gradients)
-        
-        Note: The active set is **not** explicitly stored as a residual; it is
-        reconstructed inside the backward differentiator from the problem data
-        and solution. This trades a small amount of recomputation for reduced
-        memory usage.
-        
-        Args:
-            *dynamic_vals: Variable-length argument list of JAX arrays.
-                Same as in ``_solver_dynamic_vjp_mode``: the dynamic QP ingredients
-                in ``_dynamic_keys`` order.
-        
-        Returns:
-            A tuple ``(primal_out, residuals)`` where:
-            
-                - ``primal_out`` (QPOutput): The solution dictionary containing
-                ``x``, ``lam``, and ``mu`` as JAX arrays. This is the value
-                returned to the user and used in the forward pass.
-                
-                - ``residuals`` (Tuple[jax.Array, ...]): A flat tuple of JAX arrays
-                saved for the backward pass. The layout is:
-                
-                    * First ``len(_dynamic_keys)`` arrays: The original dynamic
-                    inputs (P, q, A, b, G, h) in order.
-                    * Next 3 arrays: The solution (x, lam, mu) in that order.
-                    
-                This layout must match the unpacking in ``_solver_dynamic_vjp_bwd``.
-        
-        Notes:
-            - The residuals are treated as non-differentiable constants by JAX.
-            - All arrays in residuals are JAX arrays, but they will be converted
-            to numpy inside the backward callback.
-            - The total number of residuals is ``len(_dynamic_keys) + 3``.
-            - This function is **not** meant to be called directly by users; it's
-            part of the ``custom_vjp`` machinery.
-        """
+
         result = pure_callback(
             _solve_qp, 
             _fwd_shapes, 
             *dynamic_vals,
-            vmap_method="sequential"
+            # vmap_method="broadcast_all"
         )
 
         # result is a flat tuple: (x, lam, mu, active, prob[0], ...)
@@ -955,78 +518,20 @@ def setup_dense_solver(
         residuals: tuple[jax.Array, ...],
         g: dict[str, jax.Array],
     ) -> tuple[jax.Array, ...]:
-        """Backward pass for custom VJP, computing parameter cotangents.
-        
-        This function is called by JAX during the backward pass of reverse-mode
-        differentiation. It receives the residuals saved in the forward pass and
-        the cotangents of the outputs, and computes the cotangents (gradients)
-        of all dynamic input parameters.
-        
-        The backward computation proceeds in three steps:
-            1. Unpack residuals into dynamic inputs and forward solution
-            2. Pass these along with output cotangents to the numpy-side
-            adjoint differentiator ``_diff_reverse`` via ``pure_callback``
-            3. Return the computed parameter cotangents in the correct order
-        
-        The adjoint differentiation exploits the symmetry of the KKT matrix:
-        solving M·v = g (where g are the output cotangents) yields adjoint
-        variables v, from which parameter cotangents are derived analytically.
-        
-        Args:
-            residuals: A flat tuple of JAX arrays saved from the forward pass.
-                Layout matches the output of ``_solver_dynamic_vjp_fwd``:
-                
-                - First ``len(_dynamic_keys)`` arrays: Dynamic inputs in order
-                - Next 3 arrays: Solution (x, lam, mu) in that order
-                
-            g: A dictionary mapping output names to their cotangents.
-                Contains exactly three keys:
-                
-                - ``"x"``:   Cotangent of primal solution.
-                Shape ``(n_var,)`` if unbatched, or ``(batch_size, n_var)`` if batched.
-                - ``"lam"``: Cotangent of inequality duals.
-                Shape ``(n_ineq,)`` if unbatched, or ``(batch_size, n_ineq)`` if batched.
-                - ``"mu"``:  Cotangent of equality duals.
-                Shape ``(n_eq,)`` if unbatched, or ``(batch_size, n_eq)`` if batched.
-        
-        Returns:
-            Tuple[jax.Array, ...]: A tuple of cotangents, one per dynamic input,
-            in the same order as ``_dynamic_keys``. The shape of each cotangent
-            matches the shape of the corresponding input:
-            
-                - For matrix inputs (P, A, G): same shape as the primal input
-                - For vector inputs (q, b, h): same shape as the primal input
-            
-            When batched, the cotangents have shape ``(batch_size, ...)`` matching
-            the batch dimension of the input cotangents.
-        
-        Raises:
-            ValueError: If the residuals tuple has an unexpected length or if the
-                cotangent dictionary is missing required keys.
-        
-        Notes:
-            - The backward pass handles batching automatically: if the input
-            cotangents have a batch dimension, the adjoint system is solved
-            once with a matrix right-hand side.
-            - Fixed elements (provided at setup) **do not** receive cotangents
-            and are not present in the output tuple.
-            - The active set from the forward solve is reconstructed inside the
-            numpy differentiator; it is not stored as a residual to save memory.
-            - This function is **not** meant to be called directly by users; it's
-            part of the ``custom_vjp`` machinery.
-        """
 
         # unpack cotangents
         g_x   = g["x"]
         g_lam = g["lam"]
         g_mu  = g["mu"]
 
+        print(f"Shapes of cotangent: {g_x.shape}, {g_lam.shape}, {g_mu.shape}")
+
         # Layout: *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu
         grad_vals = pure_callback(
             _diff_reverse,
             _vjp_bwd_shapes,
             *residuals, g_x, g_lam, g_mu,
-            vmap_method="expand_dims"
+            vmap_method="broadcast_all"
         )
 
         return tuple(grad_vals[k] for k in _dynamic_keys)
@@ -1059,138 +564,6 @@ def setup_dense_solver(
         warmstart: Optional[jax.Array] = None,
         **runtime: jax.Array,
     ) -> QPOutput:
-        """Solve a (possibly partially fixed) quadratic program.
-        
-        This function is the main entry point for solving QPs after setup.
-        It accepts the runtime QP ingredients (those not fixed at setup) as
-        keyword arguments, solves the problem using the configured numpy
-        backend, and returns the solution as JAX arrays.
-        
-        The full set of possible QP ingredients is ``{P, q, A, b, G, h}``.
-        Any subset may be fixed at setup time via ``fixed_elements``; the
-        remainder must be supplied here at call time. Fixed elements are
-        stored as numpy arrays and never enter JAX's trace, which avoids
-        unnecessary conversions but means their derivatives are always zero.
-        
-        **Warm-starting:**
-        
-        If a warmstart initial guess is provided, it is converted to numpy and
-        passed to the underlying solver. The warmstart is **cleared after each
-        solve** to prevent accidental reuse across calls. Warmstart is **not**
-        differentiated through and does not affect computed derivatives.
-        
-        **Differentiation Behavior:**
-        
-        The differentiation mode (JVP or VJP) is selected at setup time:
-        
-            - ``"kkt_fwd"``: Forward-mode. The solver is compatible with
-            ``jax.jvp`` and ``jax.vmap(jax.jvp(...))``. Efficient for
-            problems with few inputs relative to outputs.
-            
-            - ``"kkt_rev"``: Reverse-mode. The solver is compatible with
-            ``jax.grad``, ``jax.value_and_grad``, and ``jax.vjp``.
-            Efficient for problems with many inputs and few outputs.
-        
-        **Batching:**
-        
-        The forward solve itself does **not** support batching — if batched
-        inputs are provided (with an extra leading dimension), only the first
-        batch element is used. This is because the primal solution must be
-        identical across the batch for differentiation to be meaningful.
-        
-        However, differentiation **does** support batching:
-        
-            - In JVP mode, if tangents have a batch dimension, the linearized
-            KKT system is solved once with a matrix right-hand side.
-            - In VJP mode, if output cotangents have a batch dimension, the
-            adjoint system is solved once with a matrix right-hand side.
-        
-        **Debug Mode:**
-        
-        If ``debug=True`` was set in the constructor options, additional
-        checks are performed:
-        
-            - Verification that all dynamic ingredients are provided
-            - Shape validation against declared problem dimensions
-            - Warnings when runtime keys overlap with fixed elements
-        
-        Args:
-            warmstart: Optional initial guess for the primal solution.
-                Shape ``(n_var,)``. Passed to the underlying QP solver to
-                speed up convergence. **Not differentiated through.**
-                Cleared after each solve.
-                
-            **runtime: QP ingredients as JAX arrays. Must cover at least every
-                key in ``_dynamic_keys`` (i.e., every ingredient not already
-                fixed at setup). Keys that overlap with ``fixed_elements`` are
-                ignored with a warning (in debug mode).
-                
-                Valid keys and their required shapes:
-                
-                - ``P``: Cost matrix, shape ``(n_var, n_var)``. Must be
-                positive semidefinite.
-                - ``q``: Linear cost vector, shape ``(n_var,)``.
-                - ``A``: Equality constraint matrix, shape ``(n_eq, n_var)``.
-                Required if ``n_eq > 0``.
-                - ``b``: Equality RHS vector, shape ``(n_eq,)``.
-                Required if ``n_eq > 0``.
-                - ``G``: Inequality constraint matrix, shape ``(n_ineq, n_var)``.
-                Required if ``n_ineq > 0``.
-                - ``h``: Inequality RHS vector, shape ``(n_ineq,)``.
-                Required if ``n_ineq > 0``.
-        
-        Returns:
-            QPOutput: A dictionary containing the solution as JAX arrays:
-            
-                - ``x``:   Primal solution vector.
-                Shape ``(n_var,)`` (unbatched) or broadcast to ``(batch_size, n_var)``
-                when differentiating with batched tangents/cotangents.
-                
-                - ``lam``: Inequality dual variables (Lagrange multipliers for
-                inequality constraints). Shape ``(n_ineq,)`` or broadcast to
-                ``(batch_size, n_ineq)`` when batched.
-                
-                - ``mu``:  Equality dual variables (Lagrange multipliers for
-                equality constraints). Shape ``(n_eq,)`` or broadcast to
-                ``(batch_size, n_eq)`` when batched.
-        
-        Raises:
-            ValueError: If any dynamic ingredient is missing (in debug mode),
-                or if the warmstart array has incorrect shape.
-            Warning: In debug mode, warns if runtime keys overlap with fixed
-                elements (those inputs are ignored).
-        
-        Example:
-            >>> # Basic usage
-            >>> sol = solver(P=P_mat, q=q_vec, A=A_mat, b=b_vec)
-            >>> x_opt, lam_opt, mu_opt = sol["x"], sol["lam"], sol["mu"]
-            
-            >>> # With warm-starting
-            >>> sol = solver(warmstart=x0, P=P_mat, q=q_vec)
-            
-            >>> # Gradient computation (reverse-mode)
-            >>> def loss(q):
-            ...     sol = solver(q=q, P=P_fixed)  # P is fixed at setup
-            ...     return sol["x"].sum()
-            >>> grad_q = jax.grad(loss)(q)
-            
-            >>> # Forward-mode differentiation
-            >>> primals = (q,)
-            >>> tangents = (dq,)
-            >>> sol, sol_dot = jax.jvp(lambda q: solver(q=q, P=P_fixed), primals, tangents)
-        
-        Notes:
-            - The solver is **not** jit-compilable. Use it inside JAX-transformed
-            functions where the callback overhead is acceptable.
-            - Fixed elements are **never** traced by JAX, so they cannot be
-            differentiated through. To differentiate through an element,
-            provide it at runtime instead of fixing it at setup.
-            - The active set from the QP solution is used internally but never
-            returned to the user.
-            - When batching is detected during differentiation, the primal
-            solution is broadcast (not tiled) to match the batch dimension,
-            as the primal solution is identical for all batch elements.
-        """
 
         # Store warmstart in the mutable closure slot (converted to
         # numpy). _solve_qp_numpy reads it and clears it after use.

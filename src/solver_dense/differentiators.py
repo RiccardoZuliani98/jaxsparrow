@@ -339,14 +339,14 @@ def create_dense_kkt_differentiator_rev(
         # ── Build RHS from cotangent vectors ─────────────────────────
 
         if batched:
-            
+
             # Batched mode: g_x, g_lam, g_mu have shape (batch_size, ...)
             if g_x.shape[0] == 1 and g_x.ndim > 1:
-                g_x = np.broadcast_to(g_x, (batch_size,) + g_x.shape[1:])
+                g_x = np.broadcast_to(g_x, (batch_size, *g_x.shape[1:]))
             if g_lam.shape[0] == 1 and g_lam.ndim > 1:
-                g_lam = np.broadcast_to(g_lam, (batch_size,) + g_lam.shape[1:])
+                g_lam = np.broadcast_to(g_lam, (batch_size,*g_lam.shape[1:]))
             if g_mu.shape[0] == 1 and g_mu.ndim > 1:
-                g_mu = np.broadcast_to(g_mu, (batch_size,) + g_mu.shape[1:])
+                g_mu = np.broadcast_to(g_mu, (batch_size,*g_mu.shape[1:]))
             
             # Start with g_x as the first block
             rhs_parts = [g_x.T]  # Shape: (n_var, batch_size)
