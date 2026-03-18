@@ -26,6 +26,7 @@ from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, QPDiffOut,
 #TODO: add reverse mode tests
 #TODO: add value function and envelope theorem?
 #TODO: regenerate docstrings
+#TODO: vmap for vjp
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
@@ -456,13 +457,11 @@ def setup_dense_solver(
     #endregion
 
     # =================================================================
-    # SETUP VJP DIFFERENTIATOR
+    # REVERSE MODE DIFFERENTIATION
     # =================================================================
 
     #region
-
-    #TODO: this should be moved outside
-    def _kkt_vjp(*args: ndarray) -> tuple[ndarray, ...]:
+    def _diff_reverse(*args: ndarray) -> tuple[Array, ...]:
         """Adjoint (VJP) differentiation of the KKT conditions.
 
         Given the pre-merged problem matrices, forward solution,
@@ -506,14 +505,19 @@ def setup_dense_solver(
             A tuple of numpy arrays — one cotangent per **dynamic**
             key, in ``_dynamic_keys`` order.
         """
+
         t_start = perf_counter()
         t: dict[str, float] = {}
 
         # ── Unpack arguments ─────────────────────────────────────────
-        # Problem matrices (already merged, no conversion needed)
+
+        start = perf_counter()
+
+        # Problem matrices (only dynamic entries)
         prob_np: dict[str, ndarray] = {
+            #TODO: update this for sparse mode
             k: np.asarray(args[i], dtype=_dtype)
-            for i, k in enumerate(_required_keys)
+            for i, k in enumerate(_dynamic_keys)
         }
         off = _n_req
         x_np      = np.asarray(args[off],     dtype=_dtype)
@@ -524,100 +528,52 @@ def setup_dense_solver(
         g_lam     = np.asarray(args[off + 5], dtype=_dtype)
         g_mu      = np.asarray(args[off + 6], dtype=_dtype)
 
-        # ── Retrieve problem matrices ────────────────────────────────
-        P_np: Float[ndarray, "n_var n_var"] = prob_np["P"]
-        A_np: Float[ndarray, "n_eq n_var"] = prob_np.get(
-            "A", np.empty((0, n_var), dtype=_dtype)
-        )
-        G_np: Float[ndarray, "n_ineq n_var"] = prob_np.get(
-            "G", np.empty((0, n_var), dtype=_dtype)
-        )
+        t["convert_to_numpy"] = perf_counter() - start
 
-        # ── Build KKT matrix LHS (symmetric → adjoint = forward) ────
-        start = perf_counter()
 
-        n_active = int(np.sum(active_np))
-        H_parts: list[Float[ndarray, "_ n_var"]] = []
-        if n_eq > 0:
-            H_parts.append(A_np)
-        if n_ineq > 0 and n_active > 0:
-            H_parts.append(G_np[active_np, :])
+        # ── Detect batching ──────────────────────────────────────────
+        if _n_dyn > 0:
 
-        if H_parts:
-            H_np: Float[ndarray, "nh n_var"] = np.vstack(H_parts)
+            # check if dimension was augmented by one, if so, batching
+            # was applied
+            batched = g_x.ndim == 2
+
         else:
-            H_np = np.empty((0, n_var), dtype=_dtype)
 
-        n_h = H_np.shape[0]
+            # no batching if there are no dynamic arguments
+            batched = False
 
-        lhs: Float[ndarray, "nv_nh nv_nh"] = np.block([
-            [P_np,  H_np.T],
-            [H_np,  np.zeros((n_h, n_h), dtype=_dtype)],
-        ])
+        # get batch size
+        batch_size = max(v.shape[0] for v in dyn_tangents_np.values()) if batched else 0 #type:ignore
 
-        # ── Build RHS from cotangent vectors ─────────────────────────
-        rhs_parts: list[Float[ndarray, " _"]] = [g_x]
-        if n_eq > 0:
-            rhs_parts.append(g_mu)
-        if n_ineq > 0 and n_active > 0:
-            rhs_parts.append(g_lam[active_np])
 
-        rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
+        # ── Call differentiator ──────────────────────────────────────
 
-        t["build_system"] = perf_counter() - start
-
-        # ── Solve the adjoint system: lhs @ v = rhs ──────────────────
-        start = perf_counter()
-        v = np.linalg.solve(lhs, rhs)
-        t["lin_solve"] = perf_counter() - start
-
-        # ── Extract adjoint variables ────────────────────────────────
-        v_x: Float[ndarray, " n_var"] = v[:n_var]
-        v_mu: Float[ndarray, " n_eq"] = (
-            v[n_var:n_var + n_eq]
-            if n_eq > 0
-            else np.empty(0, dtype=_dtype)
+        grads_np, t_diff = _diff_reverse_numpy(
+            prob_np=prob_np,
+            x_np=x_np
+            lam_np=lam_np
+            mu_np=mu_np
+            active_np=active_np
+            g_x=g_x
+            g_lam=g_lam
+            g_mu=g_mu,
+            batch_size=batch_size
         )
-        v_lam_a: Float[ndarray, " n_active"] = (
-            v[n_var + n_eq:]
-            if (n_ineq > 0 and n_active > 0)
-            else np.empty(0, dtype=_dtype)
-        )
+        t.update(t_diff)
 
-        # ── Compute parameter cotangents ─────────────────────────────
-        start = perf_counter()
 
-        grads: dict[str, ndarray] = {}
+        # ── Build solution dict ──────────────────────────────────────
 
-        grads["P"] = -np.outer(v_x, x_np)
-        grads["q"] = -v_x
-
-        if n_eq > 0:
-            grads["A"] = -(
-                np.outer(mu_np, v_x) + np.outer(v_mu, x_np)
-            )
-            grads["b"] = v_mu
-
-        if n_ineq > 0:
-            g_G = np.zeros_like(G_np)
-            g_h_full = np.zeros(n_ineq, dtype=_dtype)
-            if n_active > 0:
-                g_G[active_np, :] = -(
-                    np.outer(lam_np[active_np], v_x)
-                    + np.outer(v_lam_a, x_np)
-                )
-                g_h_full[active_np] = v_lam_a
-            grads["G"] = g_G
-            grads["h"] = g_h_full
-
-        t["compute_grads"] = perf_counter() - start
+        # convert solution back to jax
+        #TODO: this should change in sparse mode
+        grads = (jnp.array(grads_np[k],dtype=_dtype) for k in _dynamic_keys)
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")
         _timings.record("_kkt_vjp", t)
 
-        # ── Return in _dynamic_keys order ────────────────────────────
-        return tuple(grads[k] for k in _dynamic_keys)
+        return grads
 
     #endregion
 
@@ -753,7 +709,7 @@ def setup_dense_solver(
                   All JAX arrays, non-differentiable.
         """
         result = pure_callback(
-            _solve_qp_vjp_fwd, _vjp_fwd_shapes, *dynamic_vals,
+            _solve_qp, _vjp_fwd_shapes, *dynamic_vals,
         )
 
         # result is a flat tuple: (x, lam, mu, active, prob[0], ...)
@@ -805,7 +761,7 @@ def setup_dense_solver(
 
         # Layout: *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu
         grad_vals: tuple[jax.Array, ...] = pure_callback(
-            _kkt_vjp,
+            _diff_reverse,
             _vjp_bwd_shapes,
             *prob_arrays, x, lam, mu, active, g_x, g_lam, g_mu,
         )

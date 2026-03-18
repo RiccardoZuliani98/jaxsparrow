@@ -218,3 +218,113 @@ def create_dense_kkt_differentiator_fwd(
         return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
     
     return kkt_differentiator_fwd
+
+def create_dense_kkt_differentiator_rev(n_var, n_eq, n_ineq, options):
+
+    # parse options
+    options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
+        
+    def kkt_differentiator_rev(
+        prob_np,
+        x_np,
+        lam_np,
+        mu_np,
+        active_np,
+        g_x,
+        g_lam,
+        g_mu,
+        batch_size
+    ):
+        
+        # start counting time
+        start = perf_counter()
+        t : dict[str, float] = {}
+
+        # ── Retrieve problem matrices ────────────────────────────────
+        P_np: Float[ndarray, "n_var n_var"] = prob_np["P"]
+        A_np: Float[ndarray, "n_eq n_var"] = prob_np.get(
+            "A", np.empty((0, n_var), dtype=options_parsed["dtype"])
+        )
+        G_np: Float[ndarray, "n_ineq n_var"] = prob_np.get(
+            "G", np.empty((0, n_var), dtype=options_parsed["dtype"])
+        )
+
+        # ── Build KKT matrix LHS (symmetric → adjoint = forward) ────
+
+        n_active = int(np.sum(active_np))
+        H_parts: list[Float[ndarray, "_ n_var"]] = []
+        if n_eq > 0:
+            H_parts.append(A_np)
+        if n_ineq > 0 and n_active > 0:
+            H_parts.append(G_np[active_np, :])
+
+        if H_parts:
+            H_np: Float[ndarray, "nh n_var"] = np.vstack(H_parts)
+        else:
+            H_np = np.empty((0, n_var), dtype=options_parsed["dtype"])
+
+        n_h = H_np.shape[0]
+
+        lhs: Float[ndarray, "nv_nh nv_nh"] = np.block([
+            [P_np,  H_np.T],
+            [H_np,  np.zeros((n_h, n_h), dtype=options_parsed["dtype"])],
+        ])
+
+        # ── Build RHS from cotangent vectors ─────────────────────────
+        rhs_parts: list[Float[ndarray, " _"]] = [g_x]
+        if n_eq > 0:
+            rhs_parts.append(g_mu)
+        if n_ineq > 0 and n_active > 0:
+            rhs_parts.append(g_lam[active_np])
+
+        rhs: Float[ndarray, " nv_nh"] = np.hstack(rhs_parts)
+
+        t["build_system"] = perf_counter() - start
+
+        # ── Solve the adjoint system: lhs @ v = rhs ──────────────────
+        start = perf_counter()
+        v = np.linalg.solve(lhs, rhs)
+        t["lin_solve"] = perf_counter() - start
+
+        # ── Extract adjoint variables ────────────────────────────────
+        v_x: Float[ndarray, " n_var"] = v[:n_var]
+        v_mu: Float[ndarray, " n_eq"] = (
+            v[n_var:n_var + n_eq]
+            if n_eq > 0
+            else np.empty(0, dtype=options_parsed["dtype"])
+        )
+        v_lam_a: Float[ndarray, " n_active"] = (
+            v[n_var + n_eq:]
+            if (n_ineq > 0 and n_active > 0)
+            else np.empty(0, dtype=options_parsed["dtype"])
+        )
+
+        # ── Compute parameter cotangents ─────────────────────────────
+        start = perf_counter()
+
+        grads: dict[str, ndarray] = {}
+
+        grads["P"] = -np.outer(v_x, x_np)
+        grads["q"] = -v_x
+
+        if n_eq > 0:
+            grads["A"] = -(
+                np.outer(mu_np, v_x) + np.outer(v_mu, x_np)
+            )
+            grads["b"] = v_mu
+
+        if n_ineq > 0:
+            g_G = np.zeros_like(G_np)
+            g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
+            if n_active > 0:
+                g_G[active_np, :] = -(
+                    np.outer(lam_np[active_np], v_x)
+                    + np.outer(v_lam_a, x_np)
+                )
+                g_h_full[active_np] = v_lam_a
+            grads["G"] = g_G
+            grads["h"] = g_h_full
+
+        t["compute_grads"] = perf_counter() - start
+
+    return kkt_differentiator_rev
