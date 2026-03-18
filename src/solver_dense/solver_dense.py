@@ -32,9 +32,8 @@ from src.solver_dense.solver_dense_types import (
 #TODO: add a finite difference utility similar in principle to TimingRecorder.
 # this should only use the numpy sub-solver and therefore not contribute to 
 # the overall timings
-#TODO: add reverse mode tests
 #TODO: add value function and envelope theorem?
-#TODO: vmap for vjp
+#TODO: fix test for vmapped vjp unconstrained => what is going wrong?
 
 # Expected ndim for each QP ingredient (unbatched).
 # Used to detect batching in the JVP path.
