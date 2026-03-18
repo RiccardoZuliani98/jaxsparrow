@@ -1,39 +1,67 @@
-"""
-Every solver will have its own types, that is, a structure with which you can
-pass data to the solver / differentiator.
-It makes sense to keep this separate from the rest.
-Note that these are solver-specific but they are also used in the differentiator.
-
-"""
-
 #TODO: docstring
 
-from typing import TypedDict
+from typing import TypedDict, NamedTuple
 from jax import Array
 from numpy import ndarray
+from jaxtyping import Float, Bool
 
-# Dense QP ingredients
-#
-#  A  : (n_eq, n_var)     equality lhs
-#  b  : (n_eq,)           equality rhs
-#  G  : (n_in, n_var)     inequality lhs
-#  h  : (n_in,)           inequality rhs
-#  P  : (n_var, n_var)    Hessian
-#  q  : (n_var,)          linear term
-#  c  : () or (1,)        constant scalar
-#
-class DenseProblemIngredients(TypedDict, total=False):
-    A: Array
-    b: Array
-    G: Array
-    h: Array
-    P: Array
-    q: Array
+class DenseQPIngredients(TypedDict, total=False):
+    P: Float[Array, "n_var n_var"]
+    q: Float[Array, "n_var"]
+    A: Float[Array, "n_eq n_var"]
+    b: Float[Array, "n_eq"]
+    G: Float[Array, "n_ineq n_var"]
+    h: Float[Array, "n_ineq"]
 
-class DenseProblemIngredientsNP(TypedDict, total=False):
-    A: ndarray
-    b: ndarray
-    G: ndarray
-    h: ndarray
-    P: ndarray
-    q: ndarray
+class DenseQPIngredientsFull(TypedDict):
+    P: Float[Array, "n_var n_var"]
+    q: Float[Array, "n_var"]
+    A: Float[Array, "n_eq n_var"]
+    b: Float[Array, "n_eq"]
+    G: Float[Array, "n_ineq n_var"]
+    h: Float[Array, "n_ineq"]
+
+class DenseQPIngredientsNP(TypedDict, total=False):
+    P: Float[ndarray, "n_var n_var"]
+    q: Float[ndarray, "n_var"]
+    A: Float[ndarray, "n_eq n_var"]
+    b: Float[ndarray, "n_eq"]
+    G: Float[ndarray, "n_ineq n_var"]
+    h: Float[ndarray, "n_ineq"]
+
+class DenseQPIngredientsNPFull(TypedDict):
+    P: Float[ndarray, "n_var n_var"]
+    q: Float[ndarray, "n_var"]
+    A: Float[ndarray, "n_eq n_var"]
+    b: Float[ndarray, "n_eq"]
+    G: Float[ndarray, "n_ineq n_var"]
+    h: Float[ndarray, "n_ineq"]
+
+class DenseQPIngredientsTangentsNP(TypedDict, total=False):
+    P: Float[ndarray, "n_var n_var"]    |  Float[ndarray, "n_batch n_var n_var"]
+    q: Float[ndarray, "n_var"]          |  Float[ndarray, "n_batch n_var"]
+    A: Float[ndarray, "n_eq n_var"]     |  Float[ndarray, "n_batch n_eq n_var"]
+    b: Float[ndarray, "n_eq"]           |  Float[ndarray, "n_batch n_eq"]
+    G: Float[ndarray, "n_ineq n_var"]   |  Float[ndarray, "n_batch n_ineq n_var"]
+    h: Float[ndarray, "n_ineq"]         |  Float[ndarray, "n_batch n_ineq"]
+
+class QPOutput(TypedDict):
+    x:      Float[Array, "n_var"]       |  Float[Array, "n_batch n_var"]
+    lam:    Float[Array, "n_ineq"]      |  Float[Array, "n_batch n_ineq"]
+    mu:     Float[Array, "n_eq"]        |  Float[Array, "n_batch n_eq"]
+
+class QPOutputNP(NamedTuple):
+    x:      Float[ndarray, "n_var"]     |  Float[ndarray, "n_batch n_var"]
+    lam:    Float[ndarray, "n_ineq"]    |  Float[ndarray, "n_batch n_ineq"]
+    mu:     Float[ndarray, "n_eq"]      |  Float[ndarray, "n_batch n_eq"]
+    active: Bool[ndarray, "n_ineq"]     |  Bool[ndarray,  "n_batch n_ineq"]
+
+class QPDiffOut(TypedDict):
+    x   : Float[Array, "n_var"]         |  Float[Array, "n_batch n_var"] 
+    lam : Float[Array, "n_ineq"]        |  Float[Array, "n_batch n_ineq"]
+    mu  : Float[Array, "n_eq"]          |  Float[Array, "n_batch n_eq"]
+
+class QPDiffOutNP(NamedTuple):
+    x_np   : Float[ndarray, "n_var"]    |  Float[ndarray, "n_batch n_var"] 
+    lam_np : Float[ndarray, "n_ineq"]   |  Float[ndarray, "n_batch n_ineq"]
+    mu_np  : Float[ndarray, "n_eq"]     |  Float[ndarray, "n_batch n_eq"]

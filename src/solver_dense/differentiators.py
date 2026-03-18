@@ -3,39 +3,46 @@ from time import perf_counter
 from jaxtyping import Float
 import numpy as np
 from typing import cast, Optional
+from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, DenseQPIngredientsNPFull, QPOutputNP, QPDiffOutNP, DenseQPIngredientsTangentsNP
+from src.solver_dense.solver_dense_options import DifferentiatorOptions
+from src.utils.parsing_utils import parse_options
 
-DEFAULT_DIFF_OPTIONS = {
+class DenseKKTfwdOptions(DifferentiatorOptions):
+    dtype:          type[np.floating]
+
+class DenseKKTfwdOptionsFull(DifferentiatorOptions,total=True):
+    dtype:          type[np.floating]
+
+DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
     "dtype": np.float64,
 }
 
-#TODO: change output
+#TODO: annotate output
+#TODO: docstrings
 def create_dense_kkt_differentiator_fwd(
     n_var:int,
     n_eq:int,
     n_ineq:int,
-    options:Optional[dict],
-    fixed_elements=None
+    options:Optional[DifferentiatorOptions]=None,
+    fixed_elements:Optional[DenseQPIngredientsNP]=None
 ):
     
     # parse options
-    if options is not None:
-        options_parsed = DEFAULT_DIFF_OPTIONS | options
-    else:
-        options_parsed = DEFAULT_DIFF_OPTIONS
+    options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     
     # store fixed elements, this can happen in two situations:
     # 1. if the user passes some fixed elements in "fixed_elements" argument,
     # 2. if there are no equality / inequality constraints
-    _fixed : dict[str,ndarray] = {}
-    _d_fixed : dict[str,ndarray] = {}
+    _fixed : DenseQPIngredientsNP = {}
+    _d_fixed : DenseQPIngredientsTangentsNP = {}
 
     if fixed_elements is not None:
 
         # store fixed elements
-        _fixed = {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()}
+        _fixed = cast(DenseQPIngredientsNP, {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
 
         # store zero differentials for such elements
-        _d_fixed = {k: np.empty_like(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()}
+        _d_fixed = cast(DenseQPIngredientsTangentsNP, {k: np.empty_like(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()})
 
     # add zero matrices / vectors if equality / inequality constraints are missing
     if n_eq == 0:
@@ -50,21 +57,18 @@ def create_dense_kkt_differentiator_fwd(
         _d_fixed["h"] = np.empty((0,), dtype=options_parsed["dtype"])
 
     # store a batched version where the first dimension is expanded
-    _d_fixed_batched = {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}
+    _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
     # choose lienar system solver
     _solve_linear_system = np.linalg.solve
 
 
     def kkt_differentiator_fwd(
-        x_np,
-        lam_np,
-        mu_np,
-        active_np,
-        dyn_primals_np:dict[str,ndarray],
-        dyn_tangents_np:dict[str,ndarray],
+        sol_np: QPOutputNP,
+        dyn_primals_np:DenseQPIngredientsNP,
+        dyn_tangents_np:DenseQPIngredientsTangentsNP,
         batch_size: int
-    ):
+    ) -> tuple[QPDiffOutNP,dict[str,float]]:
         
         # start timing
         t : dict[str, float] = {}
@@ -72,6 +76,9 @@ def create_dense_kkt_differentiator_fwd(
 
         # bool representing batching for simplicity
         batched = batch_size > 0
+
+        # extract solution
+        x_np, lam_np, mu_np, active_np = sol_np
 
 
         # ── Parse ingredients ────────────────────────────────────────
@@ -84,7 +91,7 @@ def create_dense_kkt_differentiator_fwd(
             d_np = cast(dict[str,ndarray],_d_fixed | dyn_tangents_np)
 
         # merge qp ingredients too
-        prob_np = _fixed | dyn_primals_np
+        prob_np = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
 
         # count active constraints
         n_active = int(np.sum(active_np))
@@ -207,6 +214,6 @@ def create_dense_kkt_differentiator_fwd(
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return dx_np, dlam_np, dmu_np, t
+        return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
     
     return kkt_differentiator_fwd

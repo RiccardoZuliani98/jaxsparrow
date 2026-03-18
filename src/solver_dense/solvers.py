@@ -3,39 +3,50 @@ import numpy as np
 from qpsolvers import Problem, solve_problem
 from numpy import ndarray
 from jaxtyping import Float, Bool
-from typing import cast
+from typing import cast, Optional
+from src.utils.parsing_utils import parse_options
+from src.solver_dense.solver_dense_options import SolverOptions
+from src.solver_dense.solver_dense_types import DenseQPIngredientsNP, DenseQPIngredientsNPFull, QPOutputNP
 
-DEFAULT_SOLVER_OPTIONS = {
+#TODO: docstrintgs
+class DenseQPSolverOptions(SolverOptions):
+    solver_name:    str
+    dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
+
+class DenseQPSolverOptionsFull(SolverOptions,total=True):
+    solver_name:    str
+    dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
+
+DEFAULT_SOLVER_OPTIONS : DenseQPSolverOptionsFull = {
     "solver_name":"piqp",
     "dtype":np.float64,
     "bool_dtype":np.bool_,
     "cst_tol": 1e-8
 }
 
-def create_dense_qp_solver(n_eq,n_ineq,options=None,fixed_elements=None):
+def create_dense_qp_solver(
+    n_eq:int,
+    n_ineq:int,
+    options:Optional[SolverOptions]=None,
+    fixed_elements:Optional[DenseQPIngredientsNP]=None):
 
     # parse options
-    if options is not None:
-        options_parsed = DEFAULT_SOLVER_OPTIONS | options
-    else:
-        options_parsed = DEFAULT_SOLVER_OPTIONS
+    options_parsed = parse_options(options ,DEFAULT_SOLVER_OPTIONS)
 
     if fixed_elements is not None:
         _fixed = cast(
-            dict[str,ndarray],
+            DenseQPIngredientsNPFull,
             {k: np.array(v, dtype=options_parsed["dtype"]).squeeze() for k, v in fixed_elements.items()}
         )
     else:
         _fixed = {}
 
     #TODO: change output
-    def solve_qp_numpy(**kwargs: ndarray) -> tuple[
-            Float[ndarray, " nv"],      # x
-            Float[ndarray, " ni"],      # lam
-            Float[ndarray, " ne"],      # mu
-            Bool[ndarray, " ni"],       # active
-            dict[str, float],           # timing
-        ]:
+    def solve_qp_numpy(**kwargs: ndarray) -> tuple[QPOutputNP,dict[str, float]]:
             """Solve the QP in pure numpy via ``qpsolvers``.
 
             Only dynamic elements needed in ``kwargs``, since kwargs is
@@ -90,7 +101,7 @@ def create_dense_qp_solver(n_eq,n_ineq,options=None,fixed_elements=None):
             warmstart = kwargs.pop("warmstart",None)
 
             # merge with fixed elements
-            merged = _fixed | kwargs
+            merged = cast(DenseQPIngredientsNPFull, _fixed | kwargs)
 
             # form problem with the warmstart removed
             prob = Problem(**merged)
@@ -108,19 +119,19 @@ def create_dense_qp_solver(n_eq,n_ineq,options=None,fixed_elements=None):
 
             # Recover primal / dual variables
             start = perf_counter()
-            x: Float[ndarray, " nv"] = (
+            x: Float[ndarray, "n_var"] = (
                 np.asarray(sol.x, dtype=options_parsed["dtype"]).reshape(-1)
             )
 
             if n_eq > 0:
-                mu: Float[ndarray, " ne"] = (
+                mu: Float[ndarray, "n_eq"] = (
                     np.asarray(sol.y, dtype=options_parsed["dtype"]).reshape(-1)
                 )
             else:
                 mu = np.empty(0, dtype=options_parsed["dtype"])
 
             if n_ineq > 0:
-                lam: Float[ndarray, " ni"] = (
+                lam: Float[ndarray, "n_ineq"] = (
                     np.asarray(sol.z, dtype=options_parsed["dtype"]).reshape(-1)
                 )
             else:
@@ -130,15 +141,15 @@ def create_dense_qp_solver(n_eq,n_ineq,options=None,fixed_elements=None):
             # Determine active set: |Gx − h| <= tolerance
             start = perf_counter()
             if n_ineq > 0:
-                active: Bool[ndarray, " ni"] = np.asarray(
+                active: Bool[ndarray, "n_ineq"] = np.asarray(
                     np.abs(merged["G"] @ sol.x - merged["h"])
                     <= options_parsed["cst_tol"],
                     dtype=options_parsed["bool_dtype"],
                 ).reshape(-1)
             else:
-                active = np.empty(0, dtype=options_parsed["bool_dtype"])
+                active : Bool[ndarray, "n_ineq"] = np.empty(0, dtype=options_parsed["bool_dtype"])
             t["active_set"] = perf_counter() - start
 
-            return x, lam, mu, active, t
+            return cast(QPOutputNP, (x, lam, mu, active)), t
     
     return solve_qp_numpy
