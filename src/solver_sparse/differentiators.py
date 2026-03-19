@@ -47,7 +47,18 @@ from src.solver_sparse.options import DEFAULT_DIFF_OPTIONS
 # ── Sparse helpers ───────────────────────────────────────────────────
 
 def _ensure_csc(v, dtype) -> csc_matrix:
-    """Ensure a value is a CSC matrix."""
+    """Cast a matrix to CSC format with the given dtype.
+
+    No-op if *v* is already a ``csc_matrix`` with the correct dtype.
+    Accepts any SciPy sparse format or a dense ``ndarray``.
+
+    Args:
+        v: Input matrix (sparse or dense).
+        dtype: Target numpy dtype.
+
+    Returns:
+        A ``csc_matrix`` with the requested dtype.
+    """
     if isinstance(v, csc_matrix) and v.dtype == dtype:
         return v
     if issparse(v):
@@ -55,7 +66,16 @@ def _ensure_csc(v, dtype) -> csc_matrix:
     return csc_matrix(np.asarray(v, dtype=dtype))
 
 def _sparse_zeros(m: int, n: int, dtype) -> csc_matrix:
-    """Create a sparse (m, n) zero matrix."""
+    """Create an empty sparse matrix with no stored entries.
+
+    Args:
+        m: Number of rows.
+        n: Number of columns.
+        dtype: Numpy dtype for the matrix values.
+
+    Returns:
+        A ``csc_matrix`` of shape ``(m, n)`` with zero nonzeros.
+    """
     return csc_matrix((m, n), dtype=dtype)
 
 def _build_sparse_kkt(
@@ -64,13 +84,27 @@ def _build_sparse_kkt(
     n_h: int,
     dtype,
 ) -> csc_matrix:
-    """
-    Build the KKT matrix in sparse form::
+    """Assemble the KKT matrix in sparse CSC form.
 
-        K = [[P,   H^T],
-             [H,   0  ]]
+    Builds the symmetric indefinite system::
 
-    All inputs and outputs are CSC.
+        K = [[ P,  H^T ],
+             [ H,   0  ]]
+
+    where ``H`` is the stacked active constraint Jacobian
+    (equality rows followed by active inequality rows). If there
+    are no active constraints (``n_h == 0``), returns ``P`` directly.
+
+    Args:
+        P: Hessian of the objective, shape ``(n_var, n_var)``.
+        H: Stacked constraint Jacobian, shape ``(n_h, n_var)``.
+        n_h: Number of rows in ``H`` (equality + active inequality).
+            Passed explicitly to avoid a sparse shape lookup.
+        dtype: Numpy dtype for the zero block.
+
+    Returns:
+        The KKT matrix as a ``csc_matrix`` of shape
+        ``(n_var + n_h, n_var + n_h)``.
     """
     if n_h == 0:
         return P.tocsc()
@@ -82,12 +116,24 @@ def _build_sparse_kkt(
         [H, zeros_block],
     ], format="csc"))
 
+#TODO: outsource this
 def _sparse_solve(K: csc_matrix, rhs: ndarray) -> ndarray:
-    """
-    Solve K @ x = rhs where K is sparse CSC and rhs is dense.
+    """Solve a sparse linear system via SuperLU factorization.
 
-    Handles both vector rhs (1-D) and matrix rhs (2-D, multiple RHS).
-    Factorizes K once via SuperLU, then solves per column.
+    Factorizes ``K`` once using ``scipy.sparse.linalg.splu``, then
+    solves for each RHS column. This is efficient for the batched
+    case where multiple tangent or cotangent directions share the
+    same KKT matrix.
+
+    Args:
+        K: Sparse CSC coefficient matrix, shape ``(n, n)``.
+        rhs: Dense right-hand side. Either a 1-D vector of length
+            ``n`` (single solve) or a 2-D array of shape ``(n, k)``
+            (``k`` solves sharing the same factorization).
+
+    Returns:
+        The solution ``x`` such that ``K @ x = rhs``, with the same
+        shape as *rhs*.
     """
     lu = splu(K)
     if rhs.ndim == 1:
@@ -110,6 +156,50 @@ def create_sparse_kkt_differentiator_fwd(
     options: Optional[DifferentiatorOptions] = None,
     fixed_elements: Optional[SparseQPIngredientsNP] = None,
 ):
+    """Create a forward-mode (JVP) KKT differentiator for sparse QPs.
+
+    Builds a closure that, given a QP solution and input tangents,
+    computes the Jacobian-vector product of the KKT optimality
+    conditions. The KKT system is assembled and solved entirely in
+    sparse form (CSC + SuperLU); only the RHS is dense.
+
+    The tangent inputs may be unbatched (one tangent direction) or
+    batched (multiple directions from ``vmap``). In the batched case
+    the KKT matrix is factorized once and each tangent direction is
+    solved as a separate RHS column.
+
+    Fixed elements are split into two groups at construction time:
+    the matrices/vectors themselves (used in the KKT LHS and RHS)
+    and their zero tangents (substituted into the RHS for fixed
+    parameters whose perturbation is always zero).
+
+    Args:
+        n_var: Number of decision variables.
+        n_eq: Number of equality constraints (zero if none).
+        n_ineq: Number of inequality constraints (zero if none).
+        options: Differentiator options (dtype, constraint tolerance,
+            linear solver). Defaults are filled for missing keys.
+        fixed_elements: QP ingredients that are constant across calls.
+            Sparse matrices are stored as CSC; dense vectors are
+            squeezed and cast. Zero tangents are pre-allocated for
+            each fixed element, both unbatched and with a leading
+            unit batch dimension for the batched path.
+
+    Returns:
+        A callable with signature::
+
+            kkt_differentiator_fwd(
+                sol_np: QPOutputNP,
+                dyn_primals_np: SparseQPIngredientsNP,
+                dyn_tangents_np: SparseQPIngredientsTangentsNP,
+                batch_size: int,
+            ) -> tuple[QPDiffOutNP, dict[str, float]]
+
+        where ``QPDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
+        contains per-phase timing keys: ``"build_system"`` and
+        ``"lin_solve"``.
+    """
+
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
 
@@ -153,6 +243,7 @@ def create_sparse_kkt_differentiator_fwd(
         dyn_tangents_np: SparseQPIngredientsTangentsNP,
         batch_size: int,
     ) -> tuple[QPDiffOutNP, dict[str, float]]:
+
 
         t: dict[str, float] = {}
         start = perf_counter()
@@ -272,6 +363,55 @@ def create_sparse_kkt_differentiator_rev(
     fixed_elements: Optional[SparseQPIngredientsNP] = None,
     dynamic_keys: Optional[Sequence[str]] = None,
 ):
+    """Create a reverse-mode (VJP) KKT differentiator for sparse QPs.
+
+    Builds a closure that, given a QP solution and output cotangents,
+    computes parameter gradients by solving the adjoint KKT system.
+    The KKT matrix is assembled in sparse form (CSC + SuperLU); the
+    RHS is built from the cotangent vectors.
+
+    Gradients for matrix parameters (P, A, G) are returned as 1-D
+    arrays of length ``nnz`` (unbatched) or 2-D arrays of shape
+    ``(batch, nnz)`` (batched), aligned with each matrix's sparsity
+    pattern. This avoids dense outer products entirely — gradient
+    values are computed only at nonzero positions via fancy indexing,
+    giving O(nnz) cost per matrix instead of O(n²).
+
+    Sparsity indices are extracted from *fixed_elements* at
+    construction time and from dynamic matrices lazily on first call.
+    The pattern is assumed stable across calls (BCOO structure is
+    fixed).
+
+    Args:
+        n_var: Number of decision variables.
+        n_eq: Number of equality constraints (zero if none).
+        n_ineq: Number of inequality constraints (zero if none).
+        options: Differentiator options (dtype, constraint tolerance,
+            linear solver). Defaults are filled for missing keys.
+        fixed_elements: QP ingredients that are constant across calls.
+            Sparse matrices are stored as CSC; dense vectors are
+            squeezed and cast. Sparsity patterns are extracted at
+            construction for gradient computation.
+        dynamic_keys: If provided, gradients are computed only for
+            these keys. If ``None``, gradients are computed for all
+            parameters present in the merged problem.
+
+    Returns:
+        A callable with signature::
+
+            kkt_differentiator_rev(
+                dyn_primals_np: SparseQPIngredientsNP,
+                x_np: ndarray, lam_np: ndarray, mu_np: ndarray,
+                g_x: ndarray, g_lam: ndarray, g_mu: ndarray,
+                batch_size: int,
+            ) -> tuple[dict[str, ndarray], dict[str, float]]
+
+        where the dict maps parameter names to gradient arrays and
+        the second element contains per-phase timing information.
+        Matrix gradients (P, A, G) are 1-D ``(nnz,)`` unbatched or
+        2-D ``(batch, nnz)`` batched. Vector gradients (q, b, h)
+        have their natural shape.
+    """
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
     _bool_dtype = options_parsed["bool_dtype"]
