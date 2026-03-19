@@ -6,7 +6,7 @@ Sparse solver version — P, A, G are BCOO matrices.
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import jax.numpy as jnp
@@ -91,6 +91,7 @@ def solve_mpc(x_init):
 # Jacobian via vmap(jvp) with identity tangent matrix
 I_nx = jnp.eye(nx)
 
+@jit
 def jvp_single(x0, dx0):
     return jvp(solve_mpc, (x0,), (dx0,))
 
@@ -99,6 +100,7 @@ jvp_jacobian = jit(vmap(jvp_single, in_axes=(None, 0)))
 # ─── Warmup (JIT compilation) ────────────────────────────────────────
 
 x0_warmup = jnp.array([-1.0, -1.0])
+_ = jvp_jacobian(x0_warmup, I_nx)
 _ = jvp_jacobian(x0_warmup, I_nx)
 
 # ─── Benchmark ───────────────────────────────────────────────────────
