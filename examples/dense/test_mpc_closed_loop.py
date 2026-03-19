@@ -72,7 +72,7 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-from src.solver_dense.solver_dense import setup_dense_solver
+from jaxsparrow import setup_dense_solver
 
 solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq)
 

@@ -1,5 +1,3 @@
-#TODO: docstring
-
 from typing import TypedDict, Final
 import jax.numpy as jnp
 
@@ -11,13 +9,14 @@ class DifferentiatorOptions(TypedDict, total=False):
 class ConstructorOptions(TypedDict, total=False):
     differentiator_type: str
     solver_type: str
-    solver:SolverOptions
-    differentiator:DifferentiatorOptions
+    solver: SolverOptions | dict
+    differentiator: DifferentiatorOptions | dict
     dtype: jnp.dtype
     bool_dtype: jnp.dtype
     verbose: bool
     debug: bool
     fd_check: bool
+    fd_eps: float
 
 class ConstructorOptionsFull(TypedDict):
     differentiator_type: str
@@ -29,6 +28,7 @@ class ConstructorOptionsFull(TypedDict):
     verbose: bool
     debug: bool
     fd_check: bool
+    fd_eps: float
 
 DEFAULT_CONSTRUCTOR_OPTIONS: Final[ConstructorOptionsFull] = {
     "differentiator_type": "kkt_fwd",
@@ -39,5 +39,6 @@ DEFAULT_CONSTRUCTOR_OPTIONS: Final[ConstructorOptionsFull] = {
     "bool_dtype": jnp.bool_,
     "verbose": True,
     "debug": True,
-    "fd_check": False
+    "fd_check": False,
+    "fd_eps": 1e-6
 }

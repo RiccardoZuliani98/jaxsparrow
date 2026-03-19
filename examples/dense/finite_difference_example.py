@@ -61,7 +61,7 @@ def beq(x_init):
     return jnp.hstack((x_init, jnp.zeros(N * nx)))
 
 
-from src.solver_dense.solver_dense import setup_dense_solver
+from jaxsparrow import setup_dense_solver
 
 # ─── Create solvers with fd_check enabled ────────────────────────────
 

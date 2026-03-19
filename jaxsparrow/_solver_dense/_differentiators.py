@@ -2,35 +2,20 @@ from numpy import ndarray
 from time import perf_counter
 from jaxtyping import Float, Bool
 import numpy as np
-from typing import cast, Optional
-from src.solver_dense.solver_dense_types import (
+from typing import cast, Optional, Sequence
+from jaxsparrow._solver_dense._types import (
     DenseQPIngredientsNP, 
     DenseQPIngredientsNPFull, 
-    QPOutputNP, 
-    QPDiffOutNP, 
-    DenseQPIngredientsTangentsNP)
-from src.solver_dense.solver_dense_options import DifferentiatorOptions
-from src.utils.parsing_utils import parse_options
-
-class DenseKKTfwdOptions(DifferentiatorOptions):
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-
-class DenseKKTfwdOptionsFull(DifferentiatorOptions,total=True):
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-
-DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
-    "dtype": np.float64,
-    "bool_dtype":np.bool_,
-    "cst_tol": 1e-8
-}
+    DenseQPIngredientsTangentsNP
+)
+from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._solver_dense._options import DifferentiatorOptions
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._utils._linear_solvers import get_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings
-#TODO: add options for different linear solvers
 def create_dense_kkt_differentiator_fwd(
     n_var:int,
     n_eq:int,
@@ -77,9 +62,8 @@ def create_dense_kkt_differentiator_fwd(
     # store a batched version where the first dimension is expanded
     _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
-    # choose lienar system solver
-    def _solve_linear_system(a,b):
-        return np.linalg.lstsq(a,b)[0]
+    # choose linear system solver
+    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
 
 
     def kkt_differentiator_fwd(
@@ -245,7 +229,8 @@ def create_dense_kkt_differentiator_rev(
     n_eq:int,
     n_ineq:int,
     options:Optional[DifferentiatorOptions]=None,
-    fixed_elements:Optional[DenseQPIngredientsNP]=None
+    fixed_elements:Optional[DenseQPIngredientsNP]=None,
+    dynamic_keys:Optional[Sequence[str]]=None
 ):
 
     # parse options
@@ -269,10 +254,21 @@ def create_dense_kkt_differentiator_rev(
         _fixed["G"] = np.zeros((0, n_var), dtype=options_parsed["dtype"])
         _fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
 
-    # choose lienar system solver
-    def _solve_linear_system(a,b):
-        return np.linalg.lstsq(a,b)[0]
-        
+    # choose linear system solver
+    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
+
+    # Pre-compute which groups of keys are dynamic for fast lookup
+    # in the inner function. If dynamic_keys is None, assume all
+    # required keys are dynamic (backward-compatible).
+    if dynamic_keys is not None:
+        _dyn_set = frozenset(dynamic_keys)
+    else:
+        _dyn_set = None  # means "compute everything"
+
+    def _need(key: str) -> bool:
+        """Return True if we need to compute the gradient for *key*."""
+        return _dyn_set is None or key in _dyn_set
+
     def kkt_differentiator_rev(
         dyn_primals_np:DenseQPIngredientsNP,
         x_np:ndarray,
@@ -286,7 +282,6 @@ def create_dense_kkt_differentiator_rev(
         
         # start timing
         t : dict[str, float] = {}
-        start = perf_counter()
 
         # bool representing batching for simplicity
         batched = batch_size > 0
@@ -294,11 +289,12 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Parse ingredients ────────────────────────────────────────
 
+        start = perf_counter()
+
         # merge qp ingredients too
         prob_np = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
 
         # get active constraints
-        start = perf_counter()
         if n_ineq > 0:
             active_np: Bool[ndarray, "n_ineq"] = np.asarray(
                 np.abs(prob_np["G"] @ x_np - prob_np["h"])
@@ -314,6 +310,8 @@ def create_dense_kkt_differentiator_rev(
 
 
         # ── Build LHS ────────────────────────────────────────────────
+
+        start = perf_counter()
 
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
@@ -385,6 +383,8 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Extract adjoint variables ────────────────────────────────
 
+        start = perf_counter()
+
         if batched:
             # v has shape (n_var + n_h, batch_size)
             v_x = v[:n_var, :].T  # Shape: (batch_size, n_var)
@@ -411,70 +411,78 @@ def create_dense_kkt_differentiator_rev(
                 else np.empty(0, dtype=options_parsed["dtype"])
             )
 
+        t["extract_adjoint"] = perf_counter() - start
+
         # ── Compute parameter cotangents ─────────────────────────────
+        # Only compute gradients for dynamic keys. Fixed keys have zero
+        # gradient by definition and are never read by the caller.
         start = perf_counter()
 
         grads: dict[str, ndarray] = {}
 
         if batched:
-            # Batched cotangent computation
-            # g_P: for each batch element, compute -outer(v_x[b], x)
-            # Shape: (batch_size, n_var, n_var)
-            grads["P"] = -np.einsum('bi,j->bij', v_x, x_np)
-            
-            # g_q: -v_x for each batch element
-            # Shape: (batch_size, n_var)
-            grads["q"] = -v_x
+
+            if _need("P"):
+                grads["P"] = -(v_x[:, :, None] * x_np[None, None, :])
+
+            if _need("q"):
+                grads["q"] = -v_x
 
             if n_eq > 0:
-                # g_A: for each batch element, -(outer(μ, v_x[b]) + outer(v_mu[b], x))
-                # Shape: (batch_size, n_eq, n_var)
-                term1 = np.einsum('i,bj->bij', mu_np, v_x)
-                term2 = np.einsum('bi,j->bij', v_mu, x_np)
-                grads["A"] = -(term1 + term2)
-                
-                # g_b: v_mu for each batch element
-                # Shape: (batch_size, n_eq)
-                grads["b"] = v_mu
+                if _need("A"):
+                    term1 = mu_np[None, :, None] * v_x[:, None, :]
+                    term2 = v_mu[:, :, None] * x_np[None, None, :]
+                    grads["A"] = -(term1 + term2)
+
+                if _need("b"):
+                    grads["b"] = v_mu
 
             if n_ineq > 0:
-                # Initialize gradients with zeros
-                g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
-                g_h_full = np.zeros((batch_size, n_ineq), dtype=options_parsed["dtype"])
-                
-                if n_active > 0:
-                    # For active constraints:
-                    # g_G[active] = -(outer(λ[active], v_x[b]) + outer(v_lam_a[b], x))
-                    term1 = np.einsum('i,bj->bij', lam_np[active_np], v_x)
-                    term2 = np.einsum('bi,j->bij', v_lam_a, x_np)
-                    g_G[:, active_np, :] = -(term1 + term2)
-                    
-                    # g_h[active] = v_lam_a for each batch element
-                    g_h_full[:, active_np] = v_lam_a
-                
-                grads["G"] = g_G
-                grads["h"] = g_h_full
+                if _need("G"):
+                    g_G = np.zeros((batch_size, n_ineq, n_var), dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        lam_active = lam_np[active_np]
+                        term1 = lam_active[None, :, None] * v_x[:, None, :]
+                        term2 = v_lam_a[:, :, None] * x_np[None, None, :]
+                        g_G[:, active_np, :] = -(term1 + term2)
+                    grads["G"] = g_G
+
+                if _need("h"):
+                    g_h_full = np.zeros((batch_size, n_ineq), dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        g_h_full[:, active_np] = v_lam_a
+                    grads["h"] = g_h_full
 
         else:
-            # Unbatched cotangent computation (original implementation)
-            grads["P"] = -np.outer(v_x, x_np)
-            grads["q"] = -v_x
+
+            if _need("P"):
+                grads["P"] = -np.outer(v_x, x_np)
+
+            if _need("q"):
+                grads["q"] = -v_x
 
             if n_eq > 0:
-                grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
-                grads["b"] = v_mu
+                if _need("A"):
+                    grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
+
+                if _need("b"):
+                    grads["b"] = v_mu
 
             if n_ineq > 0:
-                g_G = np.zeros_like(prob_np["G"])
-                g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
-                if n_active > 0:
-                    g_G[active_np, :] = -(
-                        np.outer(lam_np[active_np], v_x)
-                        + np.outer(v_lam_a, x_np)
-                    )
-                    g_h_full[active_np] = v_lam_a
-                grads["G"] = g_G
-                grads["h"] = g_h_full
+                if _need("G"):
+                    g_G = np.zeros_like(prob_np["G"])
+                    if n_active > 0:
+                        g_G[active_np, :] = -(
+                            np.outer(lam_np[active_np], v_x)
+                            + np.outer(v_lam_a, x_np)
+                        )
+                    grads["G"] = g_G
+
+                if _need("h"):
+                    g_h_full = np.zeros(n_ineq, dtype=options_parsed["dtype"])
+                    if n_active > 0:
+                        g_h_full[active_np] = v_lam_a
+                    grads["h"] = g_h_full
 
         t["compute_grads"] = perf_counter() - start
 

@@ -1,9 +1,9 @@
 #TODO: docstring
 
-from typing import TypedDict, NamedTuple
+from typing import TypedDict
 from jax import Array
 from numpy import ndarray
-from jaxtyping import Float, Bool
+from jaxtyping import Float
 
 class DenseQPIngredients(TypedDict, total=False):
     P: Float[Array, "n_var n_var"]
@@ -44,24 +44,3 @@ class DenseQPIngredientsTangentsNP(TypedDict, total=False):
     b: Float[ndarray, "n_eq"]           |  Float[ndarray, "n_batch n_eq"]
     G: Float[ndarray, "n_ineq n_var"]   |  Float[ndarray, "n_batch n_ineq n_var"]
     h: Float[ndarray, "n_ineq"]         |  Float[ndarray, "n_batch n_ineq"]
-
-class QPOutput(TypedDict):
-    x:      Float[Array, "n_var"]       |  Float[Array, "n_batch n_var"]
-    lam:    Float[Array, "n_ineq"]      |  Float[Array, "n_batch n_ineq"]
-    mu:     Float[Array, "n_eq"]        |  Float[Array, "n_batch n_eq"]
-
-class QPOutputNP(NamedTuple):
-    x:      Float[ndarray, "n_var"]     |  Float[ndarray, "n_batch n_var"]
-    lam:    Float[ndarray, "n_ineq"]    |  Float[ndarray, "n_batch n_ineq"]
-    mu:     Float[ndarray, "n_eq"]      |  Float[ndarray, "n_batch n_eq"]
-    active: Bool[ndarray, "n_ineq"]     |  Bool[ndarray,  "n_batch n_ineq"]
-
-class QPDiffOut(TypedDict):
-    x   : Float[Array, "n_var"]         |  Float[Array, "n_batch n_var"] 
-    lam : Float[Array, "n_ineq"]        |  Float[Array, "n_batch n_ineq"]
-    mu  : Float[Array, "n_eq"]          |  Float[Array, "n_batch n_eq"]
-
-class QPDiffOutNP(NamedTuple):
-    x_np   : Float[ndarray, "n_var"]    |  Float[ndarray, "n_batch n_var"] 
-    lam_np : Float[ndarray, "n_ineq"]   |  Float[ndarray, "n_batch n_ineq"]
-    mu_np  : Float[ndarray, "n_eq"]     |  Float[ndarray, "n_batch n_eq"]
