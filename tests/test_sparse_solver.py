@@ -19,13 +19,14 @@ import pytest
 import jax
 import jax.numpy as jnp
 import numpy as np
-import logging
 from jax.experimental.sparse import BCOO
 from scipy.sparse import csc_matrix
+from typing import cast
 
 jax.config.update("jax_enable_x64", True)
 
 from src.solver_sparse.setup import setup_sparse_solver
+from src.solver_sparse.types import SparseQPIngredientsNP
 
 
 # =====================================================================
@@ -46,7 +47,7 @@ def _sparsity_dict(**kwargs):
 _MATRIX_KEYS = frozenset({"P", "A", "G"})
 
 
-def _to_fixed(elements: dict) -> dict:
+def _to_fixed(elements: dict) -> SparseQPIngredientsNP:
     """Convert a dict of JAX arrays to the format expected by fixed_elements.
 
     Sparse matrix keys (P, A, G) → scipy.sparse.csc_matrix
@@ -58,7 +59,7 @@ def _to_fixed(elements: dict) -> dict:
             out[k] = csc_matrix(np.asarray(v))
         else:
             out[k] = np.asarray(v)
-    return out
+    return cast(SparseQPIngredientsNP,out)
 
 
 # =====================================================================
