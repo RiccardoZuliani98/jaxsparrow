@@ -504,7 +504,6 @@ def build_solver(
         return res, tangents_out
 
     # ── VJP path ─────────────────────────────────────────────────────
-    #DONE
     @custom_vjp
     def _solver_dynamic_vjp_mode(
         *dynamic_vals: QPInput,
@@ -566,7 +565,6 @@ def build_solver(
     # PUBLIC SOLVER CLOSURE
     # =================================================================
 
-    #DONE
     def solver(
         warmstart: Optional[jax.Array] = None,
         **runtime: QPInput,

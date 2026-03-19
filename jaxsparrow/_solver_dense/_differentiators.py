@@ -63,6 +63,10 @@ def create_dense_kkt_differentiator_fwd(
     _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
     # choose linear system solver
+    #TODO: I want to pass more options here, for example sparsity of system or more options
+    # but this requires knowing the sparsity ahead of time, i.e. not lazily build at runtime.
+    # I am specifically thinking about qdldl, which allows prestoring A and then only update it,
+    # as long as the sparsity does not change.
     _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
 
 
