@@ -152,7 +152,12 @@ def setup_sparse_solver(
     # For dense keys:  gradient has the full expected shape.
     vjp_bwd_shapes: dict[str, jax.ShapeDtypeStruct] = {}
     for k in dynamic_keys:
-        if is_sparse_key(k) and k in sparsity_info:
+        if is_sparse_key(k):
+            if k not in sparsity_info:
+                raise ValueError(
+                    f"Key '{k}' is marked as sparse but has no entry "
+                    f"in sparsity_info (available: {list(sparsity_info)})"
+                )
             nnz = sparsity_info[k]["nnz"]
             vjp_bwd_shapes[k] = jax.ShapeDtypeStruct((nnz,), _dtype)
         else:
