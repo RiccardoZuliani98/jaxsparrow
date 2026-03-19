@@ -49,7 +49,8 @@ from src.solver_sparse.converters import (
     is_sparse_key,
     make_sparse_primal_converter,
     make_sparse_tangent_converter,
-    make_sparse_grad_to_jax,
+    make_sparse_grad_to_jax_forward,
+    make_sparse_grad_to_jax_reverse
 )
 from src.solver_common import (
     build_solver,
@@ -138,7 +139,13 @@ def setup_sparse_solver(
     # ── Build converters ─────────────────────────────────────────────
     primal_converter  = make_sparse_primal_converter(sparsity_info)
     tangent_converter = make_sparse_tangent_converter(sparsity_info)
-    grad_to_jax       = make_sparse_grad_to_jax(sparsity_info)
+    if options_parsed["differentiator_type"] == "kkt_fwd":
+        grad_to_jax   = make_sparse_grad_to_jax_forward(sparsity_info)
+    elif options_parsed["differentiator_type"] == "kkt_rev":
+        grad_to_jax   = make_sparse_grad_to_jax_reverse(sparsity_info)
+    else:
+        raise KeyError("Allowed differentiator keys are 'kkt_rev' and 'kkt_fwd', " \
+            f"got {options_parsed["differentiator_type"]}")
 
     # ── VJP backward shapes ──────────────────────────────────────────
     # For sparse keys: gradient is w.r.t. the nnz nonzero values (1-D).

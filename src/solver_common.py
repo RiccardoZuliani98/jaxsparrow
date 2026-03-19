@@ -297,19 +297,15 @@ def build_solver(
 
         # ── Detect batching ──────────────────────────────────────────
         if _n_dyn > 0:
-            first_key = _dynamic_keys[0]
-            tangent = dyn_tangents_np[first_key]
-            ndim = tangent.ndim if hasattr(tangent, "ndim") else np.asarray(tangent).ndim
-            batched = ndim == EXPECTED_NDIM[first_key] + 1
+            batch_sizes = []
+            for k, v in zip(_dynamic_keys, dyn_tangent_vals):
+                expected = EXPECTED_NDIM[k]
+                if v.ndim > expected:
+                    batch_sizes.append(v.shape[0])
+            batched = len(batch_sizes) > 0
+            batch_size = max(batch_sizes) if batched else 0
         else:
             batched = False
-
-        if batched:
-            batch_size = max(
-                (np.asarray(v).shape[0] if not hasattr(v, "shape") else v.shape[0])
-                for v in dyn_tangents_np.values()
-            )
-        else:
             batch_size = 0
 
         # ── Differentiate ────────────────────────────────────────────
