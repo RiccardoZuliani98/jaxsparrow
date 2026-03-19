@@ -9,8 +9,8 @@ class DifferentiatorOptions(TypedDict, total=False):
 class ConstructorOptions(TypedDict, total=False):
     differentiator_type: str
     solver_type: str
-    solver:SolverOptions
-    differentiator:DifferentiatorOptions
+    solver: SolverOptions | dict
+    differentiator: DifferentiatorOptions | dict
     dtype: jnp.dtype
     bool_dtype: jnp.dtype
     verbose: bool

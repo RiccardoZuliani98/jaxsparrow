@@ -192,7 +192,7 @@ def create_sparse_kkt_differentiator_fwd(
         else:
             H_sp = _sparse_zeros(0, n_var, _dtype)
 
-        n_h = H_sp.shape[0]
+        n_h = H_sp.shape[0] #type: ignore
         lhs = _build_sparse_kkt(P_sp, H_sp, n_h, _dtype)
 
         # ── Build dense RHS ──────────────────────────────────────────
@@ -311,15 +311,13 @@ def create_sparse_kkt_differentiator_rev(
 
     _sp_indices: dict[str, tuple[ndarray, ndarray]] = {}
 
-    def _cache_indices(key: str, source: dict) -> None:
-        if key in source and issparse(source[key]):
-            mat = csc_matrix(source[key])
-            rows, cols = mat.nonzero()
-            _sp_indices[key] = (np.asarray(rows), np.asarray(cols))
-
     if fixed_elements is not None:
-        for k in ("P", "A", "G"):
-            _cache_indices(k, fixed_elements)
+        for key in ("P", "A", "G"):
+            val = fixed_elements.get(key)
+            if val is not None and issparse(val):
+                mat = csc_matrix(val)
+                rows, cols = mat.nonzero()
+                _sp_indices[key] = (np.asarray(rows), np.asarray(cols))
 
     # ─────────────────────────────────────────────────────────────────
 
@@ -345,6 +343,7 @@ def create_sparse_kkt_differentiator_rev(
         # (Dynamic matrices may not be in fixed_elements, so we lazily
         #  extract their patterns here. The pattern is stable across
         #  calls because BCOO sparsity structure is fixed.)
+        #TODO: this is not a pure function! Might be worth avoiding, but it works.
         for k in ("P", "A", "G"):
             if k not in _sp_indices and k in prob and issparse(prob[k]):
                 mat = csc_matrix(prob[k])
@@ -383,8 +382,9 @@ def create_sparse_kkt_differentiator_rev(
         else:
             H_sp = _sparse_zeros(0, n_var, _dtype)
 
-        n_h = H_sp.shape[0]
-        lhs = _build_sparse_kkt(P_sp, H_sp, n_h, _dtype)
+        
+        n_h : int = H_sp.shape[0] #type: ignore
+        lhs = _build_sparse_kkt(P_sp, H_sp, n_h, _dtype) #type: ignore
 
         # ── Build dense RHS from cotangent vectors ───────────────────
         if batched:
@@ -465,6 +465,7 @@ def create_sparse_kkt_differentiator_rev(
         start = perf_counter()
         grads: dict[str, ndarray] = {}
 
+        #TODO: check this
         if batched:
 
             # P̄: grad only at nonzero positions
