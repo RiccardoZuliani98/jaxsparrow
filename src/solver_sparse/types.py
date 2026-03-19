@@ -57,15 +57,20 @@ class SparseQPIngredientsFull(TypedDict):
 # --------------------------------------------------------------------------
 # Tangents for the forward (JVP) path — numpy side.
 #
-# Tangents for sparse matrices are dense ndarray (or batched),
-# because dP, dA, dG are perturbations of the *nonzero values*
-# expanded back to dense form for the KKT RHS computation.
+# Unbatched sparse tangents are CSC matrices (same structure as primals).
+# Batched sparse tangents are dense ndarrays because SciPy sparse is
+# strictly 2-D — the tangent converter materializes (batch, nnz) into
+# (batch, m, n) so the downstream differentiator can iterate over
+# batch elements.
+# Dense vector tangents are ndarrays in both cases.
 # --------------------------------------------------------------------------
 
+SparseOrDense = Union[csc_matrix, ndarray]
+
 class SparseQPIngredientsTangentsNP(TypedDict, total=False):
-    P: Float[ndarray, "n_var n_var"]    | Float[ndarray, "n_batch n_var n_var"]
-    q: Float[ndarray, "n_var"]          | Float[ndarray, "n_batch n_var"]
-    A: Float[ndarray, "n_eq n_var"]     | Float[ndarray, "n_batch n_eq n_var"]
-    b: Float[ndarray, "n_eq"]           | Float[ndarray, "n_batch n_eq"]
-    G: Float[ndarray, "n_ineq n_var"]   | Float[ndarray, "n_batch n_ineq n_var"]
-    h: Float[ndarray, "n_ineq"]         | Float[ndarray, "n_batch n_ineq"]
+    P: SparseOrDense  # csc_matrix (unbatched) or ndarray (batch, n_var, n_var)
+    q: ndarray         # (n_var,) or (batch, n_var)
+    A: SparseOrDense  # csc_matrix (unbatched) or ndarray (batch, n_eq, n_var)
+    b: ndarray         # (n_eq,) or (batch, n_eq)
+    G: SparseOrDense  # csc_matrix (unbatched) or ndarray (batch, n_ineq, n_var)
+    h: ndarray         # (n_ineq,) or (batch, n_ineq)

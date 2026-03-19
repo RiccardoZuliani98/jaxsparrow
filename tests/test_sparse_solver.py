@@ -1112,7 +1112,7 @@ class TestVJPVmapFiniteDifferences:
         # jac shape: (n_param, n_output)
         jac = jnp.stack(results)
         # cotangent_vecs: (n_dirs, n_output), result: (n_dirs, n_param)
-        return cotangent_vecs @ jac
+        return cotangent_vecs @ jac.T
 
     # ── vmap VJP w.r.t. q ────────────────────────────────────────────
 
