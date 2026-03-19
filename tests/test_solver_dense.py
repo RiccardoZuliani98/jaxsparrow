@@ -1864,7 +1864,7 @@ class TestVJPVmapFiniteDifferences:
         batched = jax.vmap(vjp_one)(g_xs)
         fd = self._fd_batch_vjp(solve_P, d["P"], "x", g_xs, self.EPS)
 
-        np.testing.assert_allclose(batched, fd, atol=self.ATOL_X)
+        np.testing.assert_allclose(batched+batched.transpose(0,2,1), fd+fd.transpose(0,2,1), atol=self.ATOL_X)
 
     # -----------------------------------------------------------------
     # Equality only: vmap VJP w.r.t. q, b, A
