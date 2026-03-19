@@ -20,7 +20,7 @@ jax.config.update("jax_enable_x64", True)
 
 # ─── Problem setup ───────────────────────────────────────────────────
 
-horizon = 50
+horizon = 150
 N_SAMPLES = 50
 
 A = jnp.array([[1, 1], [0, 1]])

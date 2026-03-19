@@ -77,7 +77,7 @@ def _build_sparse_kkt(
     zeros_block = _sparse_zeros(n_h, n_h, dtype)
     # sp_bmat returns COO → convert to CSC for splu
     return cast(csc_matrix,sp_bmat([
-        [P,            H.T],
+        [P, H.T],
         [H, zeros_block],
     ], format="csc"))
 

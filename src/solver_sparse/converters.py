@@ -45,13 +45,6 @@ def is_sparse_key(key: str) -> bool:
 SparsityEntry = dict  # {"rows": ndarray, "cols": ndarray, "shape": tuple, "nnz": int}
 SparsityInfo  = dict[str, SparsityEntry]
 
-def bcoo_to_csc(mat: BCOO, dtype) -> csc_matrix:
-    """Convert a JAX BCOO matrix to a SciPy CSC matrix."""
-    idx = np.asarray(mat.indices)
-    data = np.asarray(mat.data, dtype=dtype)
-    rows = idx[:, 0]
-    cols = idx[:, 1]
-    return csc_matrix((data, (rows, cols)), shape=mat.shape)
 
 def build_sparsity_info(
     sparsity_patterns: dict[str, BCOO],
