@@ -13,29 +13,29 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from src.utils.parsing_utils import parse_options
-from src.options_common import (
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._options_common import (
     DEFAULT_CONSTRUCTOR_OPTIONS,
     ConstructorOptions,
 )
-from src.solver_dense.solvers import create_dense_qp_solver
-from src.solver_dense.differentiators import (
+from jaxsparrow._solver_dense._solvers import create_dense_qp_solver
+from jaxsparrow._solver_dense._differentiators import (
     create_dense_kkt_differentiator_fwd,
     create_dense_kkt_differentiator_rev,
 )
-from src.solver_dense.types import DenseQPIngredientsNP
-from src.solver_common import (
+from jaxsparrow._solver_dense._types import DenseQPIngredientsNP
+from jaxsparrow._solver_common import (
     build_solver, 
     make_expected_shapes, 
     compute_required_keys, 
     compute_dynamic_keys
 )
-from src.solver_dense.converters import (
+from jaxsparrow._solver_dense._converters import (
     dense_primal_converter,
     dense_tangent_converter,
     dense_grad_to_jax
 )
-from src.utils.fd_recorder import FiniteDifferenceRecorder
+from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 
 
 def setup_dense_solver(

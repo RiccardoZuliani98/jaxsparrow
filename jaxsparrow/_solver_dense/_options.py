@@ -1,6 +1,6 @@
 #TODO: docstring
 
-from src.options_common import DifferentiatorOptions
+from jaxsparrow._options_common import DifferentiatorOptions
 import numpy as np
 
 class DenseKKTfwdOptions(DifferentiatorOptions):

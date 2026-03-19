@@ -4,7 +4,7 @@ solver_sparse/options.py
 Differentiator and solver options specific to the sparse path.
 """
 
-from src.options_common import DifferentiatorOptions, SolverOptions
+from jaxsparrow._options_common import DifferentiatorOptions, SolverOptions
 import numpy as np
 
 

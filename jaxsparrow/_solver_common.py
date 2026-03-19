@@ -29,12 +29,11 @@ from time import perf_counter
 from typing import Optional, cast, Callable, Any, Union
 from numpy import ndarray
 
-from src.utils.parsing_utils import parse_options
-from src.utils.printing_utils import fmt_times
-from src.utils.timing_utils import TimingRecorder
-from src.types_common import QPDiffOut, QPOutput
-from src.options_common import ConstructorOptionsFull
-from src.utils.fd_recorder import FiniteDifferenceRecorder
+from jaxsparrow._utils._printing_utils import fmt_times
+from jaxsparrow._utils._timing_utils import TimingRecorder
+from jaxsparrow._types_common import QPDiffOut, QPOutput
+from jaxsparrow._options_common import ConstructorOptionsFull
+from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 from jax.experimental.sparse import BCOO
 from scipy.sparse import csc_matrix
 

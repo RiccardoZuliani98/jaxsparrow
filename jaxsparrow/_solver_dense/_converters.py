@@ -5,7 +5,7 @@ from numpy import ndarray
 from jax import Array
 import jax.numpy as jnp
 
-from src.solver_common import EXPECTED_NDIM
+from jaxsparrow._solver_common import EXPECTED_NDIM
 
 
 def dense_primal_converter(key: str, val, dtype) -> ndarray:

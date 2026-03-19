@@ -33,18 +33,18 @@ from typing import Optional
 import jax
 from jax.experimental.sparse import BCOO
 
-from src.utils.parsing_utils import parse_options
-from src.options_common import (
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._options_common import (
     DEFAULT_CONSTRUCTOR_OPTIONS,
     ConstructorOptions,
 )
-from src.solver_sparse.solvers import create_sparse_qp_solver
-from src.solver_sparse.differentiators import (
+from jaxsparrow._solver_sparse._solvers import create_sparse_qp_solver
+from jaxsparrow._solver_sparse._differentiators import (
     create_sparse_kkt_differentiator_fwd,
     create_sparse_kkt_differentiator_rev,
 )
-from src.solver_sparse.types import SparseQPIngredientsNP
-from src.solver_sparse.converters import (
+from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP
+from jaxsparrow._solver_sparse._converters import (
     build_sparsity_info,
     is_sparse_key,
     make_sparse_primal_converter,
@@ -52,13 +52,13 @@ from src.solver_sparse.converters import (
     make_sparse_grad_to_jax_forward,
     make_sparse_grad_to_jax_reverse
 )
-from src.solver_common import (
+from jaxsparrow._solver_common import (
     build_solver,
     make_expected_shapes,
     compute_required_keys,
     compute_dynamic_keys,
 )
-from src.utils.fd_recorder import FiniteDifferenceRecorder
+from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 
 
 def setup_sparse_solver(

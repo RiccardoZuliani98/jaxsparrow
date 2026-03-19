@@ -22,7 +22,7 @@ from time import perf_counter
 
 jax.config.update("jax_enable_x64", True)
 
-from src.solver_sparse.setup import setup_sparse_solver
+from jaxsparrow import setup_sparse_solver
 
 EPSILON = 0.1
 CL_HORIZON = 100

@@ -25,8 +25,8 @@ from typing import cast
 
 jax.config.update("jax_enable_x64", True)
 
-from src.solver_sparse.setup import setup_sparse_solver
-from src.solver_sparse.types import SparseQPIngredientsNP
+from jaxsparrow._solver_sparse._setup import setup_sparse_solver
+from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP
 
 
 # =====================================================================

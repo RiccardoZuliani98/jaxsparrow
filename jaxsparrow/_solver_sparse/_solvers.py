@@ -15,11 +15,11 @@ from qpsolvers import Problem, solve_problem
 from jaxtyping import Float, Bool
 from typing import cast, Optional
 
-from src.utils.parsing_utils import parse_options
-from src.options_common import SolverOptions
-from src.solver_sparse.types import SparseQPIngredientsNP, SparseQPIngredientsNPFull
-from src.types_common import QPOutputNP
-from src.solver_sparse.options import DEFAULT_SOLVER_OPTIONS
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._options_common import SolverOptions
+from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP, SparseQPIngredientsNPFull
+from jaxsparrow._types_common import QPOutputNP
+from jaxsparrow._solver_sparse._options import DEFAULT_SOLVER_OPTIONS
 
 
 def create_sparse_qp_solver(

@@ -72,7 +72,7 @@ neq = Aeq_dense.shape[0]
 nineq = G_dense.shape[0]
 
 # ── Build sparse solver ─────────────────────────────────────────────
-from src.solver_sparse.setup import setup_sparse_solver
+from jaxsparrow import setup_sparse_solver
 
 sparsity_patterns = {"P": P, "A": Aeq, "G": G}
 

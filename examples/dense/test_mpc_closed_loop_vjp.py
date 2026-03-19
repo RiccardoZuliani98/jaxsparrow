@@ -9,7 +9,7 @@ from time import perf_counter
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.solver_dense.setup import setup_dense_solver
+from jaxsparrow._solver_dense._setup import setup_dense_solver
 
 EPSILON = 0.1
 CL_HORIZON = 100

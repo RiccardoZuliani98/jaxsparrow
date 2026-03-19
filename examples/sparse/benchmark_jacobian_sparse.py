@@ -76,7 +76,7 @@ def beq(x_init):
 
 # ─── Solver setup ────────────────────────────────────────────────────
 
-from src.solver_sparse.setup import setup_sparse_solver
+from jaxsparrow import setup_sparse_solver
 
 solver = setup_sparse_solver(
     n_var=nz,

@@ -23,7 +23,7 @@ from jax.experimental.sparse import BCOO
 import jax.numpy as jnp
 from scipy.sparse import csc_matrix
 
-from src.solver_common import EXPECTED_NDIM
+from jaxsparrow._solver_common import EXPECTED_NDIM
 
 # ── Which keys are sparse (matrices) vs dense (vectors) ─────────────
 

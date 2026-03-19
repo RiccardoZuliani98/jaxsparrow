@@ -3,16 +3,16 @@ from time import perf_counter
 from jaxtyping import Float, Bool
 import numpy as np
 from typing import cast, Optional, Sequence
-from src.solver_dense.types import (
+from jaxsparrow._solver_dense._types import (
     DenseQPIngredientsNP, 
     DenseQPIngredientsNPFull, 
     DenseQPIngredientsTangentsNP
 )
-from src.types_common import QPOutputNP, QPDiffOutNP
-from src.solver_dense.options import DifferentiatorOptions
-from src.utils.parsing_utils import parse_options
-from src.solver_dense.options import DEFAULT_DIFF_OPTIONS
-from src.utils.linear_solvers import get_linear_solver
+from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._solver_dense._options import DifferentiatorOptions
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._utils._linear_solvers import get_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings

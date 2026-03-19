@@ -34,14 +34,14 @@ from scipy.sparse import (
 )
 from scipy.sparse.linalg import splu
 
-from src.solver_sparse.types import (
+from jaxsparrow._solver_sparse._types import (
     SparseQPIngredientsNP,
     SparseQPIngredientsTangentsNP,
 )
-from src.types_common import QPOutputNP, QPDiffOutNP
-from src.options_common import DifferentiatorOptions
-from src.utils.parsing_utils import parse_options
-from src.solver_sparse.options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._options_common import DifferentiatorOptions
+from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
 
 
 # ── Sparse helpers ───────────────────────────────────────────────────
