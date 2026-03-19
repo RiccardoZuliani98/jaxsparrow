@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from numpy import ndarray
 from time import perf_counter
-from jaxtyping import Float, Bool
+from jaxtyping import Bool
 import numpy as np
 from typing import cast, Optional, Sequence, Union
 from scipy.sparse import (
@@ -36,7 +36,6 @@ from scipy.sparse.linalg import splu
 
 from src.solver_sparse.types import (
     SparseQPIngredientsNP,
-    SparseQPIngredientsNPFull,
     SparseQPIngredientsTangentsNP,
 )
 from src.types_common import QPOutputNP, QPDiffOutNP

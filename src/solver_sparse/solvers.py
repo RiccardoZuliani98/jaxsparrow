@@ -28,22 +28,36 @@ def create_sparse_qp_solver(
     options: Optional[SolverOptions] = None,
     fixed_elements: Optional[SparseQPIngredientsNP] = None,
 ):
-    """
-    Build a numpy-level sparse QP solver closure.
+    """Build a numpy-level sparse QP solver closure.
 
-    Parameters
-    ----------
-    n_eq, n_ineq : int
-        Problem dimensions.
-    options : SolverOptions, optional
-        Solver-specific options (solver name, dtype, …).
-    fixed_elements : SparseQPIngredientsNP, optional
-        QP ingredients that are constant across calls.
+    Creates a callable that solves quadratic programs of the form::
 
-    Returns
-    -------
-    solve_qp_numpy
-        Callable(**kwargs) -> (QPOutputNP, timing_dict).
+        min  0.5 * x^T P x + q^T x
+        s.t. A x = b
+             G x <= h
+
+    where P, A, G are ``scipy.sparse.csc_matrix`` and q, b, h are
+    dense ``ndarray``. Elements provided via *fixed_elements* are
+    baked into the closure and reused across calls; remaining
+    ingredients are supplied at call time as keyword arguments.
+
+    Args:
+        n_eq: Number of equality constraints. Zero if there are none.
+        n_ineq: Number of inequality constraints. Zero if there are none.
+        options: Solver-specific options (solver backend name, dtype,
+            constraint tolerance, etc.). Defaults are filled in for any
+            keys not provided.
+        fixed_elements: QP ingredients that remain constant across
+            calls. Sparse matrices are stored as CSC; dense vectors
+            are squeezed and cast to the configured dtype. Any key
+            present here should *not* be passed again at call time.
+
+    Returns:
+        A callable with signature
+        ``(**kwargs) -> tuple[QPOutputNP, dict[str, float]]``.
+        The first element is ``(x, lam, mu, active)`` and the second
+        is a timing dict with keys ``"problem_setup"``,
+        ``"solve"``, ``"retrieve"``, and ``"active_set"``.
     """
 
     options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
@@ -55,13 +69,31 @@ def create_sparse_qp_solver(
         _fixed: SparseQPIngredientsNP = {}
         for k, v in fixed_elements.items():
             if issparse(v):
-                _fixed[k] = csc_matrix(v, dtype=_dtype)  # type: ignore
+                _fixed[k] = csc_matrix(v, dtype=_dtype)
             else:
-                _fixed[k] = np.asarray(v, dtype=_dtype).squeeze()  # type: ignore
+                _fixed[k] = np.asarray(v, dtype=_dtype).squeeze()
     else:
         _fixed = {}
 
     def solve_qp_numpy(**kwargs) -> tuple[QPOutputNP, dict[str, float]]:
+        """Solve a single QP instance.
+
+        Merges *kwargs* with any fixed elements provided at
+        construction, builds the problem, and delegates to the
+        configured solver backend.
+
+        Args:
+            **kwargs: Runtime QP ingredients (those not fixed at
+                setup). An optional ``"warmstart"`` key may supply
+                an initial guess for the primal variable *x*.
+
+        Returns:
+            A tuple of ``(x, lam, mu, active)`` and a timing dict.
+
+        Raises:
+            AssertionError: If the underlying solver fails to find
+                a solution.
+        """
 
         t: dict[str, float] = {}
 
@@ -75,10 +107,10 @@ def create_sparse_qp_solver(
         prob = Problem(
             P=merged["P"],
             q=merged["q"],
-            A=merged.get("A"),     # type: ignore
-            b=merged.get("b"),     # type: ignore
-            G=merged.get("G"),     # type: ignore
-            h=merged.get("h"),     # type: ignore
+            A=merged.get("A"),
+            b=merged.get("b"),
+            G=merged.get("G"),
+            h=merged.get("h"),
         )
         t["problem_setup"] = perf_counter() - start
 
@@ -113,7 +145,6 @@ def create_sparse_qp_solver(
         start = perf_counter()
         if n_ineq > 0:
             G = merged["G"]
-            # G @ x works for both csc_matrix and ndarray
             Gx = G @ sol.x
             h = merged["h"]
             active: Bool[ndarray, "n_ineq"] = np.asarray(

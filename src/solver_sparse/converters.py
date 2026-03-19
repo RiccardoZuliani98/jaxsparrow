@@ -51,17 +51,15 @@ def build_sparsity_info(
     """
     Extract index arrays from BCOO patterns. Used at construction.
 
-    Parameters
-    ----------
-    sparsity_patterns : dict[str, BCOO]
-        Mapping from sparse key name ("P", "A", "G") to a BCOO matrix
-        whose ``.indices`` encode the sparsity pattern.  The ``.data``
-        values are ignored — only the structure matters.
+    Args:
+        sparsity_patterns : dict[str, BCOO]
+            Mapping from sparse key name ("P", "A", "G") to a BCOO matrix
+            whose ``.indices`` encode the sparsity pattern.  The ``.data``
+            values are ignored — only the structure matters.
 
-    Returns
-    -------
-    SparsityInfo
-        Per-key dict with "rows", "cols", "shape", "nnz".
+    Returns:
+        SparsityInfo
+            Per-key dict with "rows", "cols", "shape", "nnz".
     """
     info: SparsityInfo = {}
     for key, bcoo in sparsity_patterns.items():
