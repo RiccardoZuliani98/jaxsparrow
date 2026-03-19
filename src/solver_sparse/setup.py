@@ -69,29 +69,66 @@ def setup_sparse_solver(
     fixed_elements: Optional[SparseQPIngredientsNP] = None,
     options: Optional[ConstructorOptions] = None,
 ):
-    """
-    Build a differentiable sparse QP solver.
+    """Build a differentiable sparse QP solver.
 
-    Parameters
-    ----------
-    n_var, n_ineq, n_eq : int
-        Problem dimensions.
-    sparsity_patterns : dict[str, BCOO]
-        Sparsity patterns for sparse keys ("P", and optionally "A", "G").
-        Only the ``.indices`` are used; values are ignored.
-        Must be provided for every matrix key that is *dynamic* (not fixed).
-    fixed_elements : SparseQPIngredientsNP, optional
-        QP ingredients that are constant across calls.  Matrices should
-        be ``scipy.sparse.csc_matrix``; vectors should be ``ndarray``.
-    options : ConstructorOptions, optional
-        Solver and differentiator options.
+    Constructs a JAX-traceable callable that solves quadratic programs
+    of the form::
 
-    Returns
-    -------
-    solver
-        Callable with signature ``solver(*, P=..., q=..., ...) -> QPOutput``.
+        min  0.5 * x^T P x + q^T x
+        s.t. A x = b
+             G x <= h
+
+    where P, A, G are sparse (JAX ``BCOO`` at call time, SciPy CSC
+    internally) and q, b, h are dense vectors.
+
+    The returned solver supports ``jax.jvp``, ``jax.vjp``, and
+    ``jax.vmap`` via ``pure_callback`` with ``custom_jvp`` or
+    ``custom_vjp``, depending on the configured differentiator mode.
+
+    Sparsity patterns must be provided for every matrix key that will
+    be passed dynamically (i.e., not fixed at setup). Only the
+    ``.indices`` of each pattern are used; the ``.data`` values are
+    ignored.
+
+    Args:
+        n_var: Number of decision variables.
+        n_ineq: Number of inequality constraints. Zero if there are
+            none.
+        n_eq: Number of equality constraints. Zero if there are none.
+        sparsity_patterns: Mapping from sparse key name (``"P"``, and
+            optionally ``"A"``, ``"G"``) to a ``BCOO`` matrix encoding
+            the sparsity structure. Required for every matrix key that
+            is dynamic (not in *fixed_elements*).
+        fixed_elements: QP ingredients that remain constant across
+            calls. Matrices should be ``scipy.sparse.csc_matrix``;
+            vectors should be ``ndarray``. Keys present here are
+            excluded from JAX's traced path and should not be passed
+            again at solve time.
+        options: Solver and differentiator options. Unspecified keys
+            are filled from ``DEFAULT_CONSTRUCTOR_OPTIONS``. Notable
+            keys include ``"differentiator_type"`` (``"kkt_fwd"`` or
+            ``"kkt_rev"``), ``"solver_type"``, ``"dtype"``,
+            ``"fd_check"``, and ``"fd_eps"``.
+
+    Returns:
+        A solver callable with signature
+        ``solver(*, P=..., q=..., ..., warmstart=None) -> QPOutput``.
         Matrices (P, A, G) should be passed as JAX ``BCOO``; vectors
-        (q, b, h) as regular ``jax.Array``.
+        (q, b, h) as regular ``jax.Array``. The returned ``QPOutput``
+        is a dict with keys ``"x"``, ``"lam"``, ``"mu"``.
+
+        The callable also exposes ``.timings`` (a ``TimingRecorder``)
+        and ``.fd_check`` (a ``FiniteDifferenceRecorder``) for
+        diagnostics.
+
+    Raises:
+        ValueError: If a dynamic sparse key has no corresponding entry
+            in *sparsity_patterns*.
+        ValueError: If ``"differentiator_type"`` is not one of
+            ``"kkt_fwd"`` or ``"kkt_rev"``.
+        ValueError: If ``"solver_type"`` is not ``"qp_solvers"``.
+        AssertionError: If any fixed element or sparsity pattern has a
+            shape that doesn't match the declared problem dimensions.
     """
     logger = logging.getLogger(__name__)
 
@@ -144,8 +181,8 @@ def setup_sparse_solver(
     elif options_parsed["differentiator_type"] == "kkt_rev":
         grad_to_jax   = make_sparse_grad_to_jax_reverse(sparsity_info)
     else:
-        raise KeyError("Allowed differentiator keys are 'kkt_rev' and 'kkt_fwd', " \
-            f"got {options_parsed["differentiator_type"]}")
+        raise ValueError("Allowed differentiator keys are 'kkt_rev' and 'kkt_fwd', "
+            f"got {options_parsed['differentiator_type']}")
 
     # ── VJP backward shapes ──────────────────────────────────────────
     # For sparse keys: gradient is w.r.t. the nnz nonzero values (1-D).
