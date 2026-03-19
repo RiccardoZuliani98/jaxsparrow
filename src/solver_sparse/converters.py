@@ -5,7 +5,7 @@ JAX ↔ numpy conversions for the sparse QP path.
 
 *Primals*:  BCOO matrices → scipy CSC;  dense vectors → ndarray.
 *Tangents*: BCOO tangent → dense ndarray (the KKT RHS needs dense ops).
-*Grads*:    dense matrix gradients → 1-D array of nonzero-value gradients
+*Grads*:    gradient arrays → 1-D array of nonzero-value gradients
             (matching the BCOO ``.data`` layout so JAX can propagate them).
 
 The caller must supply a ``sparsity_info`` dict at setup time that maps
@@ -139,24 +139,42 @@ def make_sparse_grad_to_jax(
     """
     Return a grad-to-JAX converter: (key, numpy_grad, dtype) -> jax.Array.
 
-    For sparse keys the differentiator returns a full dense gradient
-    matrix.  We extract only the entries at the sparsity pattern
-    positions and return a 1-D array of length ``nnz`` — this is what
-    JAX expects as the gradient w.r.t. the BCOO ``.data`` attribute.
+    For sparse keys the differentiator returns gradient values as either:
 
-    For dense keys this is a plain ``jnp.asarray``.
+      (a) **Sparse format** (from the reverse differentiator): a 1-D
+          array of length ``nnz`` (unbatched) or 2-D ``(batch, nnz)``
+          (batched) — already aligned with the BCOO ``.data`` layout.
+          These are passed through directly via ``jnp.asarray``.
+
+      (b) **Dense format** (from the forward differentiator): a full
+          ``(m, n)`` matrix (unbatched) or ``(batch, m, n)`` (batched).
+          We extract only the entries at the sparsity-pattern positions.
+
+    For dense keys (q, b, h) this is a plain ``jnp.asarray``.
     """
 
     def converter(key: str, val: ndarray, dtype) -> Array:
         if is_sparse_key(key) and key in sparsity_info:
             si = sparsity_info[key]
+            nnz = si["nnz"]
             rows, cols = si["rows"], si["cols"]
-            if val.ndim == 2:
-                # Unbatched: (m, n) → (nnz,)
+
+            if val.ndim == 1 and val.shape[0] == nnz:
+                # Sparse format, unbatched: (nnz,) → pass through
+                return jnp.asarray(val, dtype=dtype)
+            elif val.ndim == 2 and val.shape[-1] == nnz:
+                # Sparse format, batched: (batch, nnz) → pass through
+                return jnp.asarray(val, dtype=dtype)
+            elif val.ndim == 2:
+                # Dense format, unbatched: (m, n) → (nnz,)
                 return jnp.asarray(val[rows, cols], dtype=dtype)
-            else:
-                # Batched: (batch, m, n) → (batch, nnz)
+            elif val.ndim == 3:
+                # Dense format, batched: (batch, m, n) → (batch, nnz)
                 return jnp.asarray(val[:, rows, cols], dtype=dtype)
+            else:
+                raise ValueError(
+                    f"Unexpected grad shape {val.shape} for sparse key '{key}'"
+                )
         else:
             return jnp.asarray(val, dtype=dtype)
 

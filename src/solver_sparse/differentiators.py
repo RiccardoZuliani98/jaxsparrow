@@ -13,8 +13,10 @@ Key design decisions:
     system size.
   - The linear solve uses ``scipy.sparse.linalg.splu`` for both
     single and multiple RHS (factorize once, solve per column).
-  - Reverse-mode gradients for P, A, G are returned as dense ndarray;
-    the converter extracts nonzero entries before returning to JAX.
+  - Reverse-mode gradients for P, A, G are returned as 1-D arrays
+    of nonzero values (matching the sparsity pattern of each matrix),
+    not as dense matrices. The converter can wrap these directly into
+    BCOO without any dense round-trip.
 """
 
 from __future__ import annotations
@@ -301,6 +303,25 @@ def create_sparse_kkt_differentiator_rev(
     def _need(key: str) -> bool:
         return _dyn_set is None or key in _dyn_set
 
+    # ── Pre-extract sparsity patterns (row, col indices) ─────────────
+    # These are fixed for the lifetime of the solver — the sparsity
+    # structure never changes, only the values do.
+    # We store them once so the inner function can compute gradients
+    # at only the nonzero positions via fancy indexing: O(nnz) instead
+    # of O(n^2) dense outer products.
+
+    _sp_indices: dict[str, tuple[ndarray, ndarray]] = {}
+
+    def _cache_indices(key: str, source: dict) -> None:
+        if key in source and issparse(source[key]):
+            mat = csc_matrix(source[key])
+            rows, cols = mat.nonzero()
+            _sp_indices[key] = (np.asarray(rows), np.asarray(cols))
+
+    if fixed_elements is not None:
+        for k in ("P", "A", "G"):
+            _cache_indices(k, fixed_elements)
+
     # ─────────────────────────────────────────────────────────────────
 
     def kkt_differentiator_rev(
@@ -320,6 +341,16 @@ def create_sparse_kkt_differentiator_rev(
         # ── Merge primals (keep sparse) ──────────────────────────────
         prob = {**_fixed, **dyn_primals_np}
         P_sp = _ensure_csc(prob["P"], _dtype)
+
+        # ── Cache sparsity indices for dynamic keys on first call ────
+        # (Dynamic matrices may not be in fixed_elements, so we lazily
+        #  extract their patterns here. The pattern is stable across
+        #  calls because BCOO sparsity structure is fixed.)
+        for k in ("P", "A", "G"):
+            if k not in _sp_indices and k in prob and issparse(prob[k]):
+                mat = csc_matrix(prob[k])
+                rows, cols = mat.nonzero()
+                _sp_indices[k] = (np.asarray(rows), np.asarray(cols))
 
         # ── Active set ───────────────────────────────────────────────
         # G @ x works directly on CSC; result is a dense vector.
@@ -414,14 +445,21 @@ def create_sparse_kkt_differentiator_rev(
             )
         t["extract_adjoint"] = perf_counter() - start
 
-        # ── Compute parameter cotangents ─────────────────────────────
+        # ── Compute parameter cotangents (sparse) ────────────────────
         #
         # Given adjoint variables (v_x, v_mu, v_lam_a), compute
         # cotangents θ̄ = -v^T (∂F/∂θ) for each dynamic parameter θ.
         #
-        # Gradients for P, A, G are returned as *dense* matrices.
-        # The converter (make_sparse_grad_to_jax) extracts the nonzero
-        # entries before returning to JAX.
+        # For matrix parameters (P, A, G), we exploit the known
+        # sparsity pattern: instead of forming a full dense outer
+        # product O(n²) and extracting nonzeros afterwards, we
+        # compute gradient values *only* at the nonzero positions
+        # via fancy indexing — O(nnz).
+        #
+        # The returned arrays for P, A, G are 1-D (length nnz) in
+        # the unbatched case, or 2-D (batch, nnz) in the batched
+        # case. The converter can wrap these directly into BCOO
+        # using the stored indices, with no dense round-trip.
         #
         # Only dynamic keys are computed; fixed keys are skipped.
 
@@ -430,35 +468,57 @@ def create_sparse_kkt_differentiator_rev(
 
         if batched:
 
-            # P̄ = -v_x ⊗ x,  shape: (batch, n_var, n_var)
-            if _need("P"):
-                grads["P"] = -(v_x[:, :, None] * x_np[None, None, :])
+            # P̄: grad only at nonzero positions
+            # Dense equivalent: -(v_x[:, :, None] * x_np[None, None, :])
+            if _need("P") and "P" in _sp_indices:
+                P_rows, P_cols = _sp_indices["P"]
+                # v_x is (batch, n_var), x_np is (n_var,)
+                grads["P"] = -(v_x[:, P_rows] * x_np[P_cols])
 
             # q̄ = -v_x,  shape: (batch, n_var)
             if _need("q"):
                 grads["q"] = -v_x
 
             if n_eq > 0:
-                # Ā = -(μ ⊗ v_x + v_μ ⊗ x),  shape: (batch, n_eq, n_var)
-                if _need("A"):
-                    term1 = mu_np[None, :, None] * v_x[:, None, :]
-                    term2 = v_mu[:, :, None] * x_np[None, None, :]
-                    grads["A"] = -(term1 + term2)
+                # Ā: grad only at nonzero positions
+                # Dense equivalent: -(mu ⊗ v_x + v_mu ⊗ x)
+                if _need("A") and "A" in _sp_indices:
+                    A_rows, A_cols = _sp_indices["A"]
+                    # mu_np is (n_eq,), v_x is (batch, n_var)
+                    # v_mu is (batch, n_eq), x_np is (n_var,)
+                    grads["A"] = -(
+                        mu_np[A_rows] * v_x[:, A_cols]
+                        + v_mu[:, A_rows] * x_np[A_cols]
+                    )
 
                 # b̄ = v_μ,  shape: (batch, n_eq)
                 if _need("b"):
                     grads["b"] = v_mu
 
             if n_ineq > 0:
-                # Ḡ: only active rows nonzero
-                #TODO make sparse here
-                if _need("G"):
-                    g_G = np.zeros((batch_size, n_ineq, n_var), dtype=_dtype)
+                # Ḡ: grad only at nonzero positions, only active rows contribute
+                if _need("G") and "G" in _sp_indices:
+                    G_rows, G_cols = _sp_indices["G"]
+                    g_G = np.zeros((batch_size, len(G_rows)), dtype=_dtype)
                     if n_active > 0:
-                        lam_active = lam_np[active_np]
-                        term1 = lam_active[None, :, None] * v_x[:, None, :]
-                        term2 = v_lam_a[:, :, None] * x_np[None, None, :]
-                        g_G[:, active_np, :] = -(term1 + term2)
+                        # Build map from active compressed index → full inequality index
+                        # active_np is a bool mask of shape (n_ineq,)
+                        # v_lam_a is (batch, n_active) — compressed to active rows only
+                        active_indices = np.where(active_np)[0]
+                        # For each nnz entry, check if its row is active
+                        nnz_row_is_active = active_np[G_rows]
+                        # Map G_rows to compressed active index for v_lam_a lookup
+                        # full_to_active[i] gives the compressed index for inequality i
+                        full_to_active = np.empty(n_ineq, dtype=np.intp)
+                        full_to_active[active_indices] = np.arange(n_active)
+
+                        active_nnz = np.where(nnz_row_is_active)[0]
+                        compressed_rows = full_to_active[G_rows[active_nnz]]
+
+                        g_G[:, active_nnz] = -(
+                            lam_np[G_rows[active_nnz]] * v_x[:, G_cols[active_nnz]]
+                            + v_lam_a[:, compressed_rows] * x_np[G_cols[active_nnz]]
+                        )
                     grads["G"] = g_G
 
                 # h̄: only active entries nonzero
@@ -470,30 +530,47 @@ def create_sparse_kkt_differentiator_rev(
 
         else:
 
-            # P̄ = -v_x ⊗ x,  shape: (n_var, n_var)
-            if _need("P"):
-                grads["P"] = -np.outer(v_x, x_np)
+            # P̄: grad only at nonzero positions
+            # Dense equivalent: -np.outer(v_x, x_np)
+            if _need("P") and "P" in _sp_indices:
+                P_rows, P_cols = _sp_indices["P"]
+                grads["P"] = -(v_x[P_rows] * x_np[P_cols])
 
             # q̄ = -v_x,  shape: (n_var,)
             if _need("q"):
                 grads["q"] = -v_x
 
             if n_eq > 0:
-                # Ā = -(μ ⊗ v_x + v_μ ⊗ x),  shape: (n_eq, n_var)
-                if _need("A"):
-                    grads["A"] = -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
+                # Ā: grad only at nonzero positions
+                # Dense equivalent: -(np.outer(mu_np, v_x) + np.outer(v_mu, x_np))
+                if _need("A") and "A" in _sp_indices:
+                    A_rows, A_cols = _sp_indices["A"]
+                    grads["A"] = -(
+                        mu_np[A_rows] * v_x[A_cols]
+                        + v_mu[A_rows] * x_np[A_cols]
+                    )
 
                 # b̄ = v_μ,  shape: (n_eq,)
                 if _need("b"):
                     grads["b"] = v_mu
 
             if n_ineq > 0:
-                if _need("G"):
-                    g_G = np.zeros((n_ineq, n_var), dtype=_dtype)
+                # Ḡ: grad only at nonzero positions, only active rows
+                if _need("G") and "G" in _sp_indices:
+                    G_rows, G_cols = _sp_indices["G"]
+                    g_G = np.zeros(len(G_rows), dtype=_dtype)
                     if n_active > 0:
-                        g_G[active_np, :] = -(
-                            np.outer(lam_np[active_np], v_x)
-                            + np.outer(v_lam_a, x_np)
+                        active_indices = np.where(active_np)[0]
+                        nnz_row_is_active = active_np[G_rows]
+                        full_to_active = np.empty(n_ineq, dtype=np.intp)
+                        full_to_active[active_indices] = np.arange(n_active)
+
+                        active_nnz = np.where(nnz_row_is_active)[0]
+                        compressed_rows = full_to_active[G_rows[active_nnz]]
+
+                        g_G[active_nnz] = -(
+                            lam_np[G_rows[active_nnz]] * v_x[G_cols[active_nnz]]
+                            + v_lam_a[compressed_rows] * x_np[G_cols[active_nnz]]
                         )
                     grads["G"] = g_G
 
