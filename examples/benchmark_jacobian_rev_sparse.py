@@ -1,5 +1,6 @@
 """
 Benchmark: MPC solve + Jacobian via vmap(vjp) with random initial conditions.
+Sparse solver version — P, A, G are BCOO matrices.
 """
 
 from pathlib import Path
@@ -12,13 +13,14 @@ import jax.numpy as jnp
 import jax
 import numpy as np
 from jax import jit, vjp, vmap
+from jax.experimental.sparse import BCOO
 from time import perf_counter
 
 jax.config.update("jax_enable_x64", True)
 
 # ─── Problem setup ───────────────────────────────────────────────────
 
-horizon = 50
+horizon = 150
 N_SAMPLES = 50
 
 A = jnp.array([[1, 1], [0, 1]])
@@ -32,13 +34,15 @@ nx, nu = B.shape
 N = horizon
 nz = (N + 1) * nx + N * nu
 
-P = jnp.diag(jnp.hstack((
+# ─── Build dense matrices, then convert to BCOO ─────────────────────
+
+P_dense = jnp.diag(jnp.hstack((
     jnp.ones((N + 1) * nx) * cost_state,
     jnp.ones(N * nu) * cost_input,
 )))
 q = jnp.zeros(nz)
 
-G = jnp.vstack((jnp.eye(nz), -jnp.eye(nz)))
+G_dense = jnp.vstack((jnp.eye(nz), -jnp.eye(nz)))
 h = jnp.hstack((
     jnp.ones((N + 1) * nx) * xmax,
     jnp.ones(N * nu) * umax,
@@ -50,22 +54,35 @@ S = jnp.diag(jnp.ones(N), -1)
 Ax = jnp.kron(jnp.eye(N + 1), jnp.eye(nx)) + jnp.kron(S, -A)
 Su = jnp.vstack((jnp.zeros((1, N)), jnp.eye(N)))
 Au = jnp.kron(Su, -B)
-Aeq = jnp.hstack((Ax, Au))
+Aeq_dense = jnp.hstack((Ax, Au))
 
-neq = Aeq.shape[0]
-nineq = G.shape[0]
+# Convert matrices to BCOO sparse format
+P = BCOO.fromdense(P_dense)
+G = BCOO.fromdense(G_dense)
+Aeq = BCOO.fromdense(Aeq_dense)
+
+neq = Aeq_dense.shape[0]
+nineq = G_dense.shape[0]
+
+print(f"  Sparsity: P has {P.nse}/{P_dense.size} nonzeros "
+      f"({P.nse / P_dense.size * 100:.1f}%)")
+print(f"  Sparsity: A has {Aeq.nse}/{Aeq_dense.size} nonzeros "
+      f"({Aeq.nse / Aeq_dense.size * 100:.1f}%)")
+print(f"  Sparsity: G has {G.nse}/{G_dense.size} nonzeros "
+      f"({G.nse / G_dense.size * 100:.1f}%)")
 
 def beq(x_init):
     return jnp.hstack((x_init, jnp.zeros(N * nx)))
 
 # ─── Solver setup ────────────────────────────────────────────────────
 
-from src.solver_dense.setup import setup_dense_solver
+from src.solver_sparse.setup import setup_sparse_solver
 
-solver = setup_dense_solver(
+solver = setup_sparse_solver(
     n_var=nz,
     n_ineq=nineq,
     n_eq=neq,
+    sparsity_patterns={"P": P, "A": Aeq, "G": G},
     options={"differentiator_type": "kkt_rev"},
 )
 
@@ -100,10 +117,6 @@ wall_elapsed = []
 
 x0_i = jnp.array(x0_samples[0])
 
-# with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-#     sol, jac = jacobian_fn(x0_i)
-#     sol.block_until_ready()
-
 for i in range(N_SAMPLES):
     x0_i = jnp.array(x0_samples[i])
     start = perf_counter()
@@ -114,7 +127,7 @@ for i in range(N_SAMPLES):
 # ─── Results ─────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 60}")
-print(f"  MPC Jacobian benchmark (VJP)")
+print(f"  MPC Jacobian benchmark (SPARSE, VJP)")
 print(f"  horizon = {horizon}, n_var = {nz}, n_eq = {neq}, n_ineq = {nineq}")
 print(f"  {N_SAMPLES} random initial conditions, Jacobian via vmap(vjp)")
 print(f"{'=' * 60}")

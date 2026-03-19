@@ -451,6 +451,7 @@ def create_sparse_kkt_differentiator_rev(
 
             if n_ineq > 0:
                 # Ḡ: only active rows nonzero
+                #TODO make sparse here
                 if _need("G"):
                     g_G = np.zeros((batch_size, n_ineq, n_var), dtype=_dtype)
                     if n_active > 0:
