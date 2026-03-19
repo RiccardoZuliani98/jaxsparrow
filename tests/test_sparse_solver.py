@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 import logging
 from jax.experimental.sparse import BCOO
+from scipy.sparse import csc_matrix
 
 jax.config.update("jax_enable_x64", True)
 
@@ -39,6 +40,25 @@ def _to_bcoo(dense_matrix):
 def _sparsity_dict(**kwargs):
     """Build sparsity_patterns dict from dense matrices."""
     return {k: _to_bcoo(v) for k, v in kwargs.items()}
+
+
+# Keys that are matrices (need scipy CSC) vs vectors (need numpy array)
+_MATRIX_KEYS = frozenset({"P", "A", "G"})
+
+
+def _to_fixed(elements: dict) -> dict:
+    """Convert a dict of JAX arrays to the format expected by fixed_elements.
+
+    Sparse matrix keys (P, A, G) → scipy.sparse.csc_matrix
+    Vector keys (q, b, h)        → numpy ndarray
+    """
+    out = {}
+    for k, v in elements.items():
+        if k in _MATRIX_KEYS:
+            out[k] = csc_matrix(np.asarray(v))
+        else:
+            out[k] = np.asarray(v)
+    return out
 
 
 # =====================================================================
@@ -373,7 +393,7 @@ class TestFixedElements:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"]}),
         )
         sol = solver(A=d["A"], b=d["b"], G=d["G"], h=d["h"])
         np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
@@ -383,8 +403,8 @@ class TestFixedElements:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"A": d["A"], "b": d["b"],
-                            "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"A": d["A_dense"], "b": d["b"],
+                            "G": d["G_dense"], "h": d["h"]}),
         )
         sol = solver(P=d["P"], q=d["q"])
         np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
@@ -394,9 +414,9 @@ class TestFixedElements:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "b": d["b"],
-                            "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "b": d["b"],
+                            "G": d["G_dense"], "h": d["h"]}),
         )
         sol = solver()
         np.testing.assert_allclose(sol["x"], d["x_expected"], atol=1e-8)
@@ -415,7 +435,7 @@ class TestFixedElements:
         solver_some_fixed = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"]}),
         )
         sol_fixed = solver_some_fixed(
             A=d["A"], b=d["b"], G=d["G"], h=d["h"]
@@ -452,8 +472,8 @@ class TestMultipleSolves:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
         )
 
         key = jax.random.PRNGKey(0)
@@ -619,8 +639,8 @@ class TestJVPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
         )
 
         db = jnp.zeros(d["n_eq"])
@@ -640,7 +660,7 @@ class TestJVPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"]}),
         )
 
         db = jnp.array([1.0, 0.0])
@@ -752,8 +772,8 @@ class TestJVPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
         )
 
         key = jax.random.PRNGKey(50)
@@ -972,8 +992,8 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
             options={"differentiator_type": "kkt_rev"},
         )
 
@@ -1037,7 +1057,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"]}),
             options={"differentiator_type": "kkt_rev"},
         )
 
@@ -1185,8 +1205,8 @@ class TestVJPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            fixed_elements={"P": d["P"], "q": d["q"],
-                            "A": d["A"], "G": d["G"], "h": d["h"]},
+            fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
+                            "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
             options={"differentiator_type": "kkt_rev"},
         )
 
