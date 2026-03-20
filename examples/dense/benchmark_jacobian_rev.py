@@ -5,7 +5,7 @@ Benchmark: MPC solve + Jacobian via vmap(vjp) with random initial conditions.
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import jax.numpy as jnp
@@ -55,6 +55,7 @@ Aeq = jnp.hstack((Ax, Au))
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
+@jit
 def beq(x_init):
     return jnp.hstack((x_init, jnp.zeros(N * nx)))
 
