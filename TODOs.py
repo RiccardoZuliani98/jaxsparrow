@@ -1,6 +1,6 @@
+#TODO: sparse mode has no warmstart
 #TODO: check timing printer
 #TODO: check finite difference checker
-#TODO: sparse mode has no warmstart
 #TODO: add diff-by-design algorithm
 #TODO: add bpmpc
 #TODO: add conic programming
