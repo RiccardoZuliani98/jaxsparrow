@@ -1,6 +1,5 @@
 #TODO: check timing printer
 #TODO: check finite difference checker
-#TODO: update dense docstrings
 #TODO: sparse mode has no warmstart
 #TODO: add diff-by-design algorithm
 #TODO: add bpmpc
