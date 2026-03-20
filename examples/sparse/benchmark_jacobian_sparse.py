@@ -20,7 +20,7 @@ jax.config.update("jax_enable_x64", True)
 
 # ─── Problem setup ───────────────────────────────────────────────────
 
-horizon = 150
+horizon = 50
 N_SAMPLES = 50
 
 A = jnp.array([[1, 1], [0, 1]])
@@ -83,6 +83,7 @@ solver = setup_sparse_solver(
     n_ineq=nineq,
     n_eq=neq,
     sparsity_patterns={"P": P, "A": Aeq, "G": G},
+    options={"solver":{"solver_name":"piqp"}}
 )
 
 def solve_mpc(x_init):
