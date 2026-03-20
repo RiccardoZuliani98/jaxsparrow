@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from time import perf_counter
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from jaxsparrow._solver_dense._setup import setup_dense_solver
