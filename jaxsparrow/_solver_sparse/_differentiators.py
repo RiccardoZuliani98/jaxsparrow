@@ -11,8 +11,9 @@ Key design decisions:
   - The RHS is dense (vectors or thin batched matrices) — this is
     appropriate because the RHS dimension is small relative to the
     system size.
-  - The linear solve uses ``scipy.sparse.linalg.splu`` for both
-    single and multiple RHS (factorize once, solve per column).
+  - The linear solve uses a configurable sparse solver (default:
+    ``splu`` via SuperLU) for both single and multiple RHS
+    (factorize once, solve per column).
   - Reverse-mode gradients for P, A, G are returned as 1-D arrays
     of nonzero values (matching the sparsity pattern of each matrix),
     not as dense matrices. The converter can wrap these directly into
@@ -32,7 +33,6 @@ from scipy.sparse import (
     bmat as sp_bmat,
     vstack as sp_vstack,
 )
-from scipy.sparse.linalg import splu
 
 from jaxsparrow._solver_sparse._types import (
     SparseQPIngredientsNP,
@@ -42,6 +42,7 @@ from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
 from jaxsparrow._options_common import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._utils._linear_solvers import get_sparse_linear_solver
 
 
 # ── Sparse helpers ───────────────────────────────────────────────────
@@ -116,34 +117,6 @@ def _build_sparse_kkt(
         [H, zeros_block],
     ], format="csc"))
 
-#TODO: outsource this
-def _sparse_solve(K: csc_matrix, rhs: ndarray) -> ndarray:
-    """Solve a sparse linear system via SuperLU factorization.
-
-    Factorizes ``K`` once using ``scipy.sparse.linalg.splu``, then
-    solves for each RHS column. This is efficient for the batched
-    case where multiple tangent or cotangent directions share the
-    same KKT matrix.
-
-    Args:
-        K: Sparse CSC coefficient matrix, shape ``(n, n)``.
-        rhs: Dense right-hand side. Either a 1-D vector of length
-            ``n`` (single solve) or a 2-D array of shape ``(n, k)``
-            (``k`` solves sharing the same factorization).
-
-    Returns:
-        The solution ``x`` such that ``K @ x = rhs``, with the same
-        shape as *rhs*.
-    """
-    lu = splu(K)
-    if rhs.ndim == 1:
-        return lu.solve(rhs)
-    else:
-        # Multiple RHS: solve each column with the same factorization
-        return np.column_stack([
-            lu.solve(rhs[:, i]) for i in range(rhs.shape[1])
-        ])
-
 
 # =====================================================================
 # FORWARD (JVP) DIFFERENTIATOR
@@ -161,7 +134,8 @@ def create_sparse_kkt_differentiator_fwd(
     Builds a closure that, given a QP solution and input tangents,
     computes the Jacobian-vector product of the KKT optimality
     conditions. The KKT system is assembled and solved entirely in
-    sparse form (CSC + SuperLU); only the RHS is dense.
+    sparse form (CSC + configurable sparse solver); only the RHS is
+    dense.
 
     The tangent inputs may be unbatched (one tangent direction) or
     batched (multiple directions from ``vmap``). In the batched case
@@ -179,6 +153,8 @@ def create_sparse_kkt_differentiator_fwd(
         n_ineq: Number of inequality constraints (zero if none).
         options: Differentiator options (dtype, constraint tolerance,
             linear solver). Defaults are filled for missing keys.
+            The ``"linear_solver"`` key selects the sparse backend;
+            see ``get_sparse_linear_solver`` for available choices.
         fixed_elements: QP ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Zero tangents are pre-allocated for
@@ -202,6 +178,9 @@ def create_sparse_kkt_differentiator_fwd(
 
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
+
+    # ── Choose sparse linear solver ──────────────────────────────────
+    _solve_linear_system = get_sparse_linear_solver(options_parsed["linear_solver"])
 
     # ── Fixed elements: keep matrices as CSC, vectors as ndarray ─────
     #
@@ -321,7 +300,7 @@ def create_sparse_kkt_differentiator_fwd(
 
         # ── Sparse solve ─────────────────────────────────────────────
         start = perf_counter()
-        sol = _sparse_solve(lhs, -rhs)
+        sol = _solve_linear_system(lhs, -rhs)
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract dx, dlam, dmu ────────────────────────────────────
@@ -367,8 +346,8 @@ def create_sparse_kkt_differentiator_rev(
 
     Builds a closure that, given a QP solution and output cotangents,
     computes parameter gradients by solving the adjoint KKT system.
-    The KKT matrix is assembled in sparse form (CSC + SuperLU); the
-    RHS is built from the cotangent vectors.
+    The KKT matrix is assembled in sparse form (CSC + configurable
+    sparse solver); the RHS is built from the cotangent vectors.
 
     Gradients for matrix parameters (P, A, G) are returned as 1-D
     arrays of length ``nnz`` (unbatched) or 2-D arrays of shape
@@ -388,6 +367,8 @@ def create_sparse_kkt_differentiator_rev(
         n_ineq: Number of inequality constraints (zero if none).
         options: Differentiator options (dtype, constraint tolerance,
             linear solver). Defaults are filled for missing keys.
+            The ``"linear_solver"`` key selects the sparse backend;
+            see ``get_sparse_linear_solver`` for available choices.
         fixed_elements: QP ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Sparsity patterns are extracted at
@@ -415,6 +396,9 @@ def create_sparse_kkt_differentiator_rev(
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
     _bool_dtype = options_parsed["bool_dtype"]
+
+    # ── Choose sparse linear solver ──────────────────────────────────
+    _solve_linear_system = get_sparse_linear_solver(options_parsed["linear_solver"])
 
     # ── Fixed elements: keep matrices as CSC ─────────────────────────
     _fixed: dict[str, Union[csc_matrix, ndarray]] = {}
@@ -553,7 +537,7 @@ def create_sparse_kkt_differentiator_rev(
 
         # ── Sparse solve ─────────────────────────────────────────────
         start = perf_counter()
-        v = _sparse_solve(lhs, rhs)
+        v = _solve_linear_system(lhs, rhs)
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract adjoint variables ────────────────────────────────

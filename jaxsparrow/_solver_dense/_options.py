@@ -2,6 +2,7 @@
 
 from jaxsparrow._options_common import DifferentiatorOptions
 import numpy as np
+from typing import Literal
 
 class DenseKKTfwdOptions(DifferentiatorOptions):
     dtype:          type[np.floating]
@@ -13,7 +14,10 @@ class DenseKKTfwdOptionsFull(DifferentiatorOptions,total=True):
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
-    linear_solver:  str
+    linear_solver:  Literal[
+                        "splu", "spilu", "spsolve", "lu",
+                        "sp_lstsq", "lstsq", "solve"
+                    ]
 
 DEFAULT_DIFF_OPTIONS : DenseKKTfwdOptionsFull = {
     "dtype": np.float64,

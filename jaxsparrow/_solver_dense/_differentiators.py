@@ -12,7 +12,7 @@ from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
 from jaxsparrow._solver_dense._options import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
-from jaxsparrow._utils._linear_solvers import get_linear_solver
+from jaxsparrow._utils._linear_solvers import get_dense_linear_solver
 
 #TODO: annotate output
 #TODO: docstrings
@@ -67,7 +67,7 @@ def create_dense_kkt_differentiator_fwd(
     # but this requires knowing the sparsity ahead of time, i.e. not lazily build at runtime.
     # I am specifically thinking about qdldl, which allows prestoring A and then only update it,
     # as long as the sparsity does not change.
-    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
+    _solve_linear_system = get_dense_linear_solver(options_parsed["linear_solver"])
 
 
     def kkt_differentiator_fwd(
@@ -259,7 +259,7 @@ def create_dense_kkt_differentiator_rev(
         _fixed["h"] = np.zeros((0,), dtype=options_parsed["dtype"])
 
     # choose linear system solver
-    _solve_linear_system = get_linear_solver(options_parsed["linear_solver"])
+    _solve_linear_system = get_dense_linear_solver(options_parsed["linear_solver"])
 
     # Pre-compute which groups of keys are dynamic for fast lookup
     # in the inner function. If dynamic_keys is None, assume all
