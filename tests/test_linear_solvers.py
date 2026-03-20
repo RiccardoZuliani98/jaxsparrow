@@ -60,13 +60,13 @@ def _make_nonsing(n: int, rng: np.random.Generator) -> ndarray:
 
 def _make_sparse_spd(n: int, rng: np.random.Generator, density: float = 0.3) -> csc_matrix:
     """Generate a random sparse SPD matrix in CSC format."""
-    A = sp_random(n, n, density=density, random_state=rng, format="csc")
+    A = sp_random(n, n, density=density, format="csc")
     return (A @ A.T + n * csc_matrix(np.eye(n))).tocsc()
 
 
 def _make_sparse_nonsing(n: int, rng: np.random.Generator, density: float = 0.3) -> csc_matrix:
     """Generate a random sparse non-singular matrix in CSC format."""
-    A = sp_random(n, n, density=density, random_state=rng, format="csc")
+    A = sp_random(n, n, density=density, format="csc")
     return (A + n * csc_matrix(np.eye(n))).tocsc()
 
 
