@@ -2,19 +2,24 @@
 
 **Jax - Sensitivity for PARametric Optimization (Wow!)**
 
-JaxSPARROW is a JAX library for solving parametric quadratic programs (QPs) with exact, efficient derivatives. It wraps existing QP solvers (via [qpsolvers](https://github.com/qpsolvers/qpsolvers)) and makes them fully differentiable through JAX's `jvp`, `vjp`, and `vmap` transformations — enabling gradient-based optimization of systems that include QPs as a subroutine, such as model predictive control (MPC).
+I wanted a differentiable QP solver that is fast and works in Jax.
+I did not find one (yes QPax works fine, but there are many other solvers running in numpy that I sometimes wants to use bacause more options > fewer options).
+So I made this library.
 
-Both dense and sparse problem formulations are supported. The sparse path keeps matrices in CSC format throughout, including inside the KKT differentiation step, so it scales to large, structured problems without any dense round-trips.
+It's similar to [dQP](https://github.com/cwmagoon/dQP) but it's written in Jax instead of pytorch.
+
+This library provides two functions that allow the definition of differentiable QP solvers, one is dense and one is sparse.
+The QP problem is solved using the wrapper offered by [qpsolvers](https://github.com/qpsolvers/qpsolvers), but more backends will be available soon.
+
+This library implements efficient conversions between numpy and jax basically.
+Also you can take derivatives through the QP solver (both forward and reverse).
+They are quite efficient (also using numpy linear algebra routines, batching whenever multiple linear solves are required with the same LHS).
+
+Feel free to contribute or reach out if you find issues ([rzuliani@ethz.ch](mailto:rzuliani@ethz.ch))!
 
 ---
 
 ## Installation
-
-```bash
-pip install jaxsparrow
-```
-
-Or from source:
 
 ```bash
 git clone https://github.com/<your-org>/jaxsparrow.git
@@ -121,9 +126,9 @@ solver_fwd = setup_dense_solver(..., options={"differentiator_type": "kkt_fwd"})
 solver_rev = setup_dense_solver(..., options={"differentiator_type": "kkt_rev"})
 ```
 
-Both modes work with `jax.jvp`, `jax.vjp`, `jax.grad`, `jax.jacfwd`, `jax.jacrev`, and `jax.vmap`. The choice affects performance, not correctness.
+Both modes work with `jax.jvp`, `jax.vjp`, and `jax.vmap`. The choice affects performance, not correctness.
 
-For a scalar loss over a closed-loop MPC simulation, reverse mode computes the full gradient in a single backward pass, while forward mode requires one pass per input dimension.
+Note that by how this is implemented, `jax.grad`, `jax.jacfwd`, and `jax.jacrev` don't work, but you can obtain identical results using jax.jvp and jax.vjp with multiple tangents / cotangents.
 
 ---
 
@@ -211,19 +216,6 @@ options={"solver": {"solver_name": "osqp"}}
 
 ---
 
-## How it works
-
-JaxSPARROW differentiates through QP solves using the KKT optimality conditions. At a high level:
-
-1. **Forward solve**: the QP is solved by an external solver (OSQP, CLARABEL, etc.) via NumPy/SciPy, called from JAX through `pure_callback`.
-
-2. **Differentiation**: given the optimal solution (x*, λ*, μ*), the KKT conditions define an implicit function. Differentiating this system yields a linear equation whose solution gives the sensitivity of the optimal variables with respect to any problem parameter.
-
-3. **JAX integration**: `custom_jvp` or `custom_vjp` registers the differentiation rule so that standard JAX transformations (`jvp`, `vjp`, `grad`, `vmap`) work transparently.
-
-4. **Batching**: `vmap_method="expand_dims"` in `pure_callback` enables batched differentiation. The KKT matrix is factorized once; each batch element is a separate RHS column.
-
----
 
 ## Project structure
 
