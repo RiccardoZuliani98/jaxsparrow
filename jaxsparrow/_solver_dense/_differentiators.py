@@ -12,8 +12,6 @@ The actual algorithm lives in
 :mod:`jaxsparrow._solver_dense._dense_kkt_backend`.
 """
 
-#TODO: fix types in this file
-
 from __future__ import annotations
 
 from typing import Optional, Protocol, Sequence

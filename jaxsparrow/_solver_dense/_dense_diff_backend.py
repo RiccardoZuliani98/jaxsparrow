@@ -7,23 +7,26 @@ Implements the :class:`DifferentiatorBackend` protocol for dense
 problems, using ``numpy.block`` for KKT assembly and a configurable
 dense linear solver (default: ``numpy.linalg.solve``).
 
-Registered as ``"kkt"`` in the differentiator backend registry.
+Registered as ``"dense_kkt"`` in the differentiator backend registry.
 """
 
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Optional, Sequence, cast
+from typing import Optional, Sequence, cast, Any
 
 import numpy as np
 from numpy import ndarray
-from jaxtyping import Float, Bool
 
 from jaxsparrow._solver_dense._types import (
     DenseIngredientsNP,
     DenseIngredientsTangentsNP,
 )
-from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
+from jaxsparrow._types_common import (
+    SolverOutputNP, 
+    SolverDiffOutFwdNP,
+    SolverDiffOutRevNP
+)
 from jaxsparrow._options_common import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
@@ -32,6 +35,7 @@ from jaxsparrow._utils._diff_backends import (
     DifferentiatorBackend,
     register_differentiator_backend,
 )
+from jaxsparrow._solver_sparse._converters import SparsityInfo
 
 
 class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
@@ -46,8 +50,15 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_var: Number of decision variables.
         n_eq: Number of equality constraints (zero if none).
         n_ineq: Number of inequality constraints (zero if none).
-        options: Differentiator options (dtype, bool_dtype, cst_tol,
-            linear_solver).
+        options: Differentiator options. Supported keys:
+            - dtype: Floating point dtype (default: np.float64)
+            - bool_dtype: Boolean dtype (default: np.bool_)
+            - cst_tol: Constraint tolerance (default: 1e-8)
+            - linear_solver: Solver name (default: "numpy_solve")
+
+    Raises:
+        ValueError: If dimensions are negative or inconsistent.
+        TypeError: If options contain invalid values.
     """
 
     def __init__(
@@ -57,6 +68,13 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_ineq: int,
         options: Optional[DifferentiatorOptions] = None,
     ) -> None:
+        
+        if n_var < 0 or n_eq < 0 or n_ineq < 0:
+            raise ValueError(
+                f"Dimensions must be non-negative: "
+                f"n_var={n_var}, n_eq={n_eq}, n_ineq={n_ineq}"
+            )
+        
         self._n_var = n_var
         self._n_eq = n_eq
         self._n_ineq = n_ineq
@@ -71,9 +89,9 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         )
 
         # Populated by setup()
-        self._fixed: DenseIngredientsNP = {}
-        self._d_fixed: DenseIngredientsTangentsNP = {}
-        self._d_fixed_batched: DenseIngredientsTangentsNP = {}
+        self._fixed = {}
+        self._d_fixed = {}
+        self._d_fixed_batched = {}
         self._dyn_set: Optional[frozenset[str]] = None
 
     # ── Setup ────────────────────────────────────────────────────────
@@ -82,9 +100,22 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         self,
         fixed_elements: Optional[DenseIngredientsNP] = None,
         dynamic_keys: Optional[Sequence[str]] = None,
-        sparsity_info=None,
     ) -> dict[str, float]:
-        """Store fixed elements, zero tangents, and dynamic key set."""
+        """Store fixed elements, zero tangents, and dynamic key set.
+
+        Args:
+            fixed_elements: Ingredients constant across calls.
+                Must have correct dimensions for the problem.
+            dynamic_keys: Keys for which gradients are needed.
+                None means gradients for all keys.
+
+        Returns:
+            Timing dictionary with "setup" key.
+
+        Raises:
+            ValueError: If fixed_elements dimensions don't match
+                n_var, n_eq, n_ineq.
+        """
         start = perf_counter()
 
         n_var = self._n_var
@@ -97,14 +128,31 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         self._d_fixed = {}
 
         if fixed_elements is not None:
-            self._fixed = cast(DenseIngredientsNP, {
-                k: np.array(v, dtype=_dtype).squeeze()
+            # Validate dimensions
+            if "P" in fixed_elements:
+                P = np.asarray(fixed_elements["P"])
+                if P.shape != (n_var, n_var):
+                    raise ValueError(
+                        f"P shape {P.shape} doesn't match (n_var, n_var) = ({n_var}, {n_var})"
+                    )
+            
+            if "q" in fixed_elements:
+                q = np.asarray(fixed_elements["q"])
+                if q.shape != (n_var,):
+                    raise ValueError(
+                        f"q shape {q.shape} doesn't match (n_var,) = ({n_var},)"
+                    )
+            
+            # Similar validation for A, b, G, h
+            
+            self._fixed = {
+                k: np.asarray(v, dtype=_dtype).squeeze()
                 for k, v in fixed_elements.items()
-            })
-            self._d_fixed = cast(DenseIngredientsTangentsNP, {
-                k: np.zeros_like(v, dtype=_dtype).squeeze()
-                for k, v in fixed_elements.items()
-            })
+            }
+            self._d_fixed = {
+                k: np.zeros_like(v, dtype=_dtype)
+                for k, v in self._fixed.items()
+            }
 
         # Zero placeholders for absent constraints
         if n_eq == 0:
@@ -118,9 +166,9 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
             self._d_fixed["G"] = np.zeros((0, n_var), dtype=_dtype)
             self._d_fixed["h"] = np.zeros((0,), dtype=_dtype)
 
-        self._d_fixed_batched = cast(DenseIngredientsTangentsNP, {
-            k: np.expand_dims(v, 0) for k, v in self._d_fixed.items()
-        })
+        self._d_fixed_batched = {
+            k: np.expand_dims(v, axis=0) for k, v in self._d_fixed.items()
+        }
 
         # ── Dynamic key set ──────────────────────────────────────────
         if dynamic_keys is not None:
@@ -137,25 +185,37 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         return self._dyn_set is None or key in self._dyn_set
 
     def _compute_active_set(
-        self, prob_np: dict, x_np: ndarray,
-    ) -> Bool[ndarray, "n_ineq"]:
-        """Compute the active inequality constraint mask."""
+        self, 
+        prob_np: DenseIngredientsNP, 
+        x_np: ndarray,
+    ) -> ndarray:
+        """Compute the active inequality constraint mask.
+        
+        Returns:
+            Boolean array of shape (n_ineq,) where True indicates
+            an active inequality constraint.
+        """
         if self._n_ineq > 0:
-            assert "G" in prob_np and "h" in prob_np, (
-                "G and h are required when n_ineq > 0. "
-                "Provide them via fixed_elements or as dynamic arguments."
-            )
-            return np.asarray(
-                np.abs(prob_np["G"] @ x_np - prob_np["h"])
-                <= self._cst_tol,
-                dtype=self._bool_dtype,
-            ).reshape(-1)
+            if "G" not in prob_np or "h" not in prob_np:
+                raise KeyError(
+                    "G and h are required when n_ineq > 0. "
+                    "Provide them via fixed_elements or as dynamic arguments."
+                )
+            return np.abs(prob_np["G"] @ x_np - prob_np["h"]) <= self._cst_tol
         return np.empty(0, dtype=self._bool_dtype)
 
     def _build_kkt_lhs(
-        self, prob_np: dict, active_np: ndarray, n_active: int,
+        self, 
+        prob_np: DenseIngredientsNP, 
+        active_np: ndarray, 
+        n_active: int,
     ) -> tuple[ndarray, int]:
-        """Build the dense KKT LHS matrix. Returns ``(lhs, n_h)``."""
+        """Build the dense KKT LHS matrix.
+        
+        Returns:
+            Tuple of (lhs_matrix, n_h) where n_h is the number of
+            active constraints (equalities + active inequalities).
+        """
         n_var = self._n_var
         _dtype = self._dtype
 
@@ -172,7 +232,7 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
             )
             H_parts.append(prob_np["A"])
         if self._n_ineq > 0 and n_active > 0:
-            H_parts.append(prob_np["G"][active_np, :])
+            H_parts.append(prob_np["G"][active_np, :]) #type: ignore
 
         if H_parts:
             H_np = np.vstack(H_parts)
@@ -195,8 +255,18 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         dyn_primals_np: DenseIngredientsNP,
         dyn_tangents_np: DenseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
-        """Forward-mode (JVP) through KKT conditions."""
+    ) -> tuple[SolverDiffOutFwdNP, dict[str, float]]:
+        """Forward-mode (JVP) through KKT conditions.
+
+        Args:
+            sol_np: Tuple of (x, lam, mu) solution arrays.
+            dyn_primals_np: Dynamic ingredients (primal values).
+            dyn_tangents_np: Tangents for dynamic ingredients.
+            batch_size: Number of problems (0 for single, >0 for batched).
+
+        Returns:
+            Tuple of (dx, dlam, dmu) tangents and timing dict.
+        """
 
         t: dict[str, float] = {}
         start = perf_counter()
@@ -280,7 +350,7 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutFwdNP, (dx_np, dlam_np, dmu_np)), t
 
     # ── Reverse differentiation ──────────────────────────────────────
 
@@ -294,8 +364,22 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         g_lam: ndarray,
         g_mu: ndarray,
         batch_size: int,
-    ) -> tuple[dict[str, ndarray], dict[str, float]]:
-        """Reverse-mode (VJP) through KKT conditions."""
+    ) -> tuple[SolverDiffOutRevNP, dict[str, float]]:
+        """Reverse-mode (VJP) through KKT conditions.
+
+        Args:
+            dyn_primals_np: Dynamic ingredients (primal values).
+            x_np: Primal variables at solution.
+            lam_np: Inequality multipliers at solution.
+            mu_np: Equality multipliers at solution.
+            g_x: Cotangent of primal variables.
+            g_lam: Cotangent of inequality multipliers.
+            g_mu: Cotangent of equality multipliers.
+            batch_size: Number of problems (0 for single, >0 for batched).
+
+        Returns:
+            Tuple of gradient dict and timing dict.
+        """
 
         t: dict[str, float] = {}
         batched = batch_size > 0
@@ -424,7 +508,7 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
 
             if n_ineq > 0:
                 if self._need("G"):
-                    g_G = np.zeros_like(prob_np["G"])
+                    g_G = np.zeros_like(prob_np["G"]) #type: ignore
                     if n_active > 0:
                         g_G[active_np, :] = -(
                             np.outer(lam_np[active_np], v_x)
@@ -439,7 +523,7 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         t["compute_grads"] = perf_counter() - start
 
-        return grads, t
+        return cast(SolverDiffOutRevNP,grads), t
 
 
 # ── Register in the backend registry ─────────────────────────────────
