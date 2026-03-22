@@ -39,7 +39,7 @@ from qpsolvers import Problem, solve_problem
 
 from jaxsparrow._solver_sparse._types import (
     SparseIngredientsNP,
-    SparseIngredientsNPFull
+    SparseIngredientsNP
 )
 
 
@@ -196,15 +196,23 @@ class QpSolversBackend(SolverBackend):
         warmstart: Optional[ndarray] = kwargs.pop("warmstart", None)
 
         # Merge fixed + runtime
-        merged = cast(SparseIngredientsNPFull, {**self._fixed, **kwargs})
+        merged = cast(SparseIngredientsNP, {**self._fixed, **kwargs})
+
+        assert "P" in merged and "q" in merged, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
+        b_val = merged.get("b")
+        h_val = merged.get("h")
 
         prob: Problem = Problem(
             P=merged["P"],
             q=np.atleast_1d(merged["q"]),
             A=merged.get("A"),
-            b=np.atleast_1d(merged.get("b")) if merged.get("b") is not None else None,
+            b=np.atleast_1d(b_val) if b_val is not None else None,
             G=merged.get("G"),
-            h=np.atleast_1d(merged.get("h")) if merged.get("h") is not None else None,
+            h=np.atleast_1d(h_val) if h_val is not None else None,
         )
         t["problem_setup"] = perf_counter() - start
 
