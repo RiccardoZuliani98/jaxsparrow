@@ -1,7 +1,7 @@
 """
 setup_dense_solver.py
 =====================
-Dense differentiable QP solver.
+Dense differentiable solver.
 
 Thin wrapper around :func:`solver_common.build_solver` that supplies
 dense-specific converters and creates the dense numpy solver /
@@ -164,7 +164,7 @@ def setup_dense_solver(
         n_eq=n_eq,
         options_parsed=options_parsed,
         fixed_keys_set=fixed_keys_set,
-        solver_numpy=solve_qp_numpy,
+        solver_numpy=solver_numpy,
         diff_forward_numpy=diff_forward_numpy,
         diff_reverse_numpy=diff_reverse_numpy,
         primal_converter=dense_primal_converter,

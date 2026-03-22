@@ -1,7 +1,7 @@
 """
 solver_sparse/differentiators.py
 ================================
-KKT-based forward and reverse differentiators for the sparse QP path.
+KKT-based forward and reverse differentiators for the sparse path.
 
 Key design decisions:
   - Primal matrices (P, A, G) are stored and manipulated as
@@ -129,9 +129,9 @@ def create_sparse_kkt_differentiator_fwd(
     options: Optional[DifferentiatorOptions] = None,
     fixed_elements: Optional[SparseIngredientsNP] = None,
 ):
-    """Create a forward-mode (JVP) KKT differentiator for sparse QPs.
+    """Create a forward-mode (JVP) KKT differentiator for sparse problems.
 
-    Builds a closure that, given a QP solution and input tangents,
+    Builds a closure that, given a solution and input tangents,
     computes the Jacobian-vector product of the KKT optimality
     conditions. The KKT system is assembled and solved entirely in
     sparse form (CSC + configurable sparse solver); only the RHS is
@@ -155,7 +155,7 @@ def create_sparse_kkt_differentiator_fwd(
             linear solver). Defaults are filled for missing keys.
             The ``"linear_solver"`` key selects the sparse backend;
             see ``get_sparse_linear_solver`` for available choices.
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Zero tangents are pre-allocated for
             each fixed element, both unbatched and with a leading
@@ -342,9 +342,9 @@ def create_sparse_kkt_differentiator_rev(
     fixed_elements: Optional[SparseIngredientsNP] = None,
     dynamic_keys: Optional[Sequence[str]] = None,
 ):
-    """Create a reverse-mode (VJP) KKT differentiator for sparse QPs.
+    """Create a reverse-mode (VJP) KKT differentiator for sparse problems.
 
-    Builds a closure that, given a QP solution and output cotangents,
+    Builds a closure that, given a solution and output cotangents,
     computes parameter gradients by solving the adjoint KKT system.
     The KKT matrix is assembled in sparse form (CSC + configurable
     sparse solver); the RHS is built from the cotangent vectors.
@@ -369,7 +369,7 @@ def create_sparse_kkt_differentiator_rev(
             linear solver). Defaults are filled for missing keys.
             The ``"linear_solver"`` key selects the sparse backend;
             see ``get_sparse_linear_solver`` for available choices.
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Sparsity patterns are extracted at
             construction for gradient computation.

@@ -1,7 +1,7 @@
 """
 solver_dense/_options.py
 ========================
-Differentiator options for the dense QP path.
+Differentiator options for the dense path.
 
 Defines the option TypedDicts and default values used by
 :func:`create_dense_kkt_differentiator_fwd` and

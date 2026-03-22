@@ -36,19 +36,19 @@ DEFAULT_DIFF_OPTIONS: SparseKKTOptionsFull = {
 
 # ── Solver options ───────────────────────────────────────────────────
 
-class SparseQPSolverOptions(SolverOptions):
+class SparseSolverOptions(SolverOptions):
     solver_name:    str
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
 
-class SparseQPSolverOptionsFull(SolverOptions, total=True):
+class SparseSolverOptionsFull(SolverOptions, total=True):
     solver_name:    str
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
 
-DEFAULT_SOLVER_OPTIONS: SparseQPSolverOptionsFull = {
+DEFAULT_SOLVER_OPTIONS: SparseSolverOptionsFull = {
     "solver_name":  "piqp",
     "dtype":        np.float64,
     "bool_dtype":   np.bool_,
