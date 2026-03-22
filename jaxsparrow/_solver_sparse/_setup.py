@@ -1,7 +1,7 @@
 """
 solver_sparse/setup.py
 ======================
-Sparse differentiable QP solver.
+Sparse differentiable solver.
 
 Thin wrapper around :func:`solver_common.build_solver` that supplies
 sparse-specific converters and creates the sparse numpy solver /
@@ -38,12 +38,12 @@ from jaxsparrow._options_common import (
     DEFAULT_CONSTRUCTOR_OPTIONS,
     ConstructorOptions,
 )
-from jaxsparrow._solver_sparse._solvers import create_sparse_qp_solver
+from jaxsparrow._solver_sparse._solvers import create_sparse_solver
 from jaxsparrow._solver_sparse._differentiators import (
     create_sparse_kkt_differentiator_fwd,
     create_sparse_kkt_differentiator_rev,
 )
-from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._solver_sparse._converters import (
     build_sparsity_info,
     is_sparse_key,
@@ -66,10 +66,10 @@ def setup_sparse_solver(
     n_ineq: int = 0,
     n_eq: int = 0,
     sparsity_patterns: Optional[dict[str, BCOO]] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
     options: Optional[ConstructorOptions] = None,
 ):
-    """Build a differentiable sparse QP solver.
+    """Build a differentiable sparse solver.
 
     Constructs a JAX-traceable callable that solves quadratic programs
     of the form::
@@ -99,7 +99,7 @@ def setup_sparse_solver(
             optionally ``"A"``, ``"G"``) to a ``BCOO`` matrix encoding
             the sparsity structure. Required for every matrix key that
             is dynamic (not in *fixed_elements*).
-        fixed_elements: QP ingredients that remain constant across
+        fixed_elements: ingredients that remain constant across
             calls. Matrices should be ``scipy.sparse.csc_matrix``;
             vectors should be ``ndarray``. Keys present here are
             excluded from JAX's traced path and should not be passed
@@ -112,9 +112,9 @@ def setup_sparse_solver(
 
     Returns:
         A solver callable with signature
-        ``solver(*, P=..., q=..., ..., warmstart=None) -> QPOutput``.
+        ``solver(*, P=..., q=..., ..., warmstart=None) -> SolverOutput``.
         Matrices (P, A, G) should be passed as JAX ``BCOO``; vectors
-        (q, b, h) as regular ``jax.Array``. The returned ``QPOutput``
+        (q, b, h) as regular ``jax.Array``. The returned ``SolverOutput``
         is a dict with keys ``"x"``, ``"lam"``, ``"mu"``.
 
         The callable also exposes ``.timings`` (a ``TimingRecorder``)
@@ -124,9 +124,8 @@ def setup_sparse_solver(
     Raises:
         ValueError: If a dynamic sparse key has no corresponding entry
             in *sparsity_patterns*.
-        ValueError: If ``"differentiator_type"`` is not one of
-            ``"kkt_fwd"`` or ``"kkt_rev"``.
-        ValueError: If ``"solver_type"`` is not ``"qp_solvers"``.
+        ValueError: If ``"differentiator_type"`` is unknown.
+        ValueError: If ``"solver_type"`` is unknown.
         AssertionError: If any fixed element or sparsity pattern has a
             shape that doesn't match the declared problem dimensions.
     """
@@ -203,8 +202,10 @@ def setup_sparse_solver(
             )
 
     # ── Create numpy solver ──────────────────────────────────────────
+    #TODO: this should be improved. qp_solvers should be an option inside
+    # create_sparse_solver
     if options_parsed["solver_type"] == "qp_solvers":
-        solve_qp_numpy = create_sparse_qp_solver(
+        solver_numpy = create_sparse_solver(
             n_eq=n_eq,
             n_ineq=n_ineq,
             options=options_parsed["solver"],
@@ -224,6 +225,7 @@ def setup_sparse_solver(
             n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
             options=options_parsed["differentiator"],
             fixed_elements=fixed_elements,
+            dynamic_keys=dynamic_keys
         )
     else:
         raise ValueError("Only differentiator available is 'kkt'")
@@ -236,7 +238,7 @@ def setup_sparse_solver(
 
     # ── Log ──────────────────────────────────────────────────────────
     logger.info(
-        f"Setting up sparse QP with {n_var} variables, "
+        f"Setting up sparse solver with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
     )
     logger.info(f"Fixed variables: {fixed_keys_set or 'none'}")
@@ -252,7 +254,7 @@ def setup_sparse_solver(
         n_eq=n_eq,
         options_parsed=options_parsed,
         fixed_keys_set=fixed_keys_set,
-        solve_qp_numpy=solve_qp_numpy,
+        solver_numpy=solver_numpy,
         diff_forward_numpy=diff_forward_numpy,
         diff_reverse_numpy=diff_reverse_numpy,
         primal_converter=primal_converter,

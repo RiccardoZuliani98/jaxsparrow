@@ -1,7 +1,7 @@
 """
 solver_sparse/differentiators.py
 ================================
-KKT-based forward and reverse differentiators for the sparse QP path.
+KKT-based forward and reverse differentiators for the sparse path.
 
 Key design decisions:
   - Primal matrices (P, A, G) are stored and manipulated as
@@ -35,10 +35,10 @@ from scipy.sparse import (
 )
 
 from jaxsparrow._solver_sparse._types import (
-    SparseQPIngredientsNP,
-    SparseQPIngredientsTangentsNP,
+    SparseIngredientsNP,
+    SparseIngredientsTangentsNP,
 )
-from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
 from jaxsparrow._options_common import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
@@ -127,11 +127,11 @@ def create_sparse_kkt_differentiator_fwd(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
 ):
-    """Create a forward-mode (JVP) KKT differentiator for sparse QPs.
+    """Create a forward-mode (JVP) KKT differentiator for sparse problems.
 
-    Builds a closure that, given a QP solution and input tangents,
+    Builds a closure that, given a solution and input tangents,
     computes the Jacobian-vector product of the KKT optimality
     conditions. The KKT system is assembled and solved entirely in
     sparse form (CSC + configurable sparse solver); only the RHS is
@@ -155,7 +155,7 @@ def create_sparse_kkt_differentiator_fwd(
             linear solver). Defaults are filled for missing keys.
             The ``"linear_solver"`` key selects the sparse backend;
             see ``get_sparse_linear_solver`` for available choices.
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Zero tangents are pre-allocated for
             each fixed element, both unbatched and with a leading
@@ -165,19 +165,20 @@ def create_sparse_kkt_differentiator_fwd(
         A callable with signature::
 
             kkt_differentiator_fwd(
-                sol_np: QPOutputNP,
-                dyn_primals_np: SparseQPIngredientsNP,
-                dyn_tangents_np: SparseQPIngredientsTangentsNP,
+                sol_np: SolverOutputNP,
+                dyn_primals_np: SparseIngredientsNP,
+                dyn_tangents_np: SparseIngredientsTangentsNP,
                 batch_size: int,
-            ) -> tuple[QPDiffOutNP, dict[str, float]]
+            ) -> tuple[SolverDiffOutNP, dict[str, float]]
 
-        where ``QPDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
+        where ``SolverDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
         contains per-phase timing keys: ``"build_system"`` and
         ``"lin_solve"``.
     """
 
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
+    _bool_dtype = options_parsed["bool_dtype"]
 
     # ── Choose sparse linear solver ──────────────────────────────────
     _solve_linear_system = get_sparse_linear_solver(options_parsed["linear_solver"])
@@ -217,25 +218,47 @@ def create_sparse_kkt_differentiator_fwd(
     # ─────────────────────────────────────────────────────────────────
 
     def kkt_differentiator_fwd(
-        sol_np: QPOutputNP,
-        dyn_primals_np: SparseQPIngredientsNP,
-        dyn_tangents_np: SparseQPIngredientsTangentsNP,
+        sol_np: SolverOutputNP,
+        dyn_primals_np: SparseIngredientsNP,
+        dyn_tangents_np: SparseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]:
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
 
 
         t: dict[str, float] = {}
         start = perf_counter()
         batched = batch_size > 0
 
-        x_np, lam_np, mu_np, active_np = sol_np
+        x_np, lam_np, mu_np = sol_np
 
         # ── Merge primals (keep sparse matrices as-is) ───────────────
         # Dynamic primals arrive as CSC (from the converter).
         # Fixed primals are already stored as CSC / ndarray.
-        prob = {**_fixed, **dyn_primals_np}
+        prob : SparseIngredientsNP = cast(SparseIngredientsNP, {**_fixed, **dyn_primals_np})
 
-        P_sp = _ensure_csc(prob["P"], _dtype)
+        assert "P" in prob and "q" in prob, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
+        P_sp = prob["P"] #_ensure_csc(prob["P"], _dtype)
+
+        # ── Compute active set ───────────────────────────────────────
+        if n_ineq > 0:
+            assert "G" in prob and "h" in prob, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            G_sp = prob["G"] #_ensure_csc(prob["G"], _dtype)
+            Gx = np.asarray(G_sp @ x_np).ravel()
+            h_vec = np.asarray(prob["h"], dtype=_dtype).ravel()
+            active_np: Bool[ndarray, "n_ineq"] = np.asarray(
+                np.abs(Gx - h_vec) <= options_parsed["cst_tol"],
+                dtype=_bool_dtype,
+            ).reshape(-1)
+        else:
+            G_sp = _sparse_zeros(0, n_var, _dtype)
+            active_np = np.empty(0, dtype=_bool_dtype)
 
         # ── Merge tangents (always dense) ────────────────────────────
         # The tangent converter already provides dense ndarray from
@@ -252,9 +275,12 @@ def create_sparse_kkt_differentiator_fwd(
         # Then K = [[P, H^T], [H, 0]] assembled via sp_bmat.
         H_parts = []
         if n_eq > 0:
-            H_parts.append(_ensure_csc(prob["A"], _dtype))
+            assert "A" in prob and "b" in prob, (
+                "A and b are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            H_parts.append(prob["A"]) #_ensure_csc(prob["A"], _dtype)
         if n_ineq > 0 and n_active > 0:
-            G_sp = _ensure_csc(prob["G"], _dtype)
             H_parts.append(G_sp[active_np, :])
 
         if H_parts:
@@ -325,7 +351,7 @@ def create_sparse_kkt_differentiator_fwd(
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
 
     return kkt_differentiator_fwd
 
@@ -339,12 +365,12 @@ def create_sparse_kkt_differentiator_rev(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
     dynamic_keys: Optional[Sequence[str]] = None,
 ):
-    """Create a reverse-mode (VJP) KKT differentiator for sparse QPs.
+    """Create a reverse-mode (VJP) KKT differentiator for sparse problems.
 
-    Builds a closure that, given a QP solution and output cotangents,
+    Builds a closure that, given a solution and output cotangents,
     computes parameter gradients by solving the adjoint KKT system.
     The KKT matrix is assembled in sparse form (CSC + configurable
     sparse solver); the RHS is built from the cotangent vectors.
@@ -369,7 +395,7 @@ def create_sparse_kkt_differentiator_rev(
             linear solver). Defaults are filled for missing keys.
             The ``"linear_solver"`` key selects the sparse backend;
             see ``get_sparse_linear_solver`` for available choices.
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Sparse matrices are stored as CSC; dense vectors are
             squeezed and cast. Sparsity patterns are extracted at
             construction for gradient computation.
@@ -381,7 +407,7 @@ def create_sparse_kkt_differentiator_rev(
         A callable with signature::
 
             kkt_differentiator_rev(
-                dyn_primals_np: SparseQPIngredientsNP,
+                dyn_primals_np: SparseIngredientsNP,
                 x_np: ndarray, lam_np: ndarray, mu_np: ndarray,
                 g_x: ndarray, g_lam: ndarray, g_mu: ndarray,
                 batch_size: int,
@@ -446,7 +472,7 @@ def create_sparse_kkt_differentiator_rev(
     # ─────────────────────────────────────────────────────────────────
 
     def kkt_differentiator_rev(
-        dyn_primals_np: SparseQPIngredientsNP,
+        dyn_primals_np: SparseIngredientsNP,
         x_np: ndarray,
         lam_np: ndarray,
         mu_np: ndarray,
@@ -460,8 +486,14 @@ def create_sparse_kkt_differentiator_rev(
         batched = batch_size > 0
 
         # ── Merge primals (keep sparse) ──────────────────────────────
-        prob = {**_fixed, **dyn_primals_np}
-        P_sp = _ensure_csc(prob["P"], _dtype)
+        prob: SparseIngredientsNP = cast(SparseIngredientsNP, {**_fixed, **dyn_primals_np})
+
+        assert "P" in prob and "q" in prob, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
+        P_sp = prob["P"] #_ensure_csc(prob["P"], _dtype)
 
         # ── Cache sparsity indices for dynamic keys on first call ────
         # (Dynamic matrices may not be in fixed_elements, so we lazily
@@ -478,7 +510,11 @@ def create_sparse_kkt_differentiator_rev(
         # G @ x works directly on CSC; result is a dense vector.
         start = perf_counter()
         if n_ineq > 0:
-            G_sp = _ensure_csc(prob["G"], _dtype)
+            assert "G" in prob and "h" in prob, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            G_sp = prob["G"] #_ensure_csc(prob["G"], _dtype)
             Gx = np.asarray(G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=_dtype).ravel()
             active_np: Bool[ndarray, "n_ineq"] = np.asarray(
@@ -497,7 +533,11 @@ def create_sparse_kkt_differentiator_rev(
 
         H_parts = []
         if n_eq > 0:
-            H_parts.append(_ensure_csc(prob["A"], _dtype))
+            assert "A" in prob and "b" in prob, ( 
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            H_parts.append(prob["A"]) #_ensure_csc(prob["A"], _dtype)
         if n_ineq > 0 and n_active > 0:
             H_parts.append(G_sp[active_np, :])
 

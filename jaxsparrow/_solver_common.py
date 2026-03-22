@@ -1,7 +1,7 @@
 """
 solver_common.py
 ================
-Shared scaffolding for dense and sparse differentiable QP solvers.
+Shared scaffolding for dense and sparse differentiable solvers.
 
 This module contains all format-agnostic logic:
   - JAX custom_jvp / custom_vjp registration and pure_callback wiring
@@ -12,7 +12,7 @@ This module contains all format-agnostic logic:
 
 Dense and sparse entry-points call :func:`build_solver` and supply:
   1. A *converter* that turns JAX arrays into the numpy representation
-     expected by the underlying QP solver (dense ndarray or scipy CSC).
+     expected by the underlying solver (dense ndarray or scipy CSC).
   2. Pre-built solver / differentiator callables.
   3. The ``_vjp_bwd_shapes`` dict (because the sparse path returns
      gradients w.r.t. nonzero values, not full matrices).
@@ -31,26 +31,26 @@ from numpy import ndarray
 
 from jaxsparrow._utils._printing_utils import fmt_times
 from jaxsparrow._utils._timing_utils import TimingRecorder
-from jaxsparrow._types_common import QPDiffOut, QPOutput
+from jaxsparrow._types_common import SolverDiffOut, SolverOutput
 from jaxsparrow._options_common import ConstructorOptionsFull
 from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 from jax.experimental.sparse import BCOO
 from scipy.sparse import csc_matrix
 
 
-QPInputNP = Union[ndarray, csc_matrix]
-QPInput = Union[jax.Array, BCOO]
+SolverInputNP = Union[ndarray, csc_matrix]
+SolverInput = Union[jax.Array, BCOO]
 
 
 # ── Constants ────────────────────────────────────────────────────────
  
-# Expected ndim for each QP ingredient (unbatched).
+# Expected ndim for each ingredient (unbatched).
 # Used to detect batching in the JVP / VJP paths.
 EXPECTED_NDIM: dict[str, int] = {
     "P": 2, "q": 1, "A": 2, "b": 1, "G": 2, "h": 1,
 }
  
-# Expected shapes for each QP ingredient (unbatched), given problem dims.
+# Expected shapes for each ingredient (unbatched), given problem dims.
 def make_expected_shapes(
     n_var: int, n_eq: int, n_ineq: int
 ) -> dict[str, tuple[int, ...]]:
@@ -69,7 +69,7 @@ def make_expected_shapes(
 def compute_required_keys(
     n_eq: int, n_ineq: int
 ) -> tuple[str, ...]:
-    """Return the tuple of QP ingredient names required by the problem."""
+    """Return the tuple of ingredient names required by the problem."""
     keys: tuple[str, ...] = ("P", "q")
     if n_eq > 0:
         keys += ("A", "b")
@@ -119,7 +119,7 @@ def build_solver(
     # Fixed elements (dense ndarray or sparse — opaque to us)
     fixed_keys_set: set[str],
     # Pre-built numpy solver & differentiators
-    solve_qp_numpy: Callable[..., Any],
+    solver_numpy: Callable[..., Any],
     diff_forward_numpy: Callable[..., Any],
     diff_reverse_numpy: Callable[..., Any],
     # Converters
@@ -132,7 +132,7 @@ def build_solver(
     fd_check: FiniteDifferenceRecorder | None = None,
 ):
     """
-    Wire up JAX custom differentiation rules around a numpy QP solver.
+    Wire up JAX custom differentiation rules around a numpy solver.
 
     Returns the public ``solver`` callable (with ``.timings`` and
     ``.fd_check`` attributes).
@@ -183,7 +183,7 @@ def build_solver(
     _warmstart: list[Optional[ndarray]] = [None]
 
     # ── Aliases for readability ──────────────────────────────────────
-    _solve_qp_numpy = solve_qp_numpy
+    _solver_numpy = solver_numpy
     _diff_forward_numpy = diff_forward_numpy
     _diff_reverse_numpy = diff_reverse_numpy
     _primal_conv = primal_converter
@@ -194,7 +194,7 @@ def build_solver(
     # BASE SOLVER CALLBACK
     # =================================================================
 
-    def _solve_qp(*dynamic_vals: jax.Array) -> QPOutput:
+    def _solver(*dynamic_vals: jax.Array) -> SolverOutput:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -212,7 +212,7 @@ def build_solver(
             missing = _dynamic_keys_set - set(dynamic_np)
             if missing:
                 raise ValueError(
-                    f"Missing QP ingredients: {sorted(missing)}. "
+                    f"Missing ingredients: {sorted(missing)}. "
                     f"Provide them either via fixed_elements at setup "
                     f"or at call time."
                 )
@@ -223,14 +223,13 @@ def build_solver(
             prob_np["warmstart"] = _warmstart[0]
 
         # ── Solve ────────────────────────────────────────────────────
-        sol_np, t_solve = _solve_qp_numpy(**prob_np)
-        x_np, lam_np, mu_np, _ = sol_np
-        _warmstart[0] = None
+        sol_np, t_solve = _solver_numpy(**prob_np)
+        x_np, lam_np, mu_np = sol_np
         t.update(t_solve)
 
         # ── Return JAX arrays ────────────────────────────────────────
         start = perf_counter()
-        result = cast(QPOutput, {
+        result = cast(SolverOutput, {
             "x":   jnp.array(x_np, dtype=_dtype),
             "lam": jnp.array(lam_np, dtype=_dtype),
             "mu":  jnp.array(mu_np, dtype=_dtype),
@@ -238,8 +237,8 @@ def build_solver(
         t["convert_to_jax"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
-        logger.info(f"_solve_qp | {fmt_times(t)}")
-        _timings.record("_solve_qp", t)
+        logger.info(f"_solver | {fmt_times(t)}")
+        _timings.record("_solver", t)
 
         return result
 
@@ -247,7 +246,7 @@ def build_solver(
     # FORWARD DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_forward(*args) -> tuple[QPDiffOut, QPOutput]:
+    def _diff_forward(*args) -> tuple[SolverDiffOut, SolverOutput]:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -268,7 +267,7 @@ def build_solver(
             missing = _dynamic_keys_set - set(dyn_primals_np)
             if missing:
                 raise ValueError(
-                    f"Missing QP ingredients: {sorted(missing)}."
+                    f"Missing ingredients: {sorted(missing)}."
                 )
 
         # ── Warmstart ────────────────────────────────────────────────
@@ -277,16 +276,13 @@ def build_solver(
             prob_np["warmstart"] = _warmstart[0]
 
         # ── Solve ────────────────────────────────────────────────────
-        sol_np, t_solve = _solve_qp_numpy(**prob_np)
-        x_np, lam_np, mu_np, _ = sol_np
+        sol_np, t_solve = _solver_numpy(**prob_np)
+        x_np, lam_np, mu_np = sol_np
         _warmstart[0] = None
         t.update(t_solve)
 
         # ── Convert tangents ─────────────────────────────────────────
         
-        dyn_tangents_np_unconverted: dict[str, Any] = {
-            k:v for k, v in zip(_dynamic_keys, dyn_tangent_vals)
-        }
         start = perf_counter()
         dyn_tangents_np: dict[str, Any] = {
             k: _tangent_conv(k, v, _dtype)
@@ -320,19 +316,19 @@ def build_solver(
         # ── Build JAX results ────────────────────────────────────────
         start = perf_counter()
         if batch_size > 0:
-            res: QPOutput = {
+            res: SolverOutput = {
                 "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
                 "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
                 "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
             }
         else:
-            res: QPOutput = {
+            res: SolverOutput = {
                 "x":   jnp.array(x_np, dtype=_dtype),
                 "lam": jnp.array(lam_np, dtype=_dtype),
                 "mu":  jnp.array(mu_np, dtype=_dtype),
             }
 
-        diff_out: QPDiffOut = {
+        diff_out: SolverDiffOut = {
             "x":   jnp.array(dx_np, dtype=_dtype),
             "lam": jnp.array(dlam_np, dtype=_dtype),
             "mu":  jnp.array(dmu_np, dtype=_dtype),
@@ -436,7 +432,7 @@ def build_solver(
     ):
         if not batched:
             _fd_check.check_jvp(
-                solve_fn=_solve_qp_numpy,
+                solve_fn=_solver_numpy,
                 dyn_primals_np=dyn_primals_np,
                 dyn_tangents_np=dyn_tangents_np,
                 dx_analytic=dx_np,
@@ -447,7 +443,7 @@ def build_solver(
         else:
             first_tangents = {k: v[0] for k, v in dyn_tangents_np.items()}
             _fd_check.check_jvp(
-                solve_fn=_solve_qp_numpy,
+                solve_fn=_solver_numpy,
                 dyn_primals_np=dyn_primals_np,
                 dyn_tangents_np=first_tangents,
                 dx_analytic=dx_np[0] if dx_np.ndim > 1 else dx_np,
@@ -462,7 +458,7 @@ def build_solver(
     ):
         if not batched:
             _fd_check.check_vjp(
-                solve_fn=_solve_qp_numpy,
+                solve_fn=_solver_numpy,
                 dyn_primals_np=prob_np,
                 grads_analytic=grads_np,
                 g_x=g_x, g_lam=g_lam, g_mu=g_mu,
@@ -470,7 +466,7 @@ def build_solver(
             )
         else:
             _fd_check.check_vjp(
-                solve_fn=_solve_qp_numpy,
+                solve_fn=_solver_numpy,
                 dyn_primals_np=prob_np,
                 grads_analytic={k: v[0] for k, v in grads_np.items()},
                 g_x=g_x[0], g_lam=g_lam[0], g_mu=g_mu[0],
@@ -485,15 +481,15 @@ def build_solver(
 
     @custom_jvp
     def _solver_dynamic_jvp_mode(
-        *dynamic_vals: QPInput,
-    ) -> QPOutput:
-        return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
+        *dynamic_vals: SolverInput,
+    ) -> SolverOutput:
+        return pure_callback(_solver, _fwd_shapes, *dynamic_vals)
 
     @_solver_dynamic_jvp_mode.defjvp
     def _solver_dynamic_jvp_rule(
-        primals: tuple[QPInput, ...],
-        tangents: tuple[QPInput, ...],
-    ) -> tuple[QPOutput, QPDiffOut]:
+        primals: tuple[SolverInput, ...],
+        tangents: tuple[SolverInput, ...],
+    ) -> tuple[SolverOutput, SolverDiffOut]:
         tangents_out, res = pure_callback(
             _diff_forward,
             _jvp_shapes,
@@ -506,17 +502,17 @@ def build_solver(
     # ── VJP path ─────────────────────────────────────────────────────
     @custom_vjp
     def _solver_dynamic_vjp_mode(
-        *dynamic_vals: QPInput,
-    ) -> QPOutput:
+        *dynamic_vals: SolverInput,
+    ) -> SolverOutput:
         return pure_callback(
-            _solve_qp, _fwd_shapes, *dynamic_vals,
+            _solver, _fwd_shapes, *dynamic_vals,
         )
 
     def _solver_dynamic_vjp_fwd(
-        *dynamic_vals: QPInput,
-    ) -> tuple[QPOutput, tuple[QPInput, ...]]:
+        *dynamic_vals: SolverInput,
+    ) -> tuple[SolverOutput, tuple[SolverInput, ...]]:
         result = pure_callback(
-            _solve_qp, _fwd_shapes, *dynamic_vals,
+            _solver, _fwd_shapes, *dynamic_vals,
         )
         x = result["x"]
         lam = result["lam"]
@@ -525,9 +521,9 @@ def build_solver(
         return result, residuals
 
     def _solver_dynamic_vjp_bwd(
-        residuals: tuple[QPInput, ...],
+        residuals: tuple[SolverInput, ...],
         g: dict[str, jax.Array],
-    ) -> tuple[QPInput, ...]:
+    ) -> tuple[SolverInput, ...]:
         g_x   = g["x"]
         g_lam = g["lam"]
         g_mu  = g["mu"]
@@ -567,17 +563,17 @@ def build_solver(
 
     def solver(
         warmstart: Optional[jax.Array] = None,
-        **runtime: QPInput,
-    ) -> QPOutput:
+        **runtime: SolverInput,
+    ) -> SolverOutput:
         """
-        Solve a QP and return (x, lam, mu).
+        Solve a convex problem and return (x, lam, mu).
 
         Parameters
         ----------
         warmstart : optional JAX array
             Initial guess for the primal variable *x*.
-        **runtime : QPInput
-            Dynamic QP ingredients (those not fixed at setup).
+        **runtime : SolverInput
+            Dynamic ingredients (those not fixed at setup).
         """
 
         # Store warmstart in mutable closure slot
@@ -598,12 +594,12 @@ def build_solver(
             missing = _dynamic_keys_set - set(runtime)
             if missing:
                 raise ValueError(
-                    f"Missing QP ingredients: {sorted(missing)}. "
+                    f"Missing ingredients: {sorted(missing)}. "
                     f"Provide them at call time (these are not fixed)."
                 )
 
         # Pass only dynamic values through the traced path
-        dynamic_vals: tuple[QPInput, ...] = tuple(
+        dynamic_vals: tuple[SolverInput, ...] = tuple(
             runtime[k] for k in _dynamic_keys
         )
 

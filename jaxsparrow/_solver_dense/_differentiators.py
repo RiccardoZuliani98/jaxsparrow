@@ -1,7 +1,7 @@
 """
 solver_dense/differentiators.py
 ===============================
-KKT-based forward and reverse differentiators for the dense QP path.
+KKT-based forward and reverse differentiators for the dense path.
 
 Key design decisions:
   - All matrices (P, A, G) and vectors (q, b, h) are stored and
@@ -21,11 +21,10 @@ from jaxtyping import Float, Bool
 import numpy as np
 from typing import cast, Optional, Protocol, Sequence
 from jaxsparrow._solver_dense._types import (
-    DenseQPIngredientsNP, 
-    DenseQPIngredientsNPFull, 
-    DenseQPIngredientsTangentsNP
+    DenseIngredientsNP,
+    DenseIngredientsTangentsNP
 )
-from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
 from jaxsparrow._solver_dense._options import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
@@ -40,11 +39,11 @@ class DenseKKTDifferentiatorFwd(Protocol):
 
     def __call__(
         self,
-        sol_np: QPOutputNP,
-        dyn_primals_np: DenseQPIngredientsNP,
-        dyn_tangents_np: DenseQPIngredientsTangentsNP,
+        sol_np: SolverOutputNP,
+        dyn_primals_np: DenseIngredientsNP,
+        dyn_tangents_np: DenseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]: ...
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]: ...
 
 
 class DenseKKTDifferentiatorRev(Protocol):
@@ -53,7 +52,7 @@ class DenseKKTDifferentiatorRev(Protocol):
 
     def __call__(
         self,
-        dyn_primals_np: DenseQPIngredientsNP,
+        dyn_primals_np: DenseIngredientsNP,
         x_np: ndarray,
         lam_np: ndarray,
         mu_np: ndarray,
@@ -73,11 +72,11 @@ def create_dense_kkt_differentiator_fwd(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[DenseQPIngredientsNP] = None,
+    fixed_elements: Optional[DenseIngredientsNP] = None,
 ) -> DenseKKTDifferentiatorFwd:
-    """Create a forward-mode (JVP) KKT differentiator for dense QPs.
+    """Create a forward-mode (JVP) KKT differentiator for dense problems.
 
-    Builds a closure that, given a QP solution and input tangents,
+    Builds a closure that, given a solution and input tangents,
     computes the Jacobian-vector product of the KKT optimality
     conditions. The KKT system is assembled and solved entirely in
     dense form using a configurable linear solver backend.
@@ -102,7 +101,7 @@ def create_dense_kkt_differentiator_fwd(
             see :func:`get_dense_linear_solver` for available choices
             (including sparse backends accessible via automatic
             conversion).
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Stored as dense arrays. Zero tangents are pre-allocated
             for each fixed element, both unbatched and with a leading
             unit batch dimension for the batched path.
@@ -111,13 +110,13 @@ def create_dense_kkt_differentiator_fwd(
         A callable with signature::
 
             kkt_differentiator_fwd(
-                sol_np: QPOutputNP,
-                dyn_primals_np: DenseQPIngredientsNP,
-                dyn_tangents_np: DenseQPIngredientsTangentsNP,
+                sol_np: SolverOutputNP,
+                dyn_primals_np: DenseIngredientsNP,
+                dyn_tangents_np: DenseIngredientsTangentsNP,
                 batch_size: int,
-            ) -> tuple[QPDiffOutNP, dict[str, float]]
+            ) -> tuple[SolverDiffOutNP, dict[str, float]]
 
-        where ``QPDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
+        where ``SolverDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
         contains per-phase timing keys: ``"build_system"`` and
         ``"lin_solve"``.
     """
@@ -125,23 +124,24 @@ def create_dense_kkt_differentiator_fwd(
     # parse options
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype: type[np.floating] = options_parsed["dtype"]
+    _bool_dtype: type[np.bool_] = options_parsed["bool_dtype"]
     
     # store fixed elements, this can happen in two situations:
     # 1. if the user passes some fixed elements in "fixed_elements" argument,
     # 2. if there are no equality / inequality constraints
-    _fixed: DenseQPIngredientsNP = {}
-    _d_fixed: DenseQPIngredientsTangentsNP = {}
+    _fixed: DenseIngredientsNP = {}
+    _d_fixed: DenseIngredientsTangentsNP = {}
 
     if fixed_elements is not None:
 
         # store fixed elements
-        _fixed = cast(DenseQPIngredientsNP, {
+        _fixed = cast(DenseIngredientsNP, {
             k: np.array(v, dtype=_dtype).squeeze() 
             for k, v in fixed_elements.items()
         })
 
         # store zero differentials for such elements
-        _d_fixed = cast(DenseQPIngredientsTangentsNP, {
+        _d_fixed = cast(DenseIngredientsTangentsNP, {
             k: np.zeros_like(v, dtype=_dtype).squeeze() 
             for k, v in fixed_elements.items()
         })
@@ -159,7 +159,7 @@ def create_dense_kkt_differentiator_fwd(
         _d_fixed["h"] = np.zeros((0,), dtype=_dtype)
 
     # store a batched version where the first dimension is expanded
-    _d_fixed_batched = cast(DenseQPIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
+    _d_fixed_batched = cast(DenseIngredientsTangentsNP, {k: np.expand_dims(v, 0) for k,v in _d_fixed.items()}) #type: ignore
     
     # choose linear system solver
     #TODO: I want to pass more options here, for example sparsity of system or more options
@@ -170,22 +170,21 @@ def create_dense_kkt_differentiator_fwd(
 
 
     def kkt_differentiator_fwd(
-        sol_np: QPOutputNP,
-        dyn_primals_np: DenseQPIngredientsNP,
-        dyn_tangents_np: DenseQPIngredientsTangentsNP,
+        sol_np: SolverOutputNP,
+        dyn_primals_np: DenseIngredientsNP,
+        dyn_tangents_np: DenseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]:
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
         """Compute the forward-mode (JVP) through KKT conditions.
 
-        Assembles the KKT system from the current QP solution and
+        Assembles the KKT system from the current solution and
         solves for output tangents given input tangents.
 
         Args:
-            sol_np: QP solution tuple ``(x, lam, mu, active)`` where
+            sol_np: solution tuple ``(x, lam, mu)`` where
                 ``x`` is the primal optimum, ``lam`` the inequality
-                multipliers, ``mu`` the equality multipliers, and
-                ``active`` a boolean mask over inequality constraints.
-            dyn_primals_np: Dynamic (non-fixed) QP parameter values.
+                multipliers, and ``mu`` the equality multipliers.
+            dyn_primals_np: Dynamic (non-fixed) parameter values.
             dyn_tangents_np: Tangent vectors for the dynamic
                 parameters. Unbatched: each value has the same shape
                 as the corresponding primal. Batched: each value has
@@ -211,8 +210,7 @@ def create_dense_kkt_differentiator_fwd(
         x_np: ndarray
         lam_np: ndarray
         mu_np: ndarray
-        active_np: Bool[ndarray, "n_ineq"]
-        x_np, lam_np, mu_np, active_np = sol_np
+        x_np, lam_np, mu_np = sol_np
 
 
         # ── Parse ingredients ────────────────────────────────────────
@@ -225,8 +223,23 @@ def create_dense_kkt_differentiator_fwd(
         else:
             d_np = cast(dict[str, ndarray], _d_fixed | dyn_tangents_np)
 
-        # merge qp ingredients too
-        prob_np: DenseQPIngredientsNPFull = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
+        # merge ingredients too
+        prob_np: DenseIngredientsNP = cast(DenseIngredientsNP, _fixed | dyn_primals_np)
+
+        # ── Compute active set ───────────────────────────────────────
+        active_np: Bool[ndarray, "n_ineq"]
+        if n_ineq > 0:
+            assert "G" in prob_np and "h" in prob_np, (
+                    "G and h are required when n_ineq > 0. "
+                    "Provide them via fixed_elements or as dynamic arguments."
+                )
+            active_np = np.asarray(
+                np.abs(prob_np["G"] @ x_np - prob_np["h"])
+                <= options_parsed["cst_tol"],
+                dtype=_bool_dtype,
+            ).reshape(-1)
+        else:
+            active_np = np.empty(0, dtype=_bool_dtype)
 
         # count active constraints
         n_active: int = int(np.sum(active_np))
@@ -234,12 +247,21 @@ def create_dense_kkt_differentiator_fwd(
 
         # ── Build LHS ────────────────────────────────────────────────
 
+        assert "P" in prob_np and "q" in prob_np, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
+            assert "A" in prob_np and "b" in prob_np, ( 
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             H_parts.append(prob_np["A"])
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(prob_np["G"][active_np, :])
+            H_parts.append(prob_np["G"][active_np, :]) #type: ignore
 
         H_np: Float[ndarray, "nh nv"]
         if H_parts:
@@ -356,7 +378,7 @@ def create_dense_kkt_differentiator_fwd(
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
     
     return kkt_differentiator_fwd
 
@@ -370,12 +392,12 @@ def create_dense_kkt_differentiator_rev(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[DenseQPIngredientsNP] = None,
+    fixed_elements: Optional[DenseIngredientsNP] = None,
     dynamic_keys: Optional[Sequence[str]] = None,
 ) -> DenseKKTDifferentiatorRev:
-    """Create a reverse-mode (VJP) KKT differentiator for dense QPs.
+    """Create a reverse-mode (VJP) KKT differentiator for dense problems.
 
-    Builds a closure that, given a QP solution and output cotangents,
+    Builds a closure that, given a solution and output cotangents,
     computes parameter gradients by solving the adjoint KKT system.
     The KKT matrix is assembled and solved in dense form using a
     configurable linear solver backend.
@@ -394,7 +416,7 @@ def create_dense_kkt_differentiator_rev(
             see :func:`get_dense_linear_solver` for available choices
             (including sparse backends accessible via automatic
             conversion).
-        fixed_elements: QP ingredients that are constant across calls.
+        fixed_elements: ingredients that are constant across calls.
             Stored as dense arrays. Fixed parameters are excluded
             from gradient computation.
         dynamic_keys: If provided, gradients are computed only for
@@ -405,7 +427,7 @@ def create_dense_kkt_differentiator_rev(
         A callable with signature::
 
             kkt_differentiator_rev(
-                dyn_primals_np: DenseQPIngredientsNP,
+                dyn_primals_np: DenseIngredientsNP,
                 x_np: ndarray, lam_np: ndarray, mu_np: ndarray,
                 g_x: ndarray, g_lam: ndarray, g_mu: ndarray,
                 batch_size: int,
@@ -423,11 +445,11 @@ def create_dense_kkt_differentiator_rev(
     _bool_dtype: type[np.bool_] = options_parsed["bool_dtype"]
         
     # store fixed elements when the user passes a "fixed_elements" argument
-    _fixed: DenseQPIngredientsNP = {}
+    _fixed: DenseIngredientsNP = {}
 
     # store fixed elements
     if fixed_elements is not None:
-        _fixed = cast(DenseQPIngredientsNP, {
+        _fixed = cast(DenseIngredientsNP, {
             k: np.array(v, dtype=_dtype).squeeze() 
             for k, v in fixed_elements.items()
         })
@@ -457,7 +479,7 @@ def create_dense_kkt_differentiator_rev(
         return _dyn_set is None or key in _dyn_set
 
     def kkt_differentiator_rev(
-        dyn_primals_np: DenseQPIngredientsNP,
+        dyn_primals_np: DenseIngredientsNP,
         x_np: ndarray,
         lam_np: ndarray,
         mu_np: ndarray,
@@ -468,12 +490,12 @@ def create_dense_kkt_differentiator_rev(
     ) -> tuple[dict[str, ndarray], dict[str, float]]:
         """Compute the reverse-mode (VJP) through KKT conditions.
 
-        Assembles the adjoint KKT system from the current QP solution
+        Assembles the adjoint KKT system from the current solution
         and cotangent vectors, solves for adjoint variables, then
         computes parameter cotangents via outer products.
 
         Args:
-            dyn_primals_np: Dynamic (non-fixed) QP parameter values.
+            dyn_primals_np: Dynamic (non-fixed) parameter values.
             x_np: Primal solution, shape ``(n_var,)``.
             lam_np: Inequality multipliers, shape ``(n_ineq,)``.
             mu_np: Equality multipliers, shape ``(n_eq,)``.
@@ -504,12 +526,16 @@ def create_dense_kkt_differentiator_rev(
 
         start: float = perf_counter()
 
-        # merge qp ingredients too
-        prob_np: DenseQPIngredientsNPFull = cast(DenseQPIngredientsNPFull, _fixed | dyn_primals_np)
+        # merge ingredients too
+        prob_np: DenseIngredientsNP = cast(DenseIngredientsNP, _fixed | dyn_primals_np)
 
         # get active constraints
         active_np: Bool[ndarray, "n_ineq"]
         if n_ineq > 0:
+            assert "G" in prob_np and "h" in prob_np, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             active_np = np.asarray(
                 np.abs(prob_np["G"] @ x_np - prob_np["h"])
                 <= options_parsed["cst_tol"],
@@ -525,14 +551,23 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Build LHS ────────────────────────────────────────────────
 
+        assert "P" in prob_np and "q" in prob_np, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
         start = perf_counter()
 
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
+            assert "A" in prob_np and "b" in prob_np, (
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             H_parts.append(prob_np["A"])
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(prob_np["G"][active_np, :])
+            H_parts.append(prob_np["G"][active_np, :]) #type: ignore
 
         H_np: Float[ndarray, "nh nv"]
         if H_parts:
@@ -691,7 +726,7 @@ def create_dense_kkt_differentiator_rev(
 
             if n_ineq > 0:
                 if _need("G"):
-                    g_G = np.zeros_like(prob_np["G"])
+                    g_G = np.zeros_like(prob_np["G"]) #type: ignore
                     if n_active > 0:
                         g_G[active_np, :] = -(
                             np.outer(lam_np[active_np], v_x)

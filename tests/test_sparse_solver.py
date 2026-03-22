@@ -26,7 +26,7 @@ from typing import cast
 jax.config.update("jax_enable_x64", True)
 
 from jaxsparrow._solver_sparse._setup import setup_sparse_solver
-from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 
 
 # =====================================================================
@@ -47,7 +47,7 @@ def _sparsity_dict(**kwargs):
 _MATRIX_KEYS = frozenset({"P", "A", "G"})
 
 
-def _to_fixed(elements: dict) -> SparseQPIngredientsNP:
+def _to_fixed(elements: dict) -> SparseIngredientsNP:
     """Convert a dict of JAX arrays to the format expected by fixed_elements.
 
     Sparse matrix keys (P, A, G) → scipy.sparse.csc_matrix
@@ -59,7 +59,7 @@ def _to_fixed(elements: dict) -> SparseQPIngredientsNP:
             out[k] = csc_matrix(np.asarray(v))
         else:
             out[k] = np.asarray(v)
-    return cast(SparseQPIngredientsNP,out)
+    return cast(SparseIngredientsNP,out)
 
 
 # =====================================================================

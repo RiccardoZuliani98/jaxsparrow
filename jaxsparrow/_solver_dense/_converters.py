@@ -2,7 +2,7 @@
 solver_dense/_converters.py
 ===========================
 Conversion functions between JAX arrays and NumPy arrays for the
-dense QP pipeline.
+dense pipeline.
 
 These are called by the generic solver/differentiator framework to
 move data across the JAX ↔ NumPy boundary:

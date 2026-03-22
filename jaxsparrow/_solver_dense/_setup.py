@@ -1,7 +1,7 @@
 """
 setup_dense_solver.py
 =====================
-Dense differentiable QP solver.
+Dense differentiable solver.
 
 Thin wrapper around :func:`solver_common.build_solver` that supplies
 dense-specific converters and creates the dense numpy solver /
@@ -19,14 +19,15 @@ from jaxsparrow._options_common import (
     ConstructorOptions,
     ConstructorOptionsFull,
 )
-from jaxsparrow._solver_dense._solvers import create_dense_qp_solver, DenseQPSolverFn
+from jaxsparrow._solver_dense._solvers import create_dense_solver
+from jaxsparrow._types_common import SolverOutputNP, Solver
 from jaxsparrow._solver_dense._differentiators import (
     create_dense_kkt_differentiator_fwd,
     create_dense_kkt_differentiator_rev,
     DenseKKTDifferentiatorFwd,
     DenseKKTDifferentiatorRev,
 )
-from jaxsparrow._solver_dense._types import DenseQPIngredientsNP
+from jaxsparrow._solver_dense._types import DenseIngredientsNP
 from jaxsparrow._solver_common import (
     build_solver, 
     make_expected_shapes, 
@@ -48,13 +49,13 @@ def setup_dense_solver(
     n_var: int,
     n_ineq: int = 0,
     n_eq: int = 0,
-    fixed_elements: Optional[DenseQPIngredientsNP] = None,
+    fixed_elements: Optional[DenseIngredientsNP] = None,
     options: Optional[ConstructorOptions] = None,
 ):
-    """Set up a differentiable dense QP solver.
+    """Set up a differentiable dense solver.
 
     This is the main entry point for creating a JAX-compatible dense
-    QP solver with forward- and reverse-mode differentiation. It
+    solver with forward- and reverse-mode differentiation. It
     validates inputs, creates the NumPy-level solver and KKT
     differentiator closures, and delegates to
     :func:`build_solver` to produce the final JAX custom-VJP
@@ -69,7 +70,7 @@ def setup_dense_solver(
             Zero if there are no inequality constraints.
         n_eq: Number of equality constraints (``A x = b``).
             Zero if there are no equality constraints.
-        fixed_elements: QP parameters that are constant across calls
+        fixed_elements: parameters that are constant across calls
             and should not be differentiated through. Keys are any
             subset of ``{"P", "q", "A", "b", "G", "h"}``. Fixed
             parameters are baked into the solver/differentiator
@@ -81,7 +82,7 @@ def setup_dense_solver(
             ``DEFAULT_CONSTRUCTOR_OPTIONS``.
 
     Returns:
-        A JAX-compatible callable that solves the QP and supports
+        A JAX-compatible callable that solves the and supports
         automatic differentiation. See :func:`build_solver` for
         the full return type and calling convention.
 
@@ -113,9 +114,9 @@ def setup_dense_solver(
     dynamic_keys: Sequence[str] = compute_dynamic_keys(required_keys, fixed_keys_set)
 
     # ── Create numpy solver ──────────────────────────────────────────
-    solve_qp_numpy: DenseQPSolverFn
+    solver_numpy: Solver
     if options_parsed["solver_type"] == "qp_solvers":
-        solve_qp_numpy = create_dense_qp_solver(
+        solver_numpy = create_dense_solver(
             n_eq=n_eq,
             n_ineq=n_ineq,
             options=options_parsed["solver"],
@@ -150,7 +151,7 @@ def setup_dense_solver(
  
     # ── Log ──────────────────────────────────────────────────────────
     logger.info(
-        f"Setting up dense QP with {n_var} variables, "
+        f"Setting up dense solver with {n_var} variables, "
         f"{n_eq} equalities, {n_ineq} inequalities."
     )
     logger.info(f"Fixed variables: {fixed_keys_set or 'none'}")
@@ -163,7 +164,7 @@ def setup_dense_solver(
         n_eq=n_eq,
         options_parsed=options_parsed,
         fixed_keys_set=fixed_keys_set,
-        solve_qp_numpy=solve_qp_numpy,
+        solver_numpy=solver_numpy,
         diff_forward_numpy=diff_forward_numpy,
         diff_reverse_numpy=diff_reverse_numpy,
         primal_converter=dense_primal_converter,

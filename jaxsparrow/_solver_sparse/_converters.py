@@ -1,7 +1,7 @@
 """
 solver_sparse/converters.py
 ===========================
-JAX ↔ numpy conversions for the sparse QP path.
+JAX ↔ numpy conversions for the sparse path.
 
 *Primals*:  BCOO matrices → scipy CSC;  dense vectors → ndarray.
 *Tangents*: BCOO tangent → dense ndarray (the KKT RHS needs dense ops).

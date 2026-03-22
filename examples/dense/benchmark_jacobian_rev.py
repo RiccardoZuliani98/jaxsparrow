@@ -55,6 +55,7 @@ Aeq = jnp.hstack((Ax, Au))
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
+@jit
 def beq(x_init):
     return jnp.hstack((x_init, jnp.zeros(N * nx)))
 
