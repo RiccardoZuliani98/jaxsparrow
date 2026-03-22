@@ -12,8 +12,8 @@ Creates a closure that solves a convex problem in standard-form::
 using a pluggable :class:`SolverBackend`.  The backend owns
 dtype casting and storage of fixed elements, merging of fixed and
 dynamic parameters, and ``qpsolvers.Problem`` construction.  The
-closure extracts the primal/dual solution, computes the active-set
-mask, and returns timing information.
+closure extracts the primal/dual solution, and returns timing 
+information.
 """
 
 from time import perf_counter
@@ -23,51 +23,13 @@ from jaxtyping import Float, Bool
 from typing import cast, Optional, Protocol
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
+from jaxsparrow._solver_dense._options import (
+    DEFAULT_SOLVER_OPTIONS, 
+    DenseSolverOptionsFull
+)
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
 from jaxsparrow._types_common import SolverOutputNP
 from jaxsparrow._utils._solver_backends import SolverBackend, get_backend
-
-
-# ── Solver options ───────────────────────────────────────────────────
-
-class DenseSolverOptions(SolverOptions):
-    """Partial solver options for the dense path.
-
-    All keys are optional; missing keys are filled from
-    ``DEFAULT_SOLVER_OPTIONS`` via :func:`parse_options`.
-    """
-    solver_name:    str
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-
-
-class DenseSolverOptionsFull(SolverOptions, total=True):
-    """Complete solver options for the dense path.
-
-    All keys are required. This is the resolved form after merging
-    user-supplied options with defaults.
-
-    Attributes:
-        solver_name: Backend solver name passed to ``qpsolvers``
-            (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
-        dtype: NumPy floating-point dtype for all arrays.
-        bool_dtype: NumPy boolean dtype for active-set masks.
-        cst_tol: Tolerance for determining active inequality
-            constraints (``|G x - h| <= cst_tol``).
-    """
-    solver_name:    str
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-
-
-DEFAULT_SOLVER_OPTIONS: DenseSolverOptionsFull = {
-    "solver_name": "piqp",
-    "dtype": np.float64,
-    "bool_dtype": np.bool_,
-    "cst_tol": 1e-8,
-}
 
 
 # ── Callable protocol for the returned closure ──────────────────────
@@ -91,8 +53,8 @@ def create_dense_solver(
     Builds a callable that passes dynamic parameters to a
     :class:`DenseSolverBackend`, which merges them with the stored
     fixed elements, solves the problem, and returns the raw solution.
-    The closure then extracts the primal/dual variables, computes
-    the active-set mask, and returns timing information.
+    The closure then extracts the primal/dual variables, and returns 
+    timing information.
 
     The solver lifecycle is delegated to a :class:`DenseSolverBackend`:
 
@@ -124,16 +86,14 @@ def create_dense_solver(
             solver_numpy(**kwargs: ndarray)
                 -> tuple[SolverOutputNP, dict[str, float]]
 
-        where ``SolverOutputNP`` is ``(x, lam, mu, active)`` and
+        where ``SolverOutputNP`` is ``(x, lam, mu)`` and
         the dict contains per-phase timing keys: ``"setup.*"``
-        (from construction), ``"solve.*"``, ``"retrieve"``,
-        ``"active_set"``.
+        (from construction), ``"solve.*"``, ``"retrieve"``.
     """
 
     # parse options
     options_parsed: DenseSolverOptionsFull = parse_options(options, DEFAULT_SOLVER_OPTIONS)
     _dtype: type[np.floating] = options_parsed["dtype"]
-    _bool_dtype: type[np.bool_] = options_parsed["bool_dtype"]
 
     # ── Create backend ───────────────────────────────────────────────
 
@@ -170,7 +130,7 @@ def create_dense_solver(
 
         Returns:
             A tuple ``(sol, timing)`` where ``sol`` is
-            ``(x, lam, mu, active)`` and ``timing`` maps phase
+            ``(x, lam, mu)`` and ``timing`` maps phase
             names to elapsed seconds.
 
         Raises:
@@ -208,26 +168,6 @@ def create_dense_solver(
             lam = np.empty(0, dtype=_dtype)
         t["retrieve"] = perf_counter() - start
 
-        # ── Active set ───────────────────────────────────────────────
-        start = perf_counter()
-        active: Bool[ndarray, "n_ineq"]
-        if n_ineq > 0:
-            # G and h must have been provided (fixed or runtime);
-            # look up from kwargs first, falling back to fixed_elements.
-            merged_G = kwargs.get("G", (fixed_elements or {}).get("G"))
-            merged_h = kwargs.get("h", (fixed_elements or {}).get("h"))
-            assert merged_G is not None and merged_h is not None, (
-                "G and h are required when n_ineq > 0"
-            )
-            active = np.asarray(
-                np.abs(merged_G @ x_raw - merged_h)
-                <= options_parsed["cst_tol"],
-                dtype=_bool_dtype,
-            ).reshape(-1)
-        else:
-            active = np.empty(0, dtype=_bool_dtype)
-        t["active_set"] = perf_counter() - start
-
-        return cast(SolverOutputNP, (x, lam, mu, active)), t
+        return cast(SolverOutputNP, (x, lam, mu)), t
 
     return solver_numpy

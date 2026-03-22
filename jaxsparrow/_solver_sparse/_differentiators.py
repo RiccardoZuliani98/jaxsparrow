@@ -533,7 +533,7 @@ def create_sparse_kkt_differentiator_rev(
 
         H_parts = []
         if n_eq > 0:
-            assert "A" in prob and "b" not in prob_np, ( 
+            assert "A" in prob and "b" in prob, ( 
                 "A and b are required when n_eq > 0. " \
                 "Provide them via fixed_elements or as dynamic arguments."
             )

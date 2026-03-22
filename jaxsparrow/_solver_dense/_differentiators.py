@@ -255,7 +255,7 @@ def create_dense_kkt_differentiator_fwd(
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
-            assert "A" in prob_np and "b" not in prob_np, ( 
+            assert "A" in prob_np and "b" in prob_np, ( 
                 "A and b are required when n_eq > 0. " \
                 "Provide them via fixed_elements or as dynamic arguments."
             )

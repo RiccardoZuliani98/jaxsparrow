@@ -15,6 +15,7 @@ via automatic conversion (``"splu"``, ``"spilu"``, ``"spsolve"``,
 """
 
 from jaxsparrow._options_common import DifferentiatorOptions
+from jaxsparrow._options_common import SolverOptions
 import numpy as np
 from typing import Literal
 
@@ -53,10 +54,41 @@ class DenseKKTfwdOptionsFull(DifferentiatorOptions, total=True):
                         "sp_lstsq", "lstsq", "solve"
                     ]
 
-
 DEFAULT_DIFF_OPTIONS: DenseKKTfwdOptionsFull = {
     "dtype": np.float64,
     "bool_dtype": np.bool_,
     "cst_tol": 1e-8,
     "linear_solver": "solve",
+}
+
+# ── Solver options ───────────────────────────────────────────────────
+
+class DenseSolverOptions(SolverOptions):
+    """Partial solver options for the dense path.
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_SOLVER_OPTIONS`` via :func:`parse_options`.
+    """
+    solver_name:    str
+    dtype:          type[np.floating]
+
+
+class DenseSolverOptionsFull(SolverOptions, total=True):
+    """Complete solver options for the dense path.
+
+    All keys are required. This is the resolved form after merging
+    user-supplied options with defaults.
+
+    Attributes:
+        solver_name: Backend solver name passed to ``qpsolvers``
+            (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
+        dtype: NumPy floating-point dtype for all arrays.
+    """
+    solver_name:    str
+    dtype:          type[np.floating]
+
+
+DEFAULT_SOLVER_OPTIONS: DenseSolverOptionsFull = {
+    "solver_name": "piqp",
+    "dtype": np.float64,
 }
