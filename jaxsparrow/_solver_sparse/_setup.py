@@ -175,13 +175,13 @@ def setup_sparse_solver(
     # ── Build converters ─────────────────────────────────────────────
     primal_converter  = make_sparse_primal_converter(sparsity_info)
     tangent_converter = make_sparse_tangent_converter(sparsity_info)
-    if options_parsed["differentiator_type"] == "kkt_fwd":
+    if options_parsed["diff_mode"] == "fwd":
         grad_to_jax   = make_sparse_grad_to_jax_forward(sparsity_info)
-    elif options_parsed["differentiator_type"] == "kkt_rev":
+    elif options_parsed["diff_mode"] == "rev":
         grad_to_jax   = make_sparse_grad_to_jax_reverse(sparsity_info)
     else:
-        raise ValueError("Allowed differentiator keys are 'kkt_rev' and 'kkt_fwd', "
-            f"got {options_parsed['differentiator_type']}")
+        raise ValueError("Allowed differentiator keys are 'rev' and 'fwd', "
+            f"got {options_parsed['diff_mode']}")
 
     # ── VJP backward shapes ──────────────────────────────────────────
     # For sparse keys: gradient is w.r.t. the nnz nonzero values (1-D).
@@ -202,33 +202,30 @@ def setup_sparse_solver(
             )
 
     # ── Create numpy solver ──────────────────────────────────────────
-    #TODO: this should be improved. qp_solvers should be an option inside
-    # create_sparse_solver
-    if options_parsed["solver_type"] == "qp_solvers":
-        solver_numpy = create_sparse_solver(
-            n_eq=n_eq,
-            n_ineq=n_ineq,
-            options=options_parsed["solver"],
-            fixed_elements=fixed_elements,
-        )
-    else:
-        raise ValueError("Only qp_solvers is available as 'solver_type'")
+    solver_numpy = create_sparse_solver(
+        n_eq=n_eq,
+        n_ineq=n_ineq,
+        options=options_parsed["solver"],
+        fixed_elements=fixed_elements,
+    )
 
     # ── Create differentiators ───────────────────────────────────────
-    if options_parsed["differentiator_type"] in ("kkt_fwd", "kkt_rev"):
-        diff_forward_numpy = create_sparse_kkt_differentiator_fwd(
-            n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
-            options=options_parsed["differentiator"],
-            fixed_elements=fixed_elements,
-        )
-        diff_reverse_numpy = create_sparse_kkt_differentiator_rev(
-            n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
-            options=options_parsed["differentiator"],
-            fixed_elements=fixed_elements,
-            dynamic_keys=dynamic_keys
-        )
-    else:
-        raise ValueError("Only differentiator available is 'kkt'")
+    # Both forward and reverse differentiators are created regardless
+    # of differentiator_type — the type only controls which JAX
+    # differentiation rule is registered (custom_jvp vs custom_vjp).
+    # The backend algorithm is selected by the "backend" key inside
+    # options_parsed["differentiator"] (default: "kkt").
+    diff_forward_numpy = create_sparse_kkt_differentiator_fwd(
+        n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
+        options=options_parsed["differentiator"],
+        fixed_elements=fixed_elements,
+    )
+    diff_reverse_numpy = create_sparse_kkt_differentiator_rev(
+        n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
+        options=options_parsed["differentiator"],
+        fixed_elements=fixed_elements,
+        dynamic_keys=dynamic_keys,
+    )
 
     # ── FD recorder ──────────────────────────────────────────────────
     fd_check = FiniteDifferenceRecorder(

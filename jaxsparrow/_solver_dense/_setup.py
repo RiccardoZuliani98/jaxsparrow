@@ -20,12 +20,10 @@ from jaxsparrow._options_common import (
     ConstructorOptionsFull,
 )
 from jaxsparrow._solver_dense._solvers import create_dense_solver
-from jaxsparrow._types_common import SolverOutputNP, Solver
+from jaxsparrow._types_common import Solver
 from jaxsparrow._solver_dense._differentiators import (
     create_dense_kkt_differentiator_fwd,
-    create_dense_kkt_differentiator_rev,
-    DenseKKTDifferentiatorFwd,
-    DenseKKTDifferentiatorRev,
+    create_dense_kkt_differentiator_rev
 )
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
 from jaxsparrow._solver_common import (
@@ -115,33 +113,25 @@ def setup_dense_solver(
 
     # ── Create numpy solver ──────────────────────────────────────────
     solver_numpy: Solver
-    if options_parsed["solver_type"] == "qp_solvers":
-        solver_numpy = create_dense_solver(
-            n_eq=n_eq,
-            n_ineq=n_ineq,
-            options=options_parsed["solver"],
-            fixed_elements=fixed_elements,
-        )
-    else:
-        raise ValueError("Only qp_solvers is available as 'solver_type'")
+    solver_numpy = create_dense_solver(
+        n_eq=n_eq,
+        n_ineq=n_ineq,
+        options=options_parsed["solver"],
+        fixed_elements=fixed_elements,
+    )
  
     # ── Create differentiators ───────────────────────────────────────
-    diff_forward_numpy: DenseKKTDifferentiatorFwd
-    diff_reverse_numpy: DenseKKTDifferentiatorRev
-    if options_parsed["differentiator_type"] in ("kkt_fwd", "kkt_rev"):
-        diff_forward_numpy = create_dense_kkt_differentiator_fwd(
-            n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
-            options=options_parsed["differentiator"],
-            fixed_elements=fixed_elements,
-        )
-        diff_reverse_numpy = create_dense_kkt_differentiator_rev(
-            n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
-            options=options_parsed["differentiator"],
-            fixed_elements=fixed_elements,
-            dynamic_keys=dynamic_keys,
-        )
-    else:
-        raise ValueError("Only differentiator available is 'kkt'")
+    diff_forward_numpy = create_dense_kkt_differentiator_fwd(
+        n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
+        options=options_parsed["differentiator"],
+        fixed_elements=fixed_elements,
+    )
+    diff_reverse_numpy = create_dense_kkt_differentiator_rev(
+        n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
+        options=options_parsed["differentiator"],
+        fixed_elements=fixed_elements,
+        dynamic_keys=dynamic_keys,
+    )
  
     # ── FD recorder ──────────────────────────────────────────────────
     fd_check: FiniteDifferenceRecorder = FiniteDifferenceRecorder(

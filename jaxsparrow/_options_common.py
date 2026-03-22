@@ -1,4 +1,4 @@
-from typing import TypedDict, Final
+from typing import TypedDict, Final, Literal
 import jax.numpy as jnp
 
 class SolverOptions(TypedDict, total=False):
@@ -7,8 +7,7 @@ class DifferentiatorOptions(TypedDict, total=False):
     pass
 
 class ConstructorOptions(TypedDict, total=False):
-    differentiator_type: str
-    solver_type: str
+    diff_mode: Literal["fwd","rev"]
     solver: SolverOptions | dict
     differentiator: DifferentiatorOptions | dict
     dtype: jnp.dtype
@@ -19,8 +18,7 @@ class ConstructorOptions(TypedDict, total=False):
     fd_eps: float
 
 class ConstructorOptionsFull(TypedDict):
-    differentiator_type: str
-    solver_type: str
+    diff_mode: Literal["fwd","rev"]
     solver:SolverOptions
     differentiator:DifferentiatorOptions
     dtype: jnp.dtype
@@ -31,8 +29,7 @@ class ConstructorOptionsFull(TypedDict):
     fd_eps: float
 
 DEFAULT_CONSTRUCTOR_OPTIONS: Final[ConstructorOptionsFull] = {
-    "differentiator_type": "kkt_fwd",
-    "solver_type": "qp_solvers",
+    "diff_mode": "fwd",
     "solver":{},
     "differentiator":{},
     "dtype": jnp.float64,

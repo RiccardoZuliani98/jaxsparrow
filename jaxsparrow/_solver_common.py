@@ -31,7 +31,11 @@ from numpy import ndarray
 
 from jaxsparrow._utils._printing_utils import fmt_times
 from jaxsparrow._utils._timing_utils import TimingRecorder
-from jaxsparrow._types_common import SolverDiffOut, SolverOutput
+from jaxsparrow._types_common import (
+    SolverDiffOutFwd,
+    SolverDiffOutRev,
+    SolverOutput
+)
 from jaxsparrow._options_common import ConstructorOptionsFull
 from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 from jax.experimental.sparse import BCOO
@@ -246,7 +250,7 @@ def build_solver(
     # FORWARD DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_forward(*args) -> tuple[SolverDiffOut, SolverOutput]:
+    def _diff_forward(*args) -> tuple[SolverDiffOutFwd, SolverOutput]:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -328,7 +332,7 @@ def build_solver(
                 "mu":  jnp.array(mu_np, dtype=_dtype),
             }
 
-        diff_out: SolverDiffOut = {
+        diff_out: SolverDiffOutFwd = {
             "x":   jnp.array(dx_np, dtype=_dtype),
             "lam": jnp.array(dlam_np, dtype=_dtype),
             "mu":  jnp.array(dmu_np, dtype=_dtype),
@@ -352,7 +356,7 @@ def build_solver(
     # REVERSE DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_reverse(*args) -> dict[str, Array]:
+    def _diff_reverse(*args) -> SolverDiffOutRev:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -420,7 +424,7 @@ def build_solver(
                 g_x, g_lam, g_mu, batched,
             )
 
-        return grads
+        return cast(SolverDiffOutRev, grads)
 
     # =================================================================
     # FD CHECK HELPERS
@@ -489,7 +493,7 @@ def build_solver(
     def _solver_dynamic_jvp_rule(
         primals: tuple[SolverInput, ...],
         tangents: tuple[SolverInput, ...],
-    ) -> tuple[SolverOutput, SolverDiffOut]:
+    ) -> tuple[SolverOutput, SolverDiffOutFwd]:
         tangents_out, res = pure_callback(
             _diff_forward,
             _jvp_shapes,
@@ -519,7 +523,7 @@ def build_solver(
         mu = result["mu"]
         residuals = (*dynamic_vals, x, lam, mu)
         return result, residuals
-
+    
     def _solver_dynamic_vjp_bwd(
         residuals: tuple[SolverInput, ...],
         g: dict[str, jax.Array],
@@ -544,15 +548,15 @@ def build_solver(
     # SELECT DIFFERENTIATOR MODE
     # =================================================================
 
-    _diff_name = options_parsed["differentiator_type"]
-    if _diff_name == "kkt_fwd":
+    _diff_name = options_parsed["diff_mode"]
+    if _diff_name == "fwd":
         _solver_dynamic = _solver_dynamic_jvp_mode
-    elif _diff_name == "kkt_rev":
+    elif _diff_name == "rev":
         _solver_dynamic = _solver_dynamic_vjp_mode
     else:
         raise ValueError(
             f"Unknown differentiator: {_diff_name!r}. "
-            f"Supported: 'kkt_fwd' (JVP), 'kkt_rev' (VJP)."
+            f"Supported: 'fwd' (JVP), 'rev' (VJP)."
         )
 
     logger.info(f"Differentiator: {_diff_name}")

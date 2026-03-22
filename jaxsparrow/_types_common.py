@@ -13,12 +13,22 @@ class SolverOutputNP(NamedTuple):
     lam:    Float[ndarray, "n_ineq"]    |  Float[ndarray, "n_batch n_ineq"]
     mu:     Float[ndarray, "n_eq"]      |  Float[ndarray, "n_batch n_eq"]
 
-class SolverDiffOut(TypedDict):
+class SolverDiffOutFwd(TypedDict):
     x   : Float[Array, "n_var"]         |  Float[Array, "n_batch n_var"] 
     lam : Float[Array, "n_ineq"]        |  Float[Array, "n_batch n_ineq"]
     mu  : Float[Array, "n_eq"]          |  Float[Array, "n_batch n_eq"]
 
-class SolverDiffOutNP(NamedTuple):
+class SolverDiffOutFwdNP(NamedTuple):
+    x_np   : Float[ndarray, "n_var"]    |  Float[ndarray, "n_batch n_var"] 
+    lam_np : Float[ndarray, "n_ineq"]   |  Float[ndarray, "n_batch n_ineq"]
+    mu_np  : Float[ndarray, "n_eq"]     |  Float[ndarray, "n_batch n_eq"]
+
+class SolverDiffOutRev(TypedDict):
+    x   : Float[Array, "n_var"]         |  Float[Array, "n_batch n_var"] 
+    lam : Float[Array, "n_ineq"]        |  Float[Array, "n_batch n_ineq"]
+    mu  : Float[Array, "n_eq"]          |  Float[Array, "n_batch n_eq"]
+
+class SolverDiffOutRevNP(NamedTuple):
     x_np   : Float[ndarray, "n_var"]    |  Float[ndarray, "n_batch n_var"] 
     lam_np : Float[ndarray, "n_ineq"]   |  Float[ndarray, "n_batch n_ineq"]
     mu_np  : Float[ndarray, "n_eq"]     |  Float[ndarray, "n_batch n_eq"]

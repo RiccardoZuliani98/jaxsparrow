@@ -29,7 +29,7 @@ CL_HORIZON = 100
 N_RUNS = 10
 
 # ── MPC problem data ────────────────────────────────────────────────
-horizon = 30
+horizon = 300
 
 A_dyn = jnp.array([[1, 1], [0, 1]])
 B_dyn = jnp.array([[0], [1]])
@@ -73,6 +73,7 @@ Aeq = BCOO.fromdense(Aeq_dense)
 
 _b_template = jnp.zeros((N+1)*nx)
 
+@jit
 def beq(x_init):
     return _b_template.at[:nx].set(x_init)
 
