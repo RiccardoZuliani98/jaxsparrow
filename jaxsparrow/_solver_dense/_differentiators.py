@@ -25,7 +25,7 @@ from jaxsparrow._solver_dense._types import (
     DenseQPIngredientsNPFull, 
     DenseQPIngredientsTangentsNP
 )
-from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
 from jaxsparrow._solver_dense._options import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
@@ -40,11 +40,11 @@ class DenseKKTDifferentiatorFwd(Protocol):
 
     def __call__(
         self,
-        sol_np: QPOutputNP,
+        sol_np: SolverOutputNP,
         dyn_primals_np: DenseQPIngredientsNP,
         dyn_tangents_np: DenseQPIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]: ...
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]: ...
 
 
 class DenseKKTDifferentiatorRev(Protocol):
@@ -111,13 +111,13 @@ def create_dense_kkt_differentiator_fwd(
         A callable with signature::
 
             kkt_differentiator_fwd(
-                sol_np: QPOutputNP,
+                sol_np: SolverOutputNP,
                 dyn_primals_np: DenseQPIngredientsNP,
                 dyn_tangents_np: DenseQPIngredientsTangentsNP,
                 batch_size: int,
-            ) -> tuple[QPDiffOutNP, dict[str, float]]
+            ) -> tuple[SolverDiffOutNP, dict[str, float]]
 
-        where ``QPDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
+        where ``SolverDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
         contains per-phase timing keys: ``"build_system"`` and
         ``"lin_solve"``.
     """
@@ -170,11 +170,11 @@ def create_dense_kkt_differentiator_fwd(
 
 
     def kkt_differentiator_fwd(
-        sol_np: QPOutputNP,
+        sol_np: SolverOutputNP,
         dyn_primals_np: DenseQPIngredientsNP,
         dyn_tangents_np: DenseQPIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]:
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
         """Compute the forward-mode (JVP) through KKT conditions.
 
         Assembles the KKT system from the current QP solution and
@@ -356,7 +356,7 @@ def create_dense_kkt_differentiator_fwd(
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
     
     return kkt_differentiator_fwd
 

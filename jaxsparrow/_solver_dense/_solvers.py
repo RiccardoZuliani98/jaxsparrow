@@ -24,7 +24,7 @@ from typing import cast, Optional, Protocol
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
 from jaxsparrow._solver_dense._types import DenseQPIngredientsNP, DenseQPIngredientsNPFull
-from jaxsparrow._types_common import QPOutputNP
+from jaxsparrow._types_common import SolverOutputNP
 
 
 # ── Solver options ───────────────────────────────────────────────────
@@ -74,7 +74,7 @@ DEFAULT_SOLVER_OPTIONS: DenseQPSolverOptionsFull = {
 class DenseQPSolverFn(Protocol):
     """Signature of the closure returned by :func:`create_dense_qp_solver`."""
 
-    def __call__(self, **kwargs: ndarray) -> tuple[QPOutputNP, dict[str, float]]: ...
+    def __call__(self, **kwargs: ndarray) -> tuple[SolverOutputNP, dict[str, float]]: ...
 
 
 # ── Factory ──────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ def create_dense_qp_solver(
     else:
         _fixed = {}
 
-    def solve_qp_numpy(**kwargs: ndarray) -> tuple[QPOutputNP, dict[str, float]]:
+    def solve_qp_numpy(**kwargs: ndarray) -> tuple[SolverOutputNP, dict[str, float]]:
         """Solve a dense QP and return the primal/dual solution.
 
         Args:
@@ -208,6 +208,6 @@ def create_dense_qp_solver(
             active = np.empty(0, dtype=_bool_dtype)
         t["active_set"] = perf_counter() - start
 
-        return cast(QPOutputNP, (x, lam, mu, active)), t
+        return cast(SolverOutputNP, (x, lam, mu, active)), t
 
     return solve_qp_numpy

@@ -31,7 +31,7 @@ from numpy import ndarray
 
 from jaxsparrow._utils._printing_utils import fmt_times
 from jaxsparrow._utils._timing_utils import TimingRecorder
-from jaxsparrow._types_common import QPDiffOut, QPOutput
+from jaxsparrow._types_common import SolverDiffOut, SolverOutput
 from jaxsparrow._options_common import ConstructorOptionsFull
 from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 from jax.experimental.sparse import BCOO
@@ -194,7 +194,7 @@ def build_solver(
     # BASE SOLVER CALLBACK
     # =================================================================
 
-    def _solve_qp(*dynamic_vals: jax.Array) -> QPOutput:
+    def _solve_qp(*dynamic_vals: jax.Array) -> SolverOutput:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -230,7 +230,7 @@ def build_solver(
 
         # ── Return JAX arrays ────────────────────────────────────────
         start = perf_counter()
-        result = cast(QPOutput, {
+        result = cast(SolverOutput, {
             "x":   jnp.array(x_np, dtype=_dtype),
             "lam": jnp.array(lam_np, dtype=_dtype),
             "mu":  jnp.array(mu_np, dtype=_dtype),
@@ -247,7 +247,7 @@ def build_solver(
     # FORWARD DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_forward(*args) -> tuple[QPDiffOut, QPOutput]:
+    def _diff_forward(*args) -> tuple[SolverDiffOut, SolverOutput]:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -320,19 +320,19 @@ def build_solver(
         # ── Build JAX results ────────────────────────────────────────
         start = perf_counter()
         if batch_size > 0:
-            res: QPOutput = {
+            res: SolverOutput = {
                 "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
                 "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
                 "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
             }
         else:
-            res: QPOutput = {
+            res: SolverOutput = {
                 "x":   jnp.array(x_np, dtype=_dtype),
                 "lam": jnp.array(lam_np, dtype=_dtype),
                 "mu":  jnp.array(mu_np, dtype=_dtype),
             }
 
-        diff_out: QPDiffOut = {
+        diff_out: SolverDiffOut = {
             "x":   jnp.array(dx_np, dtype=_dtype),
             "lam": jnp.array(dlam_np, dtype=_dtype),
             "mu":  jnp.array(dmu_np, dtype=_dtype),
@@ -486,14 +486,14 @@ def build_solver(
     @custom_jvp
     def _solver_dynamic_jvp_mode(
         *dynamic_vals: QPInput,
-    ) -> QPOutput:
+    ) -> SolverOutput:
         return pure_callback(_solve_qp, _fwd_shapes, *dynamic_vals)
 
     @_solver_dynamic_jvp_mode.defjvp
     def _solver_dynamic_jvp_rule(
         primals: tuple[QPInput, ...],
         tangents: tuple[QPInput, ...],
-    ) -> tuple[QPOutput, QPDiffOut]:
+    ) -> tuple[SolverOutput, SolverDiffOut]:
         tangents_out, res = pure_callback(
             _diff_forward,
             _jvp_shapes,
@@ -507,14 +507,14 @@ def build_solver(
     @custom_vjp
     def _solver_dynamic_vjp_mode(
         *dynamic_vals: QPInput,
-    ) -> QPOutput:
+    ) -> SolverOutput:
         return pure_callback(
             _solve_qp, _fwd_shapes, *dynamic_vals,
         )
 
     def _solver_dynamic_vjp_fwd(
         *dynamic_vals: QPInput,
-    ) -> tuple[QPOutput, tuple[QPInput, ...]]:
+    ) -> tuple[SolverOutput, tuple[QPInput, ...]]:
         result = pure_callback(
             _solve_qp, _fwd_shapes, *dynamic_vals,
         )
@@ -568,7 +568,7 @@ def build_solver(
     def solver(
         warmstart: Optional[jax.Array] = None,
         **runtime: QPInput,
-    ) -> QPOutput:
+    ) -> SolverOutput:
         """
         Solve a QP and return (x, lam, mu).
 

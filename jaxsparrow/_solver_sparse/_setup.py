@@ -43,7 +43,7 @@ from jaxsparrow._solver_sparse._differentiators import (
     create_sparse_kkt_differentiator_fwd,
     create_sparse_kkt_differentiator_rev,
 )
-from jaxsparrow._solver_sparse._types import SparseQPIngredientsNP
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._solver_sparse._converters import (
     build_sparsity_info,
     is_sparse_key,
@@ -66,10 +66,10 @@ def setup_sparse_solver(
     n_ineq: int = 0,
     n_eq: int = 0,
     sparsity_patterns: Optional[dict[str, BCOO]] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
     options: Optional[ConstructorOptions] = None,
 ):
-    """Build a differentiable sparse QP solver.
+    """Build a differentiable sparse solver.
 
     Constructs a JAX-traceable callable that solves quadratic programs
     of the form::
@@ -99,7 +99,7 @@ def setup_sparse_solver(
             optionally ``"A"``, ``"G"``) to a ``BCOO`` matrix encoding
             the sparsity structure. Required for every matrix key that
             is dynamic (not in *fixed_elements*).
-        fixed_elements: QP ingredients that remain constant across
+        fixed_elements: ingredients that remain constant across
             calls. Matrices should be ``scipy.sparse.csc_matrix``;
             vectors should be ``ndarray``. Keys present here are
             excluded from JAX's traced path and should not be passed

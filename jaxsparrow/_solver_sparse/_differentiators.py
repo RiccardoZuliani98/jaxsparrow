@@ -35,10 +35,10 @@ from scipy.sparse import (
 )
 
 from jaxsparrow._solver_sparse._types import (
-    SparseQPIngredientsNP,
-    SparseQPIngredientsTangentsNP,
+    SparseIngredientsNP,
+    SparseIngredientsTangentsNP,
 )
-from jaxsparrow._types_common import QPOutputNP, QPDiffOutNP
+from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
 from jaxsparrow._options_common import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
@@ -127,7 +127,7 @@ def create_sparse_kkt_differentiator_fwd(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
 ):
     """Create a forward-mode (JVP) KKT differentiator for sparse QPs.
 
@@ -165,13 +165,13 @@ def create_sparse_kkt_differentiator_fwd(
         A callable with signature::
 
             kkt_differentiator_fwd(
-                sol_np: QPOutputNP,
-                dyn_primals_np: SparseQPIngredientsNP,
-                dyn_tangents_np: SparseQPIngredientsTangentsNP,
+                sol_np: SolverOutputNP,
+                dyn_primals_np: SparseIngredientsNP,
+                dyn_tangents_np: SparseIngredientsTangentsNP,
                 batch_size: int,
-            ) -> tuple[QPDiffOutNP, dict[str, float]]
+            ) -> tuple[SolverDiffOutNP, dict[str, float]]
 
-        where ``QPDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
+        where ``SolverDiffOutNP`` is ``(dx, dlam, dmu)`` and the dict
         contains per-phase timing keys: ``"build_system"`` and
         ``"lin_solve"``.
     """
@@ -217,11 +217,11 @@ def create_sparse_kkt_differentiator_fwd(
     # ─────────────────────────────────────────────────────────────────
 
     def kkt_differentiator_fwd(
-        sol_np: QPOutputNP,
-        dyn_primals_np: SparseQPIngredientsNP,
-        dyn_tangents_np: SparseQPIngredientsTangentsNP,
+        sol_np: SolverOutputNP,
+        dyn_primals_np: SparseIngredientsNP,
+        dyn_tangents_np: SparseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[QPDiffOutNP, dict[str, float]]:
+    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
 
 
         t: dict[str, float] = {}
@@ -325,7 +325,7 @@ def create_sparse_kkt_differentiator_fwd(
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(QPDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
 
     return kkt_differentiator_fwd
 
@@ -339,7 +339,7 @@ def create_sparse_kkt_differentiator_rev(
     n_eq: int,
     n_ineq: int,
     options: Optional[DifferentiatorOptions] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
+    fixed_elements: Optional[SparseIngredientsNP] = None,
     dynamic_keys: Optional[Sequence[str]] = None,
 ):
     """Create a reverse-mode (VJP) KKT differentiator for sparse QPs.
@@ -381,7 +381,7 @@ def create_sparse_kkt_differentiator_rev(
         A callable with signature::
 
             kkt_differentiator_rev(
-                dyn_primals_np: SparseQPIngredientsNP,
+                dyn_primals_np: SparseIngredientsNP,
                 x_np: ndarray, lam_np: ndarray, mu_np: ndarray,
                 g_x: ndarray, g_lam: ndarray, g_mu: ndarray,
                 batch_size: int,
@@ -446,7 +446,7 @@ def create_sparse_kkt_differentiator_rev(
     # ─────────────────────────────────────────────────────────────────
 
     def kkt_differentiator_rev(
-        dyn_primals_np: SparseQPIngredientsNP,
+        dyn_primals_np: SparseIngredientsNP,
         x_np: ndarray,
         lam_np: ndarray,
         mu_np: ndarray,

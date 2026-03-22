@@ -192,10 +192,6 @@ class QpSolversBackend(SolverBackend):
         """Build a ``qpsolvers.Problem`` and solve it."""
         t: dict[str, float] = {}
 
-        # ── Verify that minimal ingredients are present ──────────────
-        if self._P is None or self._q is None:
-            raise ValueError("P and q must be provided.")
-
         # ── Build Problem ────────────────────────────────────────────
         start: float = perf_counter()
         prob: Problem = Problem(

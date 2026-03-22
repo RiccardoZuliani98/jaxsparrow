@@ -140,11 +140,8 @@ def create_sparse_qp_solver(
         # Propagate setup timings
         t.update({f"setup.{k}": v for k, v in _setup_timing.items()})
 
-        # ── Extract warmstart ────────────────────────────────────────
-        warmstart: Optional[ndarray] = kwargs.pop("warmstart", None)
-
         # ── Solve ────────────────────────────────────────────────────
-        x_raw, y_raw, z_raw, solve_timing = backend.solve(warmstart=warmstart)
+        x_raw, y_raw, z_raw, solve_timing = backend.solve(**kwargs)
         t.update({f"solve.{k}": v for k, v in solve_timing.items()})
 
         assert x_raw is not None, "QP solver failed to find a solution."
