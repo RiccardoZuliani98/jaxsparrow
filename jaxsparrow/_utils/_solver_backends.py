@@ -37,10 +37,8 @@ from scipy.sparse import csc_matrix, issparse
 
 from qpsolvers import Problem, solve_problem
 
-from jaxsparrow._solver_sparse._types import (
-    SparseIngredientsNP,
-    SparseIngredientsNP
-)
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP
+from jaxsparrow._solver_dense._types import DenseIngredientsNP
 
 
 # =====================================================================
@@ -69,7 +67,7 @@ class SolverBackend(ABC):
     @abstractmethod
     def setup(
         self,
-        fixed_elements: Optional[SparseIngredientsNP] = None,
+        fixed_elements: Optional[SparseIngredientsNP | DenseIngredientsNP] = None,
     ) -> dict[str, float]:
         """One-time structural initialization.
 
