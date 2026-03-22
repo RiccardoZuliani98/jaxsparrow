@@ -100,6 +100,7 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         self,
         fixed_elements: Optional[DenseIngredientsNP] = None,
         dynamic_keys: Optional[Sequence[str]] = None,
+        sparsity_info: Optional[SparsityInfo] = None,
     ) -> dict[str, float]:
         """Store fixed elements, zero tangents, and dynamic key set.
 
@@ -108,6 +109,8 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
                 Must have correct dimensions for the problem.
             dynamic_keys: Keys for which gradients are needed.
                 None means gradients for all keys.
+            sparsity_info: needed for compatibility with sparse
+                backend
 
         Returns:
             Timing dictionary with "setup" key.
