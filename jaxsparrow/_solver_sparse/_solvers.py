@@ -156,9 +156,16 @@ def create_sparse_qp_solver(
         # ── Extract warmstart before merging ─────────────────────────
         warmstart: Optional[ndarray] = kwargs.pop("warmstart", None)
 
-        # ── Merge fixed + dynamic ────────────────────────────────────
-        merged: SparseQPIngredientsNPFull = cast(
-            SparseQPIngredientsNPFull, {**_fixed, **kwargs}
+        # Merge fixed + runtime
+        merged = cast(SparseQPIngredientsNPFull, {**_fixed, **kwargs})
+
+        prob = Problem(
+            P=merged["P"],
+            q=np.atleast_1d(merged["q"]),
+            A=merged.get("A"),
+            b=np.atleast_1d(merged.get("b")),
+            G=merged.get("G"),
+            h=np.atleast_1d(merged.get("h")),
         )
 
         # ── Setup (first call only) ─────────────────────────────────

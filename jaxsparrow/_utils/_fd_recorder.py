@@ -42,7 +42,7 @@ from typing import Optional, Callable
 import numpy as np
 from numpy import ndarray
 
-
+#TODO: check finite difference checker
 class FiniteDifferenceRecorder:
     """Collect and summarise finite-difference accuracy records.
 
