@@ -9,12 +9,7 @@ The three-phase protocol separates solver lifecycle into:
    structure (sparsity patterns, dimensions, fixed elements),
    perform symbolic analysis, pre-factorize, allocate workspace.
 
-2. **update** — per-call cheap parameter mutation: swap in new
-   vector values (``q``, ``b``, ``h``) or new matrix nonzero
-   values (``P_data``, ``A_data``, ``G_data``) without rebuilding
-   the full problem or re-doing symbolic analysis.
-
-3. **solve** — per-call: run the numerical solver using the
+2. **solve** — per-call: run the numerical solver using the
    current parameter state and return the primal/dual solution.
 
 Backends
@@ -45,26 +40,18 @@ from qpsolvers import Problem, solve_problem
 # Abstract protocol
 # =====================================================================
 
-class QPSolverBackend(ABC):
-    """Abstract base class for QP solver backends.
+class SolverBackend(ABC):
+    """Abstract base class for solver backends.
 
     Subclasses implement a three-phase lifecycle:
 
     1. :meth:`setup` — one-time structural initialization.
-    2. :meth:`update` — per-call parameter updates (cheap).
-    3. :meth:`solve` — per-call numerical solve.
+    2. :meth:`solve` — per-call numerical solve.
 
     The ``setup`` call receives the full problem structure (matrices
     with their sparsity patterns, vectors, dimensions). Backends may
     store references, perform symbolic factorization, allocate
     workspace, etc.
-
-    The ``update`` call receives only the parameters that changed
-    since the last solve. Vectors (``q``, ``b``, ``h``) are passed
-    as dense arrays. Matrix value updates (``P_data``, ``A_data``,
-    ``G_data``) are passed as 1-D arrays of nonzero values matching
-    the sparsity pattern established at setup time. Backends that
-    do not support in-place updates may simply rebuild internally.
 
     The ``solve`` call runs the solver and returns the raw solution
     arrays plus a timing dict.
@@ -73,11 +60,11 @@ class QPSolverBackend(ABC):
     @abstractmethod
     def setup(
         self,
-        P: Union[csc_matrix, ndarray],
-        q: ndarray,
-        A: Optional[Union[csc_matrix, ndarray]] = None,
+        P: Optional[Union[ndarray, csc_matrix]] = None,
+        q: Optional[ndarray] = None,
+        A: Optional[Union[ndarray, csc_matrix]] = None,
         b: Optional[ndarray] = None,
-        G: Optional[Union[csc_matrix, ndarray]] = None,
+        G: Optional[Union[ndarray, csc_matrix]] = None,
         h: Optional[ndarray] = None,
     ) -> dict[str, float]:
         """One-time structural initialization.
@@ -98,32 +85,6 @@ class QPSolverBackend(ABC):
         Returns:
             A timing dict with backend-specific keys (e.g.
             ``"symbolic_factorization"``, ``"workspace_alloc"``).
-            May be empty for stateless backends.
-        """
-        ...
-
-    @abstractmethod
-    def update(self, **params: Union[ndarray, None]) -> dict[str, float]:
-        """Per-call parameter update.
-
-        Called before each :meth:`solve` with only the parameters
-        that changed. Supported keys:
-
-        - ``q``, ``b``, ``h``: dense vector replacements.
-        - ``P_data``, ``A_data``, ``G_data``: 1-D arrays of new
-          nonzero values for the corresponding matrix, in the same
-          order as the CSC ``data`` array established at setup.
-        - ``P``, ``A``, ``G``: full matrix replacements (for
-          backends that don't support data-only updates).
-
-        Backends that do not support incremental updates may simply
-        store the new values for the next :meth:`solve`.
-
-        Args:
-            **params: Changed parameters as keyword arguments.
-
-        Returns:
-            A timing dict (e.g. ``"numeric_factorization"``).
             May be empty for stateless backends.
         """
         ...
@@ -160,7 +121,7 @@ class QPSolverBackend(ABC):
 # qpsolvers backend (stateless, default)
 # =====================================================================
 
-class QpSolversBackend(QPSolverBackend):
+class QpSolversBackend(SolverBackend):
     """Stateless backend wrapping the ``qpsolvers`` library.
 
     Rebuilds the ``Problem`` object on every :meth:`solve`. This
@@ -182,16 +143,16 @@ class QpSolversBackend(QPSolverBackend):
         self._dtype: type[np.floating] = dtype
 
         # Current parameter state
-        self._P: Optional[Union[csc_matrix, ndarray]] = None
+        self._P: Optional[Union[ndarray, csc_matrix]] = None
         self._q: Optional[ndarray] = None
-        self._A: Optional[Union[csc_matrix, ndarray]] = None
+        self._A: Optional[Union[ndarray, csc_matrix]] = None
         self._b: Optional[ndarray] = None
-        self._G: Optional[Union[csc_matrix, ndarray]] = None
+        self._G: Optional[Union[ndarray, csc_matrix]] = None
         self._h: Optional[ndarray] = None
 
     def _store_matrix(
-        self, val: Union[csc_matrix, ndarray],
-    ) -> Union[csc_matrix, ndarray]:
+        self, val: Union[ndarray, csc_matrix],
+    ) -> Union[ndarray, csc_matrix]:
         """Cast a matrix to the configured dtype, keeping format."""
         if issparse(val):
             return csc_matrix(val, dtype=self._dtype)
@@ -199,68 +160,30 @@ class QpSolversBackend(QPSolverBackend):
 
     def _store_vector(self, val: ndarray) -> ndarray:
         """Cast a vector to the configured dtype and squeeze."""
-        return np.asarray(val, dtype=self._dtype).squeeze()
+        return np.atleast_1d(np.asarray(val, dtype=self._dtype).squeeze())
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def setup(
         self,
-        P: Union[csc_matrix, ndarray],
-        q: ndarray,
-        A: Optional[Union[csc_matrix, ndarray]] = None,
+        P: Optional[Union[ndarray, csc_matrix]] = None,
+        q: Optional[ndarray] = None,
+        A: Optional[Union[ndarray, csc_matrix]] = None,
         b: Optional[ndarray] = None,
-        G: Optional[Union[csc_matrix, ndarray]] = None,
+        G: Optional[Union[ndarray, csc_matrix]] = None,
         h: Optional[ndarray] = None,
     ) -> dict[str, float]:
         """Store the full problem. No pre-computation for this backend."""
         start: float = perf_counter()
 
-        self._P = self._store_matrix(P)
-        self._q = self._store_vector(q)
+        self._P = self._store_matrix(P) if P is not None else None
+        self._q = self._store_vector(q) if q is not None else None
         self._A = self._store_matrix(A) if A is not None else None
         self._b = self._store_vector(b) if b is not None else None
         self._G = self._store_matrix(G) if G is not None else None
         self._h = self._store_vector(h) if h is not None else None
 
         return {"setup": perf_counter() - start}
-
-    def update(self, **params: Union[ndarray, None]) -> dict[str, float]:
-        """Replace stored parameters with new values.
-
-        Accepts full matrix or vector replacements. For this
-        stateless backend, ``P_data`` / ``A_data`` / ``G_data``
-        are also supported — they replace the ``data`` array of
-        the stored CSC matrix in-place.
-        """
-        start: float = perf_counter()
-
-        for key, val in params.items():
-            if val is None:
-                continue
-
-            if key == "q":
-                self._q = self._store_vector(val)
-            elif key == "b":
-                self._b = self._store_vector(val)
-            elif key == "h":
-                self._h = self._store_vector(val)
-            elif key == "P":
-                self._P = self._store_matrix(val)
-            elif key == "A":
-                self._A = self._store_matrix(val)
-            elif key == "G":
-                self._G = self._store_matrix(val)
-            elif key == "P_data":
-                assert self._P is not None and issparse(self._P)
-                self._P.data[:] = np.asarray(val, dtype=self._dtype)
-            elif key == "A_data":
-                assert self._A is not None and issparse(self._A)
-                self._A.data[:] = np.asarray(val, dtype=self._dtype)
-            elif key == "G_data":
-                assert self._G is not None and issparse(self._G)
-                self._G.data[:] = np.asarray(val, dtype=self._dtype)
-
-        return {"update": perf_counter() - start}
 
     def solve(
         self,
@@ -269,15 +192,19 @@ class QpSolversBackend(QPSolverBackend):
         """Build a ``qpsolvers.Problem`` and solve it."""
         t: dict[str, float] = {}
 
+        # ── Verify that minimal ingredients are present ──────────────
+        if self._P is None or self._q is None:
+            raise ValueError("P and q must be provided.")
+
         # ── Build Problem ────────────────────────────────────────────
         start: float = perf_counter()
         prob: Problem = Problem(
             P=self._P,
-            q=self._q,
+            q=np.atleast_1d(self._q),
             A=self._A,
-            b=self._b,
+            b=np.atleast_1d(self._b) if self._b is not None else self._b,
             G=self._G,
-            h=self._h,
+            h=np.atleast_1d(self._h) if self._h is not None else self._h,
         )
         t["problem_build"] = perf_counter() - start
 
@@ -300,12 +227,12 @@ class QpSolversBackend(QPSolverBackend):
 # Registry and factory
 # =====================================================================
 
-_BACKEND_REGISTRY: dict[str, type[QPSolverBackend]] = {
+_BACKEND_REGISTRY: dict[str, type[SolverBackend]] = {
     "qpsolvers": QpSolversBackend,
 }
 
 
-def register_backend(name: str, cls: type[QPSolverBackend]) -> None:
+def register_backend(name: str, cls: type[SolverBackend]) -> None:
     """Register a new QP solver backend.
 
     Args:
@@ -316,14 +243,14 @@ def register_backend(name: str, cls: type[QPSolverBackend]) -> None:
     Raises:
         TypeError: If *cls* is not a subclass of ``QPSolverBackend``.
     """
-    if not (isinstance(cls, type) and issubclass(cls, QPSolverBackend)):
+    if not (isinstance(cls, type) and issubclass(cls, SolverBackend)):
         raise TypeError(
             f"Expected a QPSolverBackend subclass, got {cls!r}"
         )
     _BACKEND_REGISTRY[name] = cls
 
 
-def get_backend(name: str, **kwargs: Any) -> QPSolverBackend:
+def get_backend(name: str, **kwargs: Any) -> SolverBackend:
     """Instantiate a QP solver backend by name.
 
     Args:

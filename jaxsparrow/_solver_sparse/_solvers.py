@@ -3,12 +3,11 @@ solver_sparse/_solvers.py
 =========================
 Numpy-level QP solver for the sparse path.
 
-Uses the :class:`QPSolverBackend` protocol to delegate problem
-setup, parameter updates, and solving to a pluggable backend.
+Uses the :class:`SolverBackend` protocol to delegate problem
+setup and solving to a pluggable backend.
 The default backend (``QpSolversBackend``) wraps the ``qpsolvers``
 library and reproduces the original stateless behaviour. Future
-backends can exploit the setup/update/solve split for pre-factorization
-and incremental updates.
+backends can exploit the setup/solve split for pre-factorization.
 """
 
 from __future__ import annotations
@@ -23,24 +22,10 @@ from jaxtyping import Float, Bool
 
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
-from jaxsparrow._solver_sparse._types import (
-    SparseQPIngredientsNP,
-    SparseQPIngredientsNPFull,
-)
-from jaxsparrow._types_common import QPOutputNP
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP
+from jaxsparrow._types_common import SolverOutputNP, Solver
 from jaxsparrow._solver_sparse._options import DEFAULT_SOLVER_OPTIONS
-from jaxsparrow._utils._qp_backends import QPSolverBackend, get_backend
-
-
-# ── Callable protocol for the returned closure ──────────────────────
-
-class SparseQPSolverFn(Protocol):
-    """Signature of the closure returned by
-    :func:`create_sparse_qp_solver`."""
-
-    def __call__(
-        self, **kwargs: ndarray,
-    ) -> tuple[QPOutputNP, dict[str, float]]: ...
+from jaxsparrow._utils._solver_backends import SolverBackend, get_backend
 
 
 # ── Factory ──────────────────────────────────────────────────────────
@@ -49,8 +34,8 @@ def create_sparse_qp_solver(
     n_eq: int,
     n_ineq: int,
     options: Optional[SolverOptions] = None,
-    fixed_elements: Optional[SparseQPIngredientsNP] = None,
-) -> SparseQPSolverFn:
+    fixed_elements: Optional[SparseIngredientsNP] = None,
+) -> Solver:
     """Build a numpy-level sparse QP solver closure.
 
     Creates a callable that solves quadratic programs of the form::
@@ -62,14 +47,13 @@ def create_sparse_qp_solver(
     where ``P``, ``A``, ``G`` are ``scipy.sparse.csc_matrix`` and
     ``q``, ``b``, ``h`` are dense ``ndarray``.
 
-    The solver lifecycle is delegated to a :class:`QPSolverBackend`:
+    The solver lifecycle is delegated to a :class:`SolverBackend`:
 
     - **setup** is called once at construction with the full problem
       structure from *fixed_elements*, allowing the backend to do
       symbolic analysis or workspace allocation.
-    - **update** is called at each solve with the dynamic parameters
-      supplied via ``**kwargs``.
-    - **solve** runs the numerical solver.
+    - **solve** is called at each invocation to run the numerical
+      solver.
 
     Args:
         n_eq: Number of equality constraints. Zero if there are none.
@@ -79,23 +63,23 @@ def create_sparse_qp_solver(
 
             - ``"solver_name"``: backend solver name (e.g. ``"piqp"``).
             - ``"backend"``: backend protocol name (default:
-              ``"qpsolvers"``). Controls which :class:`QPSolverBackend`
+              ``"qpsolvers"``). Controls which :class:`SolverBackend`
               implementation is used.
             - ``"dtype"``, ``"bool_dtype"``, ``"cst_tol"``: as before.
 
             Defaults are filled for missing keys.
-        fixed_elements: QP ingredients that remain constant across
-            calls. Sparse matrices are stored as CSC; dense vectors
-            are squeezed and cast. These are passed to the backend's
-            ``setup()`` call. Any key present here should *not* be
-            passed again at call time.
+        fixed_elements: QP ingredients that define the problem
+            structure. Sparse matrices are stored as CSC; dense
+            vectors are squeezed and cast. These are passed to the
+            backend's ``setup()`` call. All problem matrices and
+            vectors (P, q, A, b, G, h) must be provided here.
 
     Returns:
         A callable with signature
-        ``(**kwargs) -> tuple[QPOutputNP, dict[str, float]]``.
+        ``(**kwargs) -> tuple[SolverOutputNP, dict[str, float]]``.
         The first element is ``(x, lam, mu, active)`` and the second
-        is a timing dict with keys ``"setup"`` (first call only),
-        ``"update"``, ``"solve"``, ``"retrieve"``, ``"active_set"``.
+        is a timing dict with keys ``"setup.*"`` (from construction),
+        ``"solve.*"``, ``"retrieve"``, ``"active_set"``.
     """
 
     options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
@@ -104,7 +88,7 @@ def create_sparse_qp_solver(
 
     # ── Prepare fixed elements ───────────────────────────────────────
 
-    _fixed: SparseQPIngredientsNP = {}
+    _fixed: SparseIngredientsNP = {}
     if fixed_elements is not None:
         for k, v in fixed_elements.items():
             if issparse(v):
@@ -115,33 +99,35 @@ def create_sparse_qp_solver(
     # ── Create backend ───────────────────────────────────────────────
 
     backend_name: str = options_parsed.get("backend", "qpsolvers")
-    backend: QPSolverBackend = get_backend(
+    backend: SolverBackend = get_backend(
         backend_name,
         solver_name=options_parsed["solver_name"],
         dtype=_dtype,
     )
 
-    # ── Setup: pass fixed elements to the backend ────────────────────
-    #
-    # If we have fixed matrices/vectors, do the one-time setup now.
-    # Dynamic keys will be merged in on first call and updated on
-    # subsequent calls.
+    # ── Setup: pass fixed elements to the backend (once, now) ────────
 
-    _setup_done: bool = False
-    _setup_timing: dict[str, float] = {}
+    _setup_timing: dict[str, float] = backend.setup(
+        P=_fixed.get("P"),
+        q=_fixed.get("q"),
+        A=_fixed.get("A"),
+        b=_fixed.get("b"),
+        G=_fixed.get("G"),
+        h=_fixed.get("h"),
+    )
 
     # ─────────────────────────────────────────────────────────────────
 
-    def solve_qp_numpy(**kwargs: ndarray) -> tuple[QPOutputNP, dict[str, float]]:
+    def solve_qp_numpy(**kwargs: ndarray) -> tuple[SolverOutputNP, dict[str, float]]:
         """Solve a single QP instance.
 
-        Merges *kwargs* with any fixed elements, delegates to the
-        backend's update/solve cycle, and extracts the solution.
+        Delegates to the backend's solve cycle and extracts the
+        solution.
 
         Args:
-            **kwargs: Runtime QP ingredients (those not fixed at
-                construction). An optional ``"warmstart"`` key may
-                supply an initial guess for the primal variable.
+            **kwargs: Optional runtime overrides. A ``"warmstart"``
+                key may supply an initial guess for the primal
+                variable.
 
         Returns:
             A tuple ``(x, lam, mu, active)`` and a timing dict.
@@ -149,56 +135,13 @@ def create_sparse_qp_solver(
         Raises:
             AssertionError: If the solver fails to find a solution.
         """
-        nonlocal _setup_done, _setup_timing
-
         t: dict[str, float] = {}
 
-        # ── Extract warmstart before merging ─────────────────────────
+        # Propagate setup timings
+        t.update({f"setup.{k}": v for k, v in _setup_timing.items()})
+
+        # ── Extract warmstart ────────────────────────────────────────
         warmstart: Optional[ndarray] = kwargs.pop("warmstart", None)
-
-        # Merge fixed + runtime
-        merged = cast(SparseQPIngredientsNPFull, {**_fixed, **kwargs})
-
-        prob = Problem(
-            P=merged["P"],
-            q=np.atleast_1d(merged["q"]),
-            A=merged.get("A"),
-            b=np.atleast_1d(merged.get("b")),
-            G=merged.get("G"),
-            h=np.atleast_1d(merged.get("h")),
-        )
-
-        # ── Setup (first call only) ─────────────────────────────────
-        if not _setup_done:
-            _setup_timing = backend.setup(
-                P=merged["P"],
-                q=merged["q"],
-                A=merged.get("A"),  # type: ignore[arg-type]
-                b=merged.get("b"),  # type: ignore[arg-type]
-                G=merged.get("G"),  # type: ignore[arg-type]
-                h=merged.get("h"),  # type: ignore[arg-type]
-            )
-            _setup_done = True
-            t.update({f"setup.{k}": v for k, v in _setup_timing.items()})
-        else:
-            # ── Update dynamic parameters ────────────────────────────
-            update_params: dict[str, ndarray] = {}
-            for key in kwargs:
-                if issparse(kwargs[key]):
-                    # For sparse matrices, pass the data array for
-                    # backends that support in-place value updates
-                    update_params[f"{key}_data"] = csc_matrix(
-                        kwargs[key], dtype=_dtype
-                    ).data
-                    # Also pass the full matrix for backends that
-                    # need it (stateless backends ignore _data keys
-                    # if they also receive the full matrix)
-                    update_params[key] = kwargs[key]
-                else:
-                    update_params[key] = kwargs[key]
-
-            update_timing: dict[str, float] = backend.update(**update_params)
-            t.update({f"update.{k}": v for k, v in update_timing.items()})
 
         # ── Solve ────────────────────────────────────────────────────
         x_raw, y_raw, z_raw, solve_timing = backend.solve(warmstart=warmstart)
@@ -228,9 +171,10 @@ def create_sparse_qp_solver(
         start = perf_counter()
         active: Bool[ndarray, "n_ineq"]
         if n_ineq > 0:
-            G_mat = merged["G"]
+            assert "G" in _fixed and "h" in _fixed
+            G_mat = _fixed["G"]
             Gx: ndarray = G_mat @ x_raw
-            h_vec: ndarray = np.asarray(merged["h"], dtype=_dtype).ravel()
+            h_vec: ndarray = np.asarray(_fixed["h"], dtype=_dtype).ravel()
             active = np.asarray(
                 np.abs(Gx - h_vec) <= options_parsed["cst_tol"],
                 dtype=_bool_dtype,
@@ -239,6 +183,6 @@ def create_sparse_qp_solver(
             active = np.empty(0, dtype=_bool_dtype)
         t["active_set"] = perf_counter() - start
 
-        return cast(QPOutputNP, (x, lam, mu, active)), t
+        return cast(SolverOutputNP, (x, lam, mu, active)), t
 
     return solve_qp_numpy

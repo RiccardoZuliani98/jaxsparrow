@@ -1,7 +1,7 @@
 """
 solver_sparse/types.py
 ======================
-Type aliases for the sparse QP solver path.
+Type aliases for the sparse solver path.
 
 Matrices (P, A, G) are ``scipy.sparse.csc_matrix``.
 Vectors (q, b, h) remain dense ``ndarray``.
@@ -18,7 +18,7 @@ from jax import Array
 # Numpy-side ingredients (what the solver / differentiator receive)
 # --------------------------------------------------------------------------
 
-class SparseQPIngredientsNP(TypedDict, total=False):
+class SparseIngredientsNP(TypedDict, total=False):
     P: csc_matrix
     q: Float[ndarray, "n_var"]
     A: csc_matrix
@@ -26,7 +26,7 @@ class SparseQPIngredientsNP(TypedDict, total=False):
     G: csc_matrix
     h: Float[ndarray, "n_ineq"]
 
-class SparseQPIngredientsNPFull(TypedDict):
+class SparseIngredientsNPFull(TypedDict):
     P: csc_matrix
     q: Float[ndarray, "n_var"]
     A: csc_matrix
@@ -38,7 +38,7 @@ class SparseQPIngredientsNPFull(TypedDict):
 # Jax-side ingredients (used as inputs-outputs)
 # --------------------------------------------------------------------------
 
-class SparseQPIngredients(TypedDict, total=False):
+class SparseIngredients(TypedDict, total=False):
     P: BCOO
     q: Float[Array, "n_var"]
     A: BCOO
@@ -46,7 +46,7 @@ class SparseQPIngredients(TypedDict, total=False):
     G: BCOO
     h: Float[Array, "n_ineq"]
 
-class SparseQPIngredientsFull(TypedDict):
+class SparseIngredientsFull(TypedDict):
     P: BCOO
     q: Float[Array, "n_var"]
     A: BCOO
@@ -67,7 +67,7 @@ class SparseQPIngredientsFull(TypedDict):
 
 SparseOrDense = Union[csc_matrix, ndarray]
 
-class SparseQPIngredientsTangentsNP(TypedDict, total=False):
+class SparseIngredientsTangentsNP(TypedDict, total=False):
     P: SparseOrDense  # csc_matrix (unbatched) or ndarray (batch, n_var, n_var)
     q: ndarray         # (n_var,) or (batch, n_var)
     A: SparseOrDense  # csc_matrix (unbatched) or ndarray (batch, n_eq, n_var)
