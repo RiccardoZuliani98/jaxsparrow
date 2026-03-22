@@ -225,6 +225,7 @@ def setup_sparse_solver(
             n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
             options=options_parsed["differentiator"],
             fixed_elements=fixed_elements,
+            dynamic_keys=dynamic_keys
         )
     else:
         raise ValueError("Only differentiator available is 'kkt'")
