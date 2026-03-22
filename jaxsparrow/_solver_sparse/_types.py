@@ -26,14 +26,6 @@ class SparseIngredientsNP(TypedDict, total=False):
     G: csc_matrix
     h: Float[ndarray, "n_ineq"]
 
-class SparseIngredientsNPFull(TypedDict):
-    P: csc_matrix
-    q: Float[ndarray, "n_var"]
-    A: csc_matrix
-    b: Float[ndarray, "n_eq"]
-    G: csc_matrix
-    h: Float[ndarray, "n_ineq"]
-
 # --------------------------------------------------------------------------
 # Jax-side ingredients (used as inputs-outputs)
 # --------------------------------------------------------------------------

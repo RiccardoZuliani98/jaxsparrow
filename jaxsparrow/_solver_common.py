@@ -224,8 +224,7 @@ def build_solver(
 
         # ── Solve ────────────────────────────────────────────────────
         sol_np, t_solve = _solver_numpy(**prob_np)
-        x_np, lam_np, mu_np, _ = sol_np
-        _warmstart[0] = None
+        x_np, lam_np, mu_np = sol_np
         t.update(t_solve)
 
         # ── Return JAX arrays ────────────────────────────────────────
@@ -278,7 +277,7 @@ def build_solver(
 
         # ── Solve ────────────────────────────────────────────────────
         sol_np, t_solve = _solver_numpy(**prob_np)
-        x_np, lam_np, mu_np, _ = sol_np
+        x_np, lam_np, mu_np = sol_np
         _warmstart[0] = None
         t.update(t_solve)
 

@@ -1,4 +1,4 @@
-from jaxtyping import Float, Bool
+from jaxtyping import Float
 from numpy import ndarray
 from jax import Array
 from typing import TypedDict, NamedTuple, Protocol
@@ -12,7 +12,6 @@ class SolverOutputNP(NamedTuple):
     x:      Float[ndarray, "n_var"]     |  Float[ndarray, "n_batch n_var"]
     lam:    Float[ndarray, "n_ineq"]    |  Float[ndarray, "n_batch n_ineq"]
     mu:     Float[ndarray, "n_eq"]      |  Float[ndarray, "n_batch n_eq"]
-    active: Bool[ndarray, "n_ineq"]     |  Bool[ndarray,  "n_batch n_ineq"]
 
 class SolverDiffOut(TypedDict):
     x   : Float[Array, "n_var"]         |  Float[Array, "n_batch n_var"] 

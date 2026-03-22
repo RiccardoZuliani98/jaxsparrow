@@ -178,6 +178,7 @@ def create_sparse_kkt_differentiator_fwd(
 
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype = options_parsed["dtype"]
+    _bool_dtype = options_parsed["bool_dtype"]
 
     # ── Choose sparse linear solver ──────────────────────────────────
     _solve_linear_system = get_sparse_linear_solver(options_parsed["linear_solver"])
@@ -228,7 +229,7 @@ def create_sparse_kkt_differentiator_fwd(
         start = perf_counter()
         batched = batch_size > 0
 
-        x_np, lam_np, mu_np, active_np = sol_np
+        x_np, lam_np, mu_np = sol_np
 
         # ── Merge primals (keep sparse matrices as-is) ───────────────
         # Dynamic primals arrive as CSC (from the converter).
@@ -236,6 +237,19 @@ def create_sparse_kkt_differentiator_fwd(
         prob = {**_fixed, **dyn_primals_np}
 
         P_sp = _ensure_csc(prob["P"], _dtype)
+
+        # ── Compute active set ───────────────────────────────────────
+        if n_ineq > 0:
+            G_sp = _ensure_csc(prob["G"], _dtype)
+            Gx = np.asarray(G_sp @ x_np).ravel()
+            h_vec = np.asarray(prob["h"], dtype=_dtype).ravel()
+            active_np: Bool[ndarray, "n_ineq"] = np.asarray(
+                np.abs(Gx - h_vec) <= options_parsed["cst_tol"],
+                dtype=_bool_dtype,
+            ).reshape(-1)
+        else:
+            G_sp = _sparse_zeros(0, n_var, _dtype)
+            active_np = np.empty(0, dtype=_bool_dtype)
 
         # ── Merge tangents (always dense) ────────────────────────────
         # The tangent converter already provides dense ndarray from
@@ -254,7 +268,6 @@ def create_sparse_kkt_differentiator_fwd(
         if n_eq > 0:
             H_parts.append(_ensure_csc(prob["A"], _dtype))
         if n_ineq > 0 and n_active > 0:
-            G_sp = _ensure_csc(prob["G"], _dtype)
             H_parts.append(G_sp[active_np, :])
 
         if H_parts:

@@ -17,7 +17,7 @@ from typing import Optional, cast
 
 import numpy as np
 from numpy import ndarray
-from jaxtyping import Float, Bool
+from jaxtyping import Float
 
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
@@ -68,7 +68,7 @@ def create_sparse_solver(
             - ``"backend"``: backend protocol name (default:
               ``"qpsolvers"``). Controls which :class:`SolverBackend`
               implementation is used.
-            - ``"dtype"``, ``"bool_dtype"``, ``"cst_tol"``: as before.
+            - ``"dtype"``: NumPy floating-point dtype for arrays.
 
             Defaults are filled for missing keys.
         fixed_elements: ingredients that remain constant across
@@ -81,14 +81,13 @@ def create_sparse_solver(
     Returns:
         A callable with signature
         ``(**kwargs) -> tuple[SolverOutputNP, dict[str, float]]``.
-        The first element is ``(x, lam, mu, active)`` and the second
+        The first element is ``(x, lam, mu)`` and the second
         is a timing dict with keys ``"setup.*"`` (from construction),
-        ``"solve.*"``, ``"retrieve"``, ``"active_set"``.
+        ``"solve.*"``, ``"retrieve"``.
     """
 
     options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
     _dtype: type[np.floating] = options_parsed["dtype"]
-    _bool_dtype: type[np.bool_] = options_parsed["bool_dtype"]
 
     # ── Create backend ───────────────────────────────────────────────
 
@@ -122,7 +121,7 @@ def create_sparse_solver(
                 supply an initial guess for the primal variable.
 
         Returns:
-            A tuple ``(x, lam, mu, active)`` and a timing dict.
+            A tuple ``(x, lam, mu)`` and a timing dict.
 
         Raises:
             AssertionError: If the solver fails to find a solution.
@@ -156,27 +155,6 @@ def create_sparse_solver(
         )
         t["retrieve"] = perf_counter() - start
 
-        # ── Active set ───────────────────────────────────────────────
-        start = perf_counter()
-        active: Bool[ndarray, "n_ineq"]
-        if n_ineq > 0:
-            # G and h must have been provided (fixed or runtime);
-            # re-merge to get the effective values.
-            merged_G = kwargs.get("G", (fixed_elements or {}).get("G"))
-            merged_h = kwargs.get("h", (fixed_elements or {}).get("h"))
-            assert merged_G is not None and merged_h is not None, (
-                "G and h are required when n_ineq > 0"
-            )
-            Gx: ndarray = merged_G @ x_raw
-            h_vec: ndarray = np.asarray(merged_h, dtype=_dtype).ravel()
-            active = np.asarray(
-                np.abs(Gx - h_vec) <= options_parsed["cst_tol"],
-                dtype=_bool_dtype,
-            ).reshape(-1)
-        else:
-            active = np.empty(0, dtype=_bool_dtype)
-        t["active_set"] = perf_counter() - start
-
-        return cast(SolverOutputNP, (x, lam, mu, active)), t
+        return cast(SolverOutputNP, (x, lam, mu)), t
 
     return solver_numpy
