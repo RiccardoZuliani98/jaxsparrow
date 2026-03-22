@@ -106,11 +106,11 @@ def create_sparse_qp_solver(
 
         prob = Problem(
             P=merged["P"],
-            q=merged["q"],
+            q=np.atleast_1d(merged["q"]),
             A=merged.get("A"),
-            b=merged.get("b"),
+            b=np.atleast_1d(merged.get("b")),
             G=merged.get("G"),
-            h=merged.get("h"),
+            h=np.atleast_1d(merged.get("h")),
         )
         t["problem_setup"] = perf_counter() - start
 
