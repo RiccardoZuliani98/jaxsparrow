@@ -71,20 +71,6 @@ class DenseIngredientsNP(TypedDict, total=False):
     h: Float[ndarray, "n_ineq"]
 
 
-class DenseIngredientsNPFull(TypedDict):
-    """Complete dictionary of dense parameters as NumPy arrays.
-
-    All six keys are required. This is the merged form used
-    internally after combining fixed and dynamic elements.
-    """
-    P: Float[ndarray, "n_var n_var"]
-    q: Float[ndarray, "n_var"]
-    A: Float[ndarray, "n_eq n_var"]
-    b: Float[ndarray, "n_eq"]
-    G: Float[ndarray, "n_ineq n_var"]
-    h: Float[ndarray, "n_ineq"]
-
-
 class DenseIngredientsTangentsNP(TypedDict, total=False):
     """Tangent vectors for dense parameters as NumPy arrays.
 

@@ -234,13 +234,22 @@ def create_sparse_kkt_differentiator_fwd(
         # ── Merge primals (keep sparse matrices as-is) ───────────────
         # Dynamic primals arrive as CSC (from the converter).
         # Fixed primals are already stored as CSC / ndarray.
-        prob = {**_fixed, **dyn_primals_np}
+        prob : SparseIngredientsNP = cast(SparseIngredientsNP, {**_fixed, **dyn_primals_np})
 
-        P_sp = _ensure_csc(prob["P"], _dtype)
+        assert "P" in prob and "q" in prob, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
+        P_sp = prob["P"] #_ensure_csc(prob["P"], _dtype)
 
         # ── Compute active set ───────────────────────────────────────
         if n_ineq > 0:
-            G_sp = _ensure_csc(prob["G"], _dtype)
+            assert "G" in prob and "h" in prob, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            G_sp = prob["G"] #_ensure_csc(prob["G"], _dtype)
             Gx = np.asarray(G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=_dtype).ravel()
             active_np: Bool[ndarray, "n_ineq"] = np.asarray(
@@ -266,7 +275,11 @@ def create_sparse_kkt_differentiator_fwd(
         # Then K = [[P, H^T], [H, 0]] assembled via sp_bmat.
         H_parts = []
         if n_eq > 0:
-            H_parts.append(_ensure_csc(prob["A"], _dtype))
+            assert "A" in prob and "b" in prob, (
+                "A and b are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            H_parts.append(prob["A"]) #_ensure_csc(prob["A"], _dtype)
         if n_ineq > 0 and n_active > 0:
             H_parts.append(G_sp[active_np, :])
 
@@ -473,8 +486,14 @@ def create_sparse_kkt_differentiator_rev(
         batched = batch_size > 0
 
         # ── Merge primals (keep sparse) ──────────────────────────────
-        prob = {**_fixed, **dyn_primals_np}
-        P_sp = _ensure_csc(prob["P"], _dtype)
+        prob: SparseIngredientsNP = cast(SparseIngredientsNP, {**_fixed, **dyn_primals_np})
+
+        assert "P" in prob and "q" in prob, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
+        P_sp = prob["P"] #_ensure_csc(prob["P"], _dtype)
 
         # ── Cache sparsity indices for dynamic keys on first call ────
         # (Dynamic matrices may not be in fixed_elements, so we lazily
@@ -491,7 +510,11 @@ def create_sparse_kkt_differentiator_rev(
         # G @ x works directly on CSC; result is a dense vector.
         start = perf_counter()
         if n_ineq > 0:
-            G_sp = _ensure_csc(prob["G"], _dtype)
+            assert "G" in prob and "h" in prob, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            G_sp = prob["G"] #_ensure_csc(prob["G"], _dtype)
             Gx = np.asarray(G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=_dtype).ravel()
             active_np: Bool[ndarray, "n_ineq"] = np.asarray(
@@ -510,7 +533,11 @@ def create_sparse_kkt_differentiator_rev(
 
         H_parts = []
         if n_eq > 0:
-            H_parts.append(_ensure_csc(prob["A"], _dtype))
+            assert "A" in prob and "b" not in prob_np, ( 
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
+            H_parts.append(prob["A"]) #_ensure_csc(prob["A"], _dtype)
         if n_ineq > 0 and n_active > 0:
             H_parts.append(G_sp[active_np, :])
 

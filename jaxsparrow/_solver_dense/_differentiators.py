@@ -21,8 +21,7 @@ from jaxtyping import Float, Bool
 import numpy as np
 from typing import cast, Optional, Protocol, Sequence
 from jaxsparrow._solver_dense._types import (
-    DenseIngredientsNP, 
-    DenseIngredientsNPFull, 
+    DenseIngredientsNP,
     DenseIngredientsTangentsNP
 )
 from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
@@ -125,6 +124,7 @@ def create_dense_kkt_differentiator_fwd(
     # parse options
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
     _dtype: type[np.floating] = options_parsed["dtype"]
+    _bool_dtype: type[np.bool_] = options_parsed["bool_dtype"]
     
     # store fixed elements, this can happen in two situations:
     # 1. if the user passes some fixed elements in "fixed_elements" argument,
@@ -181,10 +181,9 @@ def create_dense_kkt_differentiator_fwd(
         solves for output tangents given input tangents.
 
         Args:
-            sol_np: solution tuple ``(x, lam, mu, active)`` where
+            sol_np: solution tuple ``(x, lam, mu)`` where
                 ``x`` is the primal optimum, ``lam`` the inequality
-                multipliers, ``mu`` the equality multipliers, and
-                ``active`` a boolean mask over inequality constraints.
+                multipliers, and ``mu`` the equality multipliers.
             dyn_primals_np: Dynamic (non-fixed) parameter values.
             dyn_tangents_np: Tangent vectors for the dynamic
                 parameters. Unbatched: each value has the same shape
@@ -211,8 +210,7 @@ def create_dense_kkt_differentiator_fwd(
         x_np: ndarray
         lam_np: ndarray
         mu_np: ndarray
-        active_np: Bool[ndarray, "n_ineq"]
-        x_np, lam_np, mu_np, active_np = sol_np
+        x_np, lam_np, mu_np = sol_np
 
 
         # ── Parse ingredients ────────────────────────────────────────
@@ -226,7 +224,22 @@ def create_dense_kkt_differentiator_fwd(
             d_np = cast(dict[str, ndarray], _d_fixed | dyn_tangents_np)
 
         # merge ingredients too
-        prob_np: DenseIngredientsNPFull = cast(DenseIngredientsNPFull, _fixed | dyn_primals_np)
+        prob_np: DenseIngredientsNP = cast(DenseIngredientsNP, _fixed | dyn_primals_np)
+
+        # ── Compute active set ───────────────────────────────────────
+        active_np: Bool[ndarray, "n_ineq"]
+        if n_ineq > 0:
+            assert "G" in prob_np and "h" in prob_np, (
+                    "G and h are required when n_ineq > 0. "
+                    "Provide them via fixed_elements or as dynamic arguments."
+                )
+            active_np = np.asarray(
+                np.abs(prob_np["G"] @ x_np - prob_np["h"])
+                <= options_parsed["cst_tol"],
+                dtype=_bool_dtype,
+            ).reshape(-1)
+        else:
+            active_np = np.empty(0, dtype=_bool_dtype)
 
         # count active constraints
         n_active: int = int(np.sum(active_np))
@@ -234,12 +247,21 @@ def create_dense_kkt_differentiator_fwd(
 
         # ── Build LHS ────────────────────────────────────────────────
 
+        assert "P" in prob_np and "q" in prob_np, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
+            assert "A" in prob_np and "b" not in prob_np, ( 
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             H_parts.append(prob_np["A"])
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(prob_np["G"][active_np, :])
+            H_parts.append(prob_np["G"][active_np, :]) #type: ignore
 
         H_np: Float[ndarray, "nh nv"]
         if H_parts:
@@ -505,11 +527,15 @@ def create_dense_kkt_differentiator_rev(
         start: float = perf_counter()
 
         # merge ingredients too
-        prob_np: DenseIngredientsNPFull = cast(DenseIngredientsNPFull, _fixed | dyn_primals_np)
+        prob_np: DenseIngredientsNP = cast(DenseIngredientsNP, _fixed | dyn_primals_np)
 
         # get active constraints
         active_np: Bool[ndarray, "n_ineq"]
         if n_ineq > 0:
+            assert "G" in prob_np and "h" in prob_np, (
+                "G and h are required when n_ineq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             active_np = np.asarray(
                 np.abs(prob_np["G"] @ x_np - prob_np["h"])
                 <= options_parsed["cst_tol"],
@@ -525,14 +551,23 @@ def create_dense_kkt_differentiator_rev(
 
         # ── Build LHS ────────────────────────────────────────────────
 
+        assert "P" in prob_np and "q" in prob_np, (
+            "P and q are required" \
+            "Provide them via fixed_elements or as dynamic arguments."
+        )
+
         start = perf_counter()
 
         # construct H matrix
         H_parts: list[Float[ndarray, "_ nv"]] = []
         if n_eq > 0:
+            assert "A" in prob_np and "b" in prob_np, (
+                "A and b are required when n_eq > 0. " \
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
             H_parts.append(prob_np["A"])
         if n_ineq > 0 and n_active > 0:
-            H_parts.append(prob_np["G"][active_np, :])
+            H_parts.append(prob_np["G"][active_np, :]) #type: ignore
 
         H_np: Float[ndarray, "nh nv"]
         if H_parts:
@@ -691,7 +726,7 @@ def create_dense_kkt_differentiator_rev(
 
             if n_ineq > 0:
                 if _need("G"):
-                    g_G = np.zeros_like(prob_np["G"])
+                    g_G = np.zeros_like(prob_np["G"]) #type: ignore
                     if n_active > 0:
                         g_G[active_np, :] = -(
                             np.outer(lam_np[active_np], v_x)
