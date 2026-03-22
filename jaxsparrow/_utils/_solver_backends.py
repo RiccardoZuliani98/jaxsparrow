@@ -1,16 +1,18 @@
 """
-utils/_qp_backends.py
-=====================
+utils/_solver_backends.py
+=========================
 Abstract QP solver backend protocol and concrete implementations.
 
-The three-phase protocol separates solver lifecycle into:
+The two-phase protocol separates solver lifecycle into:
 
-1. **setup** — one-time initialization: receive the full problem
-   structure (sparsity patterns, dimensions, fixed elements),
-   perform symbolic analysis, pre-factorize, allocate workspace.
+1. **setup** — one-time initialization: receive the fixed QP
+   ingredients as a dict, cast and store them, perform symbolic
+   analysis, pre-factorize, allocate workspace.
 
-2. **solve** — per-call: run the numerical solver using the
-   current parameter state and return the primal/dual solution.
+2. **solve** — per-call: receive runtime QP ingredients as
+   keyword arguments, merge them with the stored fixed elements,
+   build the problem, run the numerical solver and return the
+   primal/dual solution.
 
 Backends
 --------
@@ -19,7 +21,7 @@ Backends
   default and reproduces the existing behaviour.
 
 Future backends (OSQP, PIQP, Clarabel, …) can exploit the
-setup/update split for significant speedups by reusing symbolic
+setup/solve split for significant speedups by reusing symbolic
 factorizations and only updating numerical values between solves.
 """
 
@@ -27,13 +29,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from time import perf_counter
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 from numpy import ndarray
 from scipy.sparse import csc_matrix, issparse
 
 from qpsolvers import Problem, solve_problem
+
+from jaxsparrow._solver_sparse._types import (
+    SparseIngredientsNP,
+    SparseIngredientsNPFull
+)
 
 
 # =====================================================================
@@ -43,44 +50,41 @@ from qpsolvers import Problem, solve_problem
 class SolverBackend(ABC):
     """Abstract base class for solver backends.
 
-    Subclasses implement a three-phase lifecycle:
+    Subclasses implement a two-phase lifecycle:
 
     1. :meth:`setup` — one-time structural initialization.
     2. :meth:`solve` — per-call numerical solve.
 
-    The ``setup`` call receives the full problem structure (matrices
-    with their sparsity patterns, vectors, dimensions). Backends may
-    store references, perform symbolic factorization, allocate
-    workspace, etc.
+    The ``setup`` call receives the fixed QP ingredients as a
+    :class:`SparseIngredientsNP` dict.  Backends should cast the
+    values to the configured dtype, store them, and perform any
+    symbolic analysis or workspace allocation.
 
-    The ``solve`` call runs the solver and returns the raw solution
+    The ``solve`` call receives runtime QP ingredients as keyword
+    arguments, merges them with the stored fixed elements, builds
+    the problem, runs the solver, and returns the raw solution
     arrays plus a timing dict.
     """
 
     @abstractmethod
     def setup(
         self,
-        P: Optional[Union[ndarray, csc_matrix]] = None,
-        q: Optional[ndarray] = None,
-        A: Optional[Union[ndarray, csc_matrix]] = None,
-        b: Optional[ndarray] = None,
-        G: Optional[Union[ndarray, csc_matrix]] = None,
-        h: Optional[ndarray] = None,
+        fixed_elements: Optional[SparseIngredientsNP] = None,
     ) -> dict[str, float]:
         """One-time structural initialization.
 
-        Called once at construction with the full problem structure.
-        Backends should store the sparsity patterns (for matrices)
-        and initial values, and perform any symbolic analysis or
-        workspace allocation.
+        Called once at construction with the QP ingredients that
+        remain constant across calls.  Backends should cast sparse
+        matrices to CSC and dense vectors to 1-D arrays of the
+        configured dtype, store the results, and perform any
+        symbolic analysis or workspace allocation.
 
         Args:
-            P: Objective Hessian. Sparse CSC or dense.
-            q: Objective linear term, shape ``(n_var,)``.
-            A: Equality constraint matrix, or ``None``.
-            b: Equality constraint RHS, or ``None``.
-            G: Inequality constraint matrix, or ``None``.
-            h: Inequality constraint RHS, or ``None``.
+            fixed_elements: Dict of fixed QP ingredients.  Keys are
+                a subset of ``{"P", "q", "A", "b", "G", "h"}``.
+                Sparse matrices may arrive in any format; dense
+                vectors may have extra dimensions.  ``None`` is
+                equivalent to an empty dict.
 
         Returns:
             A timing dict with backend-specific keys (e.g.
@@ -92,16 +96,20 @@ class SolverBackend(ABC):
     @abstractmethod
     def solve(
         self,
-        warmstart: Optional[ndarray] = None,
+        **kwargs: ndarray,
     ) -> tuple[Optional[ndarray], Optional[ndarray], Optional[ndarray], dict[str, float]]:
         """Run the numerical solve.
 
-        Uses the current parameter state (from the most recent
-        :meth:`setup` + :meth:`update` calls).
+        Receives runtime QP ingredients as keyword arguments (those
+        not fixed at construction).  An optional ``"warmstart"`` key
+        may supply an initial guess for the primal variable.
+
+        Implementations should merge *kwargs* with the stored fixed
+        elements, build the problem, and run the solver.
 
         Args:
-            warmstart: Optional initial guess for the primal
-                variable ``x``, shape ``(n_var,)``.
+            **kwargs: Runtime QP ingredients plus an optional
+                ``warmstart`` array of shape ``(n_var,)``.
 
         Returns:
             A tuple ``(x, y, z, timing)`` where:
@@ -124,12 +132,10 @@ class SolverBackend(ABC):
 class QpSolversBackend(SolverBackend):
     """Stateless backend wrapping the ``qpsolvers`` library.
 
-    Rebuilds the ``Problem`` object on every :meth:`solve`. This
-    reproduces the existing behaviour and serves as the baseline
-    implementation.
-
-    The ``setup`` and ``update`` calls simply store parameter values
-    internally; no pre-computation is performed.
+    Rebuilds the ``Problem`` object on every :meth:`solve` by
+    merging the stored fixed elements with the runtime keyword
+    arguments.  This reproduces the existing behaviour and serves
+    as the baseline implementation.
 
     Args:
         solver_name: Backend solver name passed to
@@ -142,13 +148,8 @@ class QpSolversBackend(SolverBackend):
         self._solver_name: str = solver_name
         self._dtype: type[np.floating] = dtype
 
-        # Current parameter state
-        self._P: Optional[Union[ndarray, csc_matrix]] = None
-        self._q: Optional[ndarray] = None
-        self._A: Optional[Union[ndarray, csc_matrix]] = None
-        self._b: Optional[ndarray] = None
-        self._G: Optional[Union[ndarray, csc_matrix]] = None
-        self._h: Optional[ndarray] = None
+        # Fixed elements stored at setup time
+        self._fixed: SparseIngredientsNP = {}
 
     def _store_matrix(
         self, val: Union[ndarray, csc_matrix],
@@ -166,43 +167,46 @@ class QpSolversBackend(SolverBackend):
 
     def setup(
         self,
-        P: Optional[Union[ndarray, csc_matrix]] = None,
-        q: Optional[ndarray] = None,
-        A: Optional[Union[ndarray, csc_matrix]] = None,
-        b: Optional[ndarray] = None,
-        G: Optional[Union[ndarray, csc_matrix]] = None,
-        h: Optional[ndarray] = None,
+        fixed_elements: Optional[SparseIngredientsNP] = None,
     ) -> dict[str, float]:
-        """Store the full problem. No pre-computation for this backend."""
+        """Cast and store the fixed QP ingredients.
+
+        No pre-computation is performed for this stateless backend.
+        """
         start: float = perf_counter()
 
-        self._P = self._store_matrix(P) if P is not None else None
-        self._q = self._store_vector(q) if q is not None else None
-        self._A = self._store_matrix(A) if A is not None else None
-        self._b = self._store_vector(b) if b is not None else None
-        self._G = self._store_matrix(G) if G is not None else None
-        self._h = self._store_vector(h) if h is not None else None
+        self._fixed = {}
+        for k, v in (fixed_elements or {}).items():
+            if issparse(v):
+                self._fixed[k] = self._store_matrix(v) #type: ignore
+            else:
+                self._fixed[k] = self._store_vector(v) #type: ignore
 
         return {"setup": perf_counter() - start}
 
     def solve(
         self,
-        warmstart: Optional[ndarray] = None,
+        **kwargs: ndarray,
     ) -> tuple[Optional[ndarray], Optional[ndarray], Optional[ndarray], dict[str, float]]:
-        """Build a ``qpsolvers.Problem`` and solve it."""
+        """Merge fixed + runtime elements, build a ``qpsolvers.Problem``, and solve."""
         t: dict[str, float] = {}
 
-        # ── Build Problem ────────────────────────────────────────────
+        # ── Build problem ────────────────────────────────────────────
         start: float = perf_counter()
+        warmstart: Optional[ndarray] = kwargs.pop("warmstart", None)
+
+        # Merge fixed + runtime
+        merged = cast(SparseIngredientsNPFull, {**self._fixed, **kwargs})
+
         prob: Problem = Problem(
-            P=self._P,
-            q=np.atleast_1d(self._q),
-            A=self._A,
-            b=np.atleast_1d(self._b) if self._b is not None else self._b,
-            G=self._G,
-            h=np.atleast_1d(self._h) if self._h is not None else self._h,
+            P=merged["P"],
+            q=np.atleast_1d(merged["q"]),
+            A=merged.get("A"),
+            b=np.atleast_1d(merged.get("b")) if merged.get("b") is not None else None,
+            G=merged.get("G"),
+            h=np.atleast_1d(merged.get("h")) if merged.get("h") is not None else None,
         )
-        t["problem_build"] = perf_counter() - start
+        t["problem_setup"] = perf_counter() - start
 
         # ── Solve ────────────────────────────────────────────────────
         start = perf_counter()
@@ -234,14 +238,14 @@ def register_backend(name: str, cls: type[SolverBackend]) -> None:
     Args:
         name: Short identifier for the backend (e.g. ``"osqp"``,
             ``"piqp"``).
-        cls: The backend class (must subclass ``QPSolverBackend``).
+        cls: The backend class (must subclass :class:`SolverBackend`).
 
     Raises:
-        TypeError: If *cls* is not a subclass of ``QPSolverBackend``.
+        TypeError: If *cls* is not a subclass of :class:`SolverBackend`.
     """
     if not (isinstance(cls, type) and issubclass(cls, SolverBackend)):
         raise TypeError(
-            f"Expected a QPSolverBackend subclass, got {cls!r}"
+            f"Expected a SolverBackend subclass, got {cls!r}"
         )
     _BACKEND_REGISTRY[name] = cls
 
