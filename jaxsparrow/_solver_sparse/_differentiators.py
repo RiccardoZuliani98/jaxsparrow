@@ -103,7 +103,7 @@ def create_sparse_kkt_differentiator_fwd(
             ) -> tuple[SolverDiffOutNP, dict[str, float]]
     """
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
-    backend_name: str = options_parsed.get("backend", "kkt")
+    backend_name: str = options_parsed.get("backend")
 
     backend: DifferentiatorBackend = get_differentiator_backend(
         backend_name,

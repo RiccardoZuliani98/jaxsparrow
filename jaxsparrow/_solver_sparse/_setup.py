@@ -225,6 +225,7 @@ def setup_sparse_solver(
         options=options_parsed["differentiator"],
         fixed_elements=fixed_elements,
         dynamic_keys=dynamic_keys,
+        sparsity_info=sparsity_info
     )
 
     # ── FD recorder ──────────────────────────────────────────────────
