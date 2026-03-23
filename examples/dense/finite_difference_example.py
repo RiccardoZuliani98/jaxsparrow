@@ -67,12 +67,12 @@ from jaxsparrow import setup_dense_solver
 
 solver_fwd = setup_dense_solver(
     n_var=nz, n_ineq=nineq, n_eq=neq,
-    options={"differentiator_type": "kkt_fwd", "fd_check": True},
+    options={"diff_mode": "fwd", "fd_check": True},
 )
 
 solver_rev = setup_dense_solver(
     n_var=nz, n_ineq=nineq, n_eq=neq,
-    options={"differentiator_type": "kkt_rev", "fd_check": True},
+    options={"diff_mode": "rev", "fd_check": True},
 )
 
 # ─── Define closed-loop cost functions ───────────────────────────────

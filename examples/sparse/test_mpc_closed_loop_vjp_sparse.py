@@ -87,13 +87,13 @@ sparsity_patterns = {"P": P, "A": Aeq, "G": G}
 solver = setup_sparse_solver(
     n_var=nz, n_ineq=nineq, n_eq=neq,
     sparsity_patterns=sparsity_patterns,
-    options={"differentiator_type": "kkt_rev"},
+    options={"diff_mode": "rev"},
 )
 
 solver_jvp = setup_sparse_solver(
     n_var=nz, n_ineq=nineq, n_eq=neq,
     sparsity_patterns=sparsity_patterns,
-    options={"differentiator_type": "kkt_fwd"},
+    options={"diff_mode": "fwd"},
 )
 
 def solve_mpc(x_init):

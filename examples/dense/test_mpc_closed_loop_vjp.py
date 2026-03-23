@@ -75,8 +75,8 @@ def beq(x_init):
 neq = Aeq.shape[0]
 nineq = G.shape[0]
 
-solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_rev"})
-solver_jvp = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"differentiator_type":"kkt_fwd"})
+solver = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"diff_mode":"rev"})
+solver_jvp = setup_dense_solver(n_var=nz,n_ineq=nineq,n_eq=neq,options={"diff_mode":"fwd"})
 
 def solve_mpc(x_init):
     return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)

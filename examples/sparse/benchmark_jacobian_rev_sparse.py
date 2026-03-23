@@ -83,7 +83,7 @@ solver = setup_sparse_solver(
     n_ineq=nineq,
     n_eq=neq,
     sparsity_patterns={"P": P, "A": Aeq, "G": G},
-    options={"differentiator_type": "kkt_rev"},
+    options={"diff_mode": "rev"},
 )
 
 def get_x(x_init):
