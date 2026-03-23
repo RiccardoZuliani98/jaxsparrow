@@ -24,13 +24,11 @@ Backends
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from time import perf_counter
-from typing import Any, Optional, Sequence, Union, cast
+from typing import Optional, Sequence, Union, cast
 
 import numpy as np
 from numpy import ndarray
-from jaxtyping import Float, Bool
 from scipy.sparse import (
     csc_matrix,
     issparse,
@@ -43,12 +41,22 @@ from jaxsparrow._solver_sparse._types import (
     SparseIngredientsTangentsNP,
 )
 from jaxsparrow._solver_sparse._converters import SparsityInfo
-from jaxsparrow._types_common import SolverOutputNP, SolverDiffOutNP
+from jaxsparrow._types_common import (
+    SolverOutputNP,
+    SolverDiffOutFwdNP,
+    SolverDiffOutRevNP
+)
 from jaxsparrow._options_common import DifferentiatorOptions
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
-from jaxsparrow._utils._linear_solvers import SparseLinearSolver, get_sparse_linear_solver
-
+from jaxsparrow._utils._linear_solvers import (
+    SparseLinearSolver, 
+    get_sparse_linear_solver
+)
+from jaxsparrow._utils._diff_backends import (
+    DifferentiatorBackend,
+    register_differentiator_backend,
+)
 
 # ── Sparse helpers ───────────────────────────────────────────────────
 
@@ -98,8 +106,15 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_var: Number of decision variables.
         n_eq: Number of equality constraints (zero if none).
         n_ineq: Number of inequality constraints (zero if none).
-        options: Differentiator options (dtype, bool_dtype, cst_tol,
-            linear_solver).
+        options: Differentiator options. Supported keys:
+            - dtype: Floating point dtype (default: np.float64)
+            - bool_dtype: Boolean dtype (default: np.bool_)
+            - cst_tol: Constraint tolerance (default: 1e-8)
+            - linear_solver: Solver name (default: "splu")
+
+    Raises:
+        ValueError: If dimensions are negative or inconsistent.
+        TypeError: If options contain invalid values.
     """
 
     def __init__(
@@ -109,6 +124,12 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_ineq: int,
         options: Optional[DifferentiatorOptions] = None,
     ) -> None:
+        if n_var < 0 or n_eq < 0 or n_ineq < 0:
+            raise ValueError(
+                f"Dimensions must be non-negative: "
+                f"n_var={n_var}, n_eq={n_eq}, n_ineq={n_ineq}"
+            )
+        
         self._n_var = n_var
         self._n_eq = n_eq
         self._n_ineq = n_ineq
@@ -139,6 +160,22 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
     ) -> dict[str, float]:
         """One-time initialization: store fixed elements, zero
         tangents, sparsity indices, and dynamic key set.
+
+        Args:
+            fixed_elements: Ingredients constant across calls.
+                Must have correct dimensions for the problem.
+            dynamic_keys: Keys for which gradients are needed.
+                None means gradients for all keys.
+            sparsity_info: Per-key sparsity info from BCOO patterns
+                for dynamic sparse keys.
+
+        Returns:
+            Timing dictionary with "setup" key.
+
+        Raises:
+            ValueError: If fixed_elements dimensions don't match
+                n_var, n_eq, n_ineq.
+            KeyError: If required keys are missing when constraints exist.
         """
         start = perf_counter()
 
@@ -215,18 +252,28 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         return self._dyn_set is None or key in self._dyn_set
 
     def _compute_active_set(
-        self, prob: dict, x_np: ndarray,
-    ) -> tuple[Bool[ndarray, "n_ineq"], csc_matrix]:
+        self, 
+        prob: SparseIngredientsNP, 
+        x_np: ndarray,
+    ) -> tuple[ndarray, csc_matrix]:
         """Compute the active inequality constraint mask.
 
-        Returns ``(active_np, G_sp)`` where ``G_sp`` is the CSC
-        inequality matrix (reused downstream to avoid re-extraction).
+        Returns:
+            Tuple of:
+                - active_np: Boolean array of shape (n_ineq,) where True
+                  indicates an active inequality constraint.
+                - G_sp: CSC inequality matrix (reused downstream to avoid
+                  re-extraction).
+
+        Raises:
+            KeyError: If G or h are missing when n_ineq > 0.
         """
         if self._n_ineq > 0:
-            assert "G" in prob and "h" in prob, (
-                "G and h are required when n_ineq > 0. "
-                "Provide them via fixed_elements or as dynamic arguments."
-            )
+            if "G" not in prob or "h" not in prob:
+                raise KeyError(
+                    "G and h are required when n_ineq > 0. "
+                    "Provide them via fixed_elements or as dynamic arguments."
+                )
             G_sp = prob["G"]
             Gx = np.asarray(G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
@@ -240,10 +287,22 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         return active_np, G_sp
 
     def _build_kkt_lhs(
-        self, prob: dict, P_sp: csc_matrix, G_sp: csc_matrix,
-        active_np: ndarray, n_active: int,
+        self, 
+        prob: SparseIngredientsNP, 
+        P_sp: csc_matrix, 
+        G_sp: csc_matrix,
+        active_np: ndarray, 
+        n_active: int,
     ) -> tuple[csc_matrix, int]:
-        """Build the KKT LHS matrix. Returns ``(lhs, n_h)``."""
+        """Build the KKT LHS matrix.
+
+        Returns:
+            Tuple of (lhs_matrix, n_h) where n_h is the number of
+            active constraints (equalities + active inequalities).
+
+        Raises:
+            KeyError: If A is missing when n_eq > 0.
+        """
         H_parts: list[csc_matrix] = []
         if self._n_eq > 0:
             assert "A" in prob, (
@@ -271,8 +330,23 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         dyn_primals_np: SparseIngredientsNP,
         dyn_tangents_np: SparseIngredientsTangentsNP,
         batch_size: int,
-    ) -> tuple[SolverDiffOutNP, dict[str, float]]:
-        """Forward-mode (JVP) through KKT conditions."""
+    ) -> tuple[SolverDiffOutFwdNP, dict[str, float]]:
+        """Forward-mode (JVP) through KKT conditions.
+
+        Args:
+            sol_np: Tuple of (x, lam, mu) solution arrays.
+            dyn_primals_np: Dynamic ingredients (primal values).
+            dyn_tangents_np: Tangents for dynamic ingredients.
+            batch_size: Number of problems (0 for single, >0 for batched).
+
+        Returns:
+            Tuple of (dx, dlam, dmu) tangents and timing dict.
+
+        Raises:
+            KeyError: If required ingredients are missing.
+            ValueError: If batch_size doesn't match array shapes.
+            RuntimeError: If linear solver fails.
+        """
 
         t: dict[str, float] = {}
         start = perf_counter()
@@ -365,7 +439,7 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active_np] = sol[n_var + n_eq:]
 
-        return cast(SolverDiffOutNP, (dx_np, dlam_np, dmu_np)), t
+        return cast(SolverDiffOutFwdNP, (dx_np, dlam_np, dmu_np)), t
 
     # ── Reverse differentiation ──────────────────────────────────────
 
@@ -379,8 +453,27 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         g_lam: ndarray,
         g_mu: ndarray,
         batch_size: int,
-    ) -> tuple[dict[str, ndarray], dict[str, float]]:
-        """Reverse-mode (VJP) through KKT conditions."""
+    ) -> tuple[SolverDiffOutRevNP, dict[str, float]]:
+        """Reverse-mode (VJP) through KKT conditions.
+
+        Args:
+            dyn_primals_np: Dynamic ingredients (primal values).
+            x_np: Primal variables at solution.
+            lam_np: Inequality multipliers at solution.
+            mu_np: Equality multipliers at solution.
+            g_x: Cotangent of primal variables.
+            g_lam: Cotangent of inequality multipliers.
+            g_mu: Cotangent of equality multipliers.
+            batch_size: Number of problems (0 for single, >0 for batched).
+
+        Returns:
+            Tuple of gradient dict and timing dict.
+
+        Raises:
+            KeyError: If required ingredients are missing.
+            ValueError: If batch_size doesn't match array shapes.
+            RuntimeError: If linear solver fails.
+        """
 
         t: dict[str, float] = {}
         batched = batch_size > 0
@@ -556,45 +649,8 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         t["compute_grads"] = perf_counter() - start
 
-        return grads, t
+        return cast(SolverDiffOutRevNP,grads), t
 
 
-# =====================================================================
-# Registry and factory
-# =====================================================================
-
-_DIFF_BACKEND_REGISTRY: dict[str, type[DifferentiatorBackend]] = {
-    "kkt": SparseKKTDifferentiatorBackend,
-}
-
-
-def register_differentiator_backend(
-    name: str, cls: type[DifferentiatorBackend],
-) -> None:
-    """Register a new differentiator backend."""
-    if not (isinstance(cls, type) and issubclass(cls, DifferentiatorBackend)):
-        raise TypeError(
-            f"Expected a DifferentiatorBackend subclass, got {cls!r}"
-        )
-    _DIFF_BACKEND_REGISTRY[name] = cls
-
-
-def get_differentiator_backend(name: str, **kwargs: Any) -> DifferentiatorBackend:
-    """Instantiate a differentiator backend by name.
-
-    Args:
-        name: Registered backend name (e.g. ``"kkt"``).
-        **kwargs: Passed to the backend constructor.
-
-    Returns:
-        An instance of the requested backend.
-
-    Raises:
-        ValueError: If *name* is not registered.
-    """
-    if name not in _DIFF_BACKEND_REGISTRY:
-        raise ValueError(
-            f"Unknown differentiator backend: {name!r}. "
-            f"Available: {sorted(_DIFF_BACKEND_REGISTRY)}."
-        )
-    return _DIFF_BACKEND_REGISTRY[name](**kwargs)
+# ── Register in the backend registry ─────────────────────────────────
+register_differentiator_backend("sparse_kkt", SparseKKTDifferentiatorBackend)
