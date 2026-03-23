@@ -865,7 +865,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([0.0, 1.0, 0.0])
@@ -882,7 +882,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -899,7 +899,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -919,7 +919,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -936,7 +936,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -956,7 +956,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([0.0, 1.0, 0.0])
@@ -973,7 +973,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([0.1, 0.0])
@@ -995,7 +995,7 @@ class TestVJPFiniteDifferences:
             sparsity_patterns=d["sparsity_patterns"],
             fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
                             "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(99)
@@ -1015,7 +1015,7 @@ class TestVJPFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(7)
@@ -1059,7 +1059,7 @@ class TestVJPFiniteDifferences:
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
             fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"]}),
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -1122,7 +1122,7 @@ class TestVJPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(130)
@@ -1150,7 +1150,7 @@ class TestVJPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(131)
@@ -1178,7 +1178,7 @@ class TestVJPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(132)
@@ -1208,7 +1208,7 @@ class TestVJPVmapFiniteDifferences:
             sparsity_patterns=d["sparsity_patterns"],
             fixed_elements=_to_fixed({"P": d["P_dense"], "q": d["q"],
                             "A": d["A_dense"], "G": d["G_dense"], "h": d["h"]}),
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(140)
@@ -1235,7 +1235,7 @@ class TestVJPVmapFiniteDifferences:
         solver = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(160)
@@ -1274,12 +1274,12 @@ class TestVJPJVPConsistency:
         solver_rev = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
         solver_fwd = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_fwd"},
+            options={"diff_mode": "fwd"},
         )
 
         key = jax.random.PRNGKey(170)
@@ -1315,12 +1315,12 @@ class TestVJPJVPConsistency:
         solver_rev = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
         solver_fwd = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_fwd"},
+            options={"diff_mode": "fwd"},
         )
 
         key = jax.random.PRNGKey(171)
@@ -1354,12 +1354,12 @@ class TestVJPJVPConsistency:
         solver_rev = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
         solver_fwd = setup_sparse_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             sparsity_patterns=d["sparsity_patterns"],
-            options={"differentiator_type": "kkt_fwd"},
+            options={"diff_mode": "fwd"},
         )
 
         key = jax.random.PRNGKey(172)

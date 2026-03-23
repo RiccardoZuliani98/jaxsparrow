@@ -1503,7 +1503,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dq_unconstrained(self, unconstrained_2d):
         d = unconstrained_2d
         solver = setup_dense_solver(n_var=d["n_var"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([1.0, 0.0])
 
@@ -1518,7 +1518,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dP_unconstrained(self, unconstrained_2d):
         d = unconstrained_2d
         solver = setup_dense_solver(n_var=d["n_var"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([1.0, 0.0])
 
@@ -1537,7 +1537,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dq_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([1.0, 0.0])
 
@@ -1552,7 +1552,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_db_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([1.0, 0.0])
 
@@ -1567,7 +1567,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dA_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([1.0, 0.0])
 
@@ -1586,7 +1586,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dq_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([0.0, 1.0, 0.0])
 
@@ -1601,7 +1601,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dh_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         g_x = jnp.array([0.0, 1.0, 0.0])
 
@@ -1616,7 +1616,7 @@ class TestVJPFiniteDifferences:
     def test_vjp_dG_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(42)
         g_x = jax.random.normal(key, (d["n_var"],))
@@ -1637,7 +1637,7 @@ class TestVJPFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -1655,7 +1655,7 @@ class TestVJPFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -1673,7 +1673,7 @@ class TestVJPFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([0.1, 0.0])
@@ -1697,7 +1697,7 @@ class TestVJPFiniteDifferences:
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             fixed_elements={"P": d["P"], "q": d["q"],
                             "A": d["A"], "G": d["G"], "h": d["h"]},
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(99)
@@ -1720,7 +1720,7 @@ class TestVJPFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(7)
@@ -1766,7 +1766,7 @@ class TestVJPFiniteDifferences:
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             fixed_elements={"P": d["P"], "q": d["q"]},
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         g_x = jnp.array([1.0, 0.0])
@@ -1825,7 +1825,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dq_unconstrained(self, unconstrained_2d):
         d = unconstrained_2d
         solver = setup_dense_solver(n_var=d["n_var"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(100)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1847,7 +1847,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dP_unconstrained(self, unconstrained_2d):
         d = unconstrained_2d
         solver = setup_dense_solver(n_var=d["n_var"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(101)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1873,7 +1873,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dq_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(110)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1895,7 +1895,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_db_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(111)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1917,7 +1917,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dA_equality(self, equality_only):
         d = equality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_eq=d["n_eq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(112)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1943,7 +1943,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dq_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(120)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1965,7 +1965,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dh_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(121)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -1987,7 +1987,7 @@ class TestVJPVmapFiniteDifferences:
     def test_vmap_vjp_dG_inequality(self, inequality_only):
         d = inequality_only
         solver = setup_dense_solver(n_var=d["n_var"], n_ineq=d["n_ineq"],
-                                     options={"differentiator_type": "kkt_rev"})
+                                     options={"diff_mode": "rev"})
 
         key = jax.random.PRNGKey(122)
         g_xs = jax.random.normal(key, (self.N_DIRS, d["n_var"]))
@@ -2014,7 +2014,7 @@ class TestVJPVmapFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(130)
@@ -2039,7 +2039,7 @@ class TestVJPVmapFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(131)
@@ -2064,7 +2064,7 @@ class TestVJPVmapFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(132)
@@ -2095,7 +2095,7 @@ class TestVJPVmapFiniteDifferences:
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
             fixed_elements={"P": d["P"], "q": d["q"],
                             "A": d["A"], "G": d["G"], "h": d["h"]},
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(140)
@@ -2124,7 +2124,7 @@ class TestVJPVmapFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(150)
@@ -2169,7 +2169,7 @@ class TestVJPVmapFiniteDifferences:
         d = full_qp
         solver = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
 
         key = jax.random.PRNGKey(160)
@@ -2203,11 +2203,11 @@ class TestVJPVmapFiniteDifferences:
 
         solver_rev = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_rev"},
+            options={"diff_mode": "rev"},
         )
         solver_fwd = setup_dense_solver(
             n_var=d["n_var"], n_eq=d["n_eq"], n_ineq=d["n_ineq"],
-            options={"differentiator_type": "kkt_fwd"},
+            options={"diff_mode": "fwd"},
         )
 
         key = jax.random.PRNGKey(170)

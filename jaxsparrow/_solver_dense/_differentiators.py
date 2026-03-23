@@ -99,7 +99,7 @@ def create_dense_kkt_differentiator_fwd(
         A callable matching :class:`DenseKKTDifferentiatorFwd`.
     """
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
-    backend_name: str = options_parsed.get("backend", "dense_kkt")
+    backend_name: str = options_parsed.get("backend")
 
     backend: DifferentiatorBackend = get_differentiator_backend(
         backend_name,

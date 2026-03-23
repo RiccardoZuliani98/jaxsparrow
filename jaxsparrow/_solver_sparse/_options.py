@@ -49,7 +49,7 @@ class SparseKKTOptionsFull(DifferentiatorOptions, total=True):
                     ]
 
 DEFAULT_DIFF_OPTIONS: SparseKKTOptionsFull = {
-    "backend":       "kkt",
+    "backend":       "sparse_kkt",
     "dtype":         np.float64,
     "bool_dtype":    np.bool_,
     "cst_tol":       1e-8,

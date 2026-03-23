@@ -37,6 +37,9 @@ from jaxsparrow._utils._diff_backends import (
     get_differentiator_backend,
 )
 
+# Ensure the sparse backend is registered on import
+import jaxsparrow._solver_sparse._sparse_diff_backend  # noqa: F401 #import: ignore
+
 # ── Callable protocols for the returned closures ─────────────────────
 
 class SparseKKTDifferentiatorFwd(Protocol):
@@ -150,7 +153,7 @@ def create_sparse_kkt_differentiator_rev(
             ) -> tuple[dict[str, ndarray], dict[str, float]]
     """
     options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
-    backend_name: str = options_parsed.get("backend", "kkt")
+    backend_name: str = options_parsed.get("backend")
 
     backend: DifferentiatorBackend = get_differentiator_backend(
         backend_name,
