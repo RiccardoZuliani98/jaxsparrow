@@ -67,7 +67,7 @@ solver = setup_dense_solver(
     n_var=nz,
     n_ineq=nineq,
     n_eq=neq,
-    options={"differentiator_type": "kkt_rev"},
+    options={"diff_mode": "rev"},
 )
 
 def get_x(x_init):

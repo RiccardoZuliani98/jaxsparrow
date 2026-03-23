@@ -129,8 +129,8 @@ class FiniteDifferenceRecorder:
             sol_p, _ = solve_fn(**prob_plus)
             sol_m, _ = solve_fn(**prob_minus)
 
-            xp, lamp, mup, _ = sol_p
-            xm, lamm, mum, _ = sol_m
+            xp, lamp, mup = sol_p
+            xm, lamm, mum = sol_m
 
             dx_fd += (xp - xm) / (2.0 * eps)
             dlam_fd += (lamp - lamm) / (2.0 * eps)
@@ -222,8 +222,8 @@ class FiniteDifferenceRecorder:
                 sol_p, _ = solve_fn(**prob_plus)
                 sol_m, _ = solve_fn(**prob_minus)
 
-                xp, lamp, mup, _ = sol_p
-                xm, lamm, mum, _ = sol_m
+                xp, lamp, mup = sol_p
+                xm, lamm, mum = sol_m
 
                 # df/dp_j for all outputs
                 dx = (xp - xm) / (2.0 * eps)
