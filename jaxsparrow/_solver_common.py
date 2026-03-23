@@ -368,10 +368,6 @@ def build_solver(
             for i, k in enumerate(_dynamic_keys)
         }
 
-        # for k in prob_np:
-        #     while prob_np[k].ndim > _EXPECTED_NDIM[k]:
-        #         prob_np[k] = prob_np[k][0]
-
         off = _n_dyn
         x_np   = np.asarray(args[off],     dtype=_dtype)
         lam_np = np.asarray(args[off + 1], dtype=_dtype)
