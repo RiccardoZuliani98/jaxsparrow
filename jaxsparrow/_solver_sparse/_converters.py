@@ -240,6 +240,8 @@ def make_sparse_grad_to_jax_forward(sparsity_info: SparsityInfo):
         A converter with signature ``(key, numpy_grad, dtype) -> jax.Array``.
     """
     def converter(key: str, val: ndarray, dtype) -> Array:
+        #TODO: I think this is_sparse check is useless since we are returning
+        # primal-dual variables which are always dense.
         if is_sparse_key(key):
             if key not in sparsity_info:
                 raise ValueError(
