@@ -119,16 +119,17 @@ def solve(b_val):
 JaxSPARROW supports two differentiation strategies, selected at setup:
 
 ```python
-# Forward mode (JVP) — efficient when n_inputs < n_outputs
-solver_fwd = setup_dense_solver(..., options={"differentiator_type": "kkt_fwd"})
+# Reverse mode (VJP) — required for jax.grad and jax.jacobian (jacrev)
+solver_rev = setup_dense_solver(..., options={"diff_mode": "rev"})
 
-# Reverse mode (VJP) — efficient when n_outputs < n_inputs
-solver_rev = setup_dense_solver(..., options={"differentiator_type": "kkt_rev"})
+# Forward mode (JVP) — only accessible via jax.jvp, jacfwd is not supported
+solver_fwd = setup_dense_solver(..., options={"diff_mode": "fwd"})
 ```
 
-Both modes work with `jax.jvp`, `jax.vjp`, and `jax.vmap`. The choice affects performance, not correctness.
+- **Reverse mode** (`"rev"`): Use `jax.grad`, `jax.jacobian` (which internally uses `jacrev`), and `jax.vjp`. This is the recommended choice for most optimisation and gradient‑based workflows.
+- **Forward mode** (`"fwd"`): Only available through `jax.jvp`. `jax.jacfwd` is **not supported** because of how the custom jvp is implemented. To compute forward‑mode Jacobian‑vector products, simply pass a batched tangent direction to `jax.jvp` – the solver will efficiently solve all directions at once.
 
-Note that by how this is implemented, `jax.grad`, `jax.jacfwd`, and `jax.jacrev` don't work, but you can obtain identical results using jax.jvp and jax.vjp with multiple tangents / cotangents.
+Both modes work with `jax.vmap`. The choice affects performance, not correctness.
 
 ---
 
@@ -201,9 +202,10 @@ Build a differentiable sparse QP solver. Matrices (P, A, G) are passed as `BCOO`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `differentiator_type` | `str` | `"kkt_fwd"` | `"kkt_fwd"` (JVP) or `"kkt_rev"` (VJP) |
-| `solver_type` | `str` | `"qp_solvers"` | Backend solver family |
-| `dtype` | `dtype` | `float64` | Numpy dtype for all computations |
+| `diff_mode` | `str` | `"fwd"` | `"fwd"` (JVP) or `"rev"` (VJP) |
+| `solver` | `dict` | `{}` | Options for the QP solver backend (e.g. `{"solver_name": "piqp"}`) |
+| `differentiator` | `dict` | `{}` | Options for the differentiation backend (e.g. `{"linear_solver": "splu"}`) |
+| `dtype` | `dtype` | `float64` | NumPy dtype for all computations |
 | `debug` | `bool` | `False` | Enable runtime validation checks |
 | `fd_check` | `bool` | `False` | Run finite-difference checks alongside analytical derivatives |
 | `fd_eps` | `float` | `1e-6` | Perturbation size for FD checks |
@@ -215,7 +217,6 @@ options={"solver": {"solver_name": "osqp"}}
 ```
 
 ---
-
 
 ## Project structure
 
@@ -229,17 +230,27 @@ jaxsparrow/
 │   ├── _setup.py                # setup_dense_solver entry point
 │   ├── _solvers.py              # Dense numpy QP solver closure
 │   ├── _differentiators.py      # Dense KKT forward/reverse differentiators
+│   ├── _dense_diff_backend.py   # Dense KKT backend implementation
+│   ├── _options.py              # Dense-specific options
+│   ├── _types.py                # Dense type aliases
 │   └── _converters.py           # JAX array ↔ numpy ndarray
 ├── _solver_sparse/
 │   ├── _setup.py                # setup_sparse_solver entry point
 │   ├── _solvers.py              # Sparse numpy QP solver closure (CSC throughout)
 │   ├── _differentiators.py      # Sparse KKT forward/reverse differentiators
-│   ├── _converters.py           # BCOO ↔ CSC, sparsity info extraction
-│   └── _types.py                # Sparse-specific type aliases
+│   ├── _sparse_diff_backend.py  # Sparse KKT backend implementation
+│   ├── _options.py              # Sparse-specific options
+│   ├── _types.py                # Sparse type aliases
+│   └── _converters.py           # BCOO ↔ CSC, sparsity info extraction
 └── _utils/
-    ├── _parsing.py              # Option merging with defaults
-    ├── _timing.py               # TimingRecorder
-    └── _fd_recorder.py          # Finite-difference validation
+    ├── _diff_backends.py        # Differentiator backend protocol
+    ├── _solver_backends.py      # QP solver backend protocol
+    ├── _fd_recorder.py          # Finite‑difference validation
+    ├── _linear_solvers.py       # Dense/sparse linear solvers
+    ├── _parsing_utils.py        # Option merging
+    ├── _printing_utils.py       # Formatting helpers
+    ├── _sparse_utils.py         # BCOO → CSC conversion
+    └── _timing_utils.py         # TimingRecorder
 ```
 
 The dense and sparse paths share all JAX-level wiring (`_solver_common.py`) and differ only in how data is converted and how the KKT system is assembled and solved. The common module never inspects the numpy representation — it delegates everything through converter callables supplied by the dense or sparse setup function.
