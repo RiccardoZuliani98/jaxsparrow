@@ -92,6 +92,11 @@ def solve_mpc(x_init):
 # Jacobian via vmap(jvp) with identity tangent matrix
 I_nx = jnp.eye(nx)
 
+from jax import jacfwd
+jacfwd(solve_mpc)(jnp.array([-1.0, -1.0]))
+
+raise Exception
+
 @jit
 def jvp_single(x0, dx0):
     return jvp(solve_mpc, (x0,), (dx0,))

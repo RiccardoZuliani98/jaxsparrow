@@ -318,19 +318,14 @@ def build_solver(
         t.update(t_diff)
 
         # ── Build JAX results ────────────────────────────────────────
+        # With legacy_vectorized, primals are never batched by vmap,
+        # so the primal result is always unbatched.
         start = perf_counter()
-        if batch_size > 0:
-            res: SolverOutput = {
-                "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
-                "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
-                "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
-            }
-        else:
-            res: SolverOutput = {
-                "x":   jnp.array(x_np, dtype=_dtype),
-                "lam": jnp.array(lam_np, dtype=_dtype),
-                "mu":  jnp.array(mu_np, dtype=_dtype),
-            }
+        res: SolverOutput = {
+            "x":   jnp.array(x_np, dtype=_dtype),
+            "lam": jnp.array(lam_np, dtype=_dtype),
+            "mu":  jnp.array(mu_np, dtype=_dtype),
+        }
 
         diff_out: SolverDiffOutFwd = {
             "x":   jnp.array(dx_np, dtype=_dtype),
@@ -495,7 +490,7 @@ def build_solver(
             _jvp_shapes,
             *primals,
             *tangents,
-            vmap_method="expand_dims",
+            vmap_method="legacy_vectorized",
         )
         return res, tangents_out
 

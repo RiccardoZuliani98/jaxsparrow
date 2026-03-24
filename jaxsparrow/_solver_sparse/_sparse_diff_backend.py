@@ -412,11 +412,23 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Merge tangents (only for keys with nonzero tangents) ─────
         if batched:
+            # Start from fixed zero tangents (length-1 lists / (1,...) arrays)
             d_np: dict[str, Union[ndarray, list[csc_matrix], csc_matrix]] = {
                 k: v for k, v in self._d_fixed_batched.items()
                 if _nz(k)
             }
             d_np.update(dyn_tangents_np)  # type: ignore
+
+            # Broadcast every tangent to batch_size so downstream loops
+            # can assume uniform sizes without broadcast_to guards.
+            for k in list(d_np.keys()):
+                v = d_np[k]
+                if k in ("P", "A", "G") and not isinstance(v, list):
+                    d_np[k] = [v] * batch_size
+                elif isinstance(v, ndarray) and v.ndim == 1:
+                    d_np[k] = np.broadcast_to(
+                        v, (batch_size, v.shape[0])
+                    ).copy()
         else:
             d_np = {k: v for k, v in self._d_fixed.items() if _nz(k)}
             d_np.update(dyn_tangents_np)  # type: ignore
