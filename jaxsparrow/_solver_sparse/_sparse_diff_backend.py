@@ -145,8 +145,8 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # Populated by setup()
         self._fixed: dict[str, Union[csc_matrix, ndarray]] = {}
-        self._d_fixed: dict[str, ndarray] = {}
-        self._d_fixed_batched: dict[str, ndarray] = {}
+        self._d_fixed: dict[str, Union[csc_matrix, ndarray]] = {}
+        self._d_fixed_batched: dict[str, Union[list[csc_matrix], ndarray]] = {}
         self._sp_indices: dict[str, tuple[ndarray, ndarray]] = {}
         self._dyn_set: Optional[frozenset[str]] = None
         # Keys whose tangents are structurally zero (fixed and not
@@ -196,7 +196,12 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
             for k, v in fixed_elements.items():
                 if issparse(v):
                     self._fixed[k] = csc_matrix(v, dtype=_dtype)
-                    self._d_fixed[k] = np.zeros(v.shape, dtype=_dtype)  # type: ignore
+                    # Zero tangent as a sparse matrix with the same pattern
+                    mat = csc_matrix(v, dtype=_dtype)
+                    self._d_fixed[k] = csc_matrix(
+                        (np.zeros(mat.nnz, dtype=_dtype), mat.indices.copy(), mat.indptr.copy()),
+                        shape=mat.shape,
+                    )
                 else:
                     self._fixed[k] = np.asarray(v, dtype=_dtype).squeeze()
                     self._d_fixed[k] = np.zeros_like(
@@ -207,17 +212,22 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         if n_eq == 0:
             self._fixed["A"] = _sparse_zeros(0, n_var, _dtype)
             self._fixed["b"] = np.zeros((0,), dtype=_dtype)
-            self._d_fixed["A"] = np.zeros((0, n_var), dtype=_dtype)
+            self._d_fixed["A"] = _sparse_zeros(0, n_var, _dtype)
             self._d_fixed["b"] = np.zeros((0,), dtype=_dtype)
         if n_ineq == 0:
             self._fixed["G"] = _sparse_zeros(0, n_var, _dtype)
             self._fixed["h"] = np.zeros((0,), dtype=_dtype)
-            self._d_fixed["G"] = np.zeros((0, n_var), dtype=_dtype)
+            self._d_fixed["G"] = _sparse_zeros(0, n_var, _dtype)
             self._d_fixed["h"] = np.zeros((0,), dtype=_dtype)
 
-        self._d_fixed_batched = {
-            k: np.expand_dims(v, 0) for k, v in self._d_fixed.items()
-        }
+        # Batched versions: wrap each fixed tangent in a single-element
+        # list (for sparse) or add a leading dim (for dense).
+        self._d_fixed_batched = {}
+        for k, v in self._d_fixed.items():
+            if issparse(v):
+                self._d_fixed_batched[k] = [v]
+            else:
+                self._d_fixed_batched[k] = np.expand_dims(v, 0)
 
         # ── Dynamic key set ──────────────────────────────────────────
         if dynamic_keys is not None:
@@ -226,21 +236,11 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
             self._dyn_set = None
 
         # ── Determine which fixed keys have structurally zero tangents ──
-        # A key has a zero tangent when:
-        #   - it appears only in _d_fixed (not overridden by a dynamic
-        #     tangent at call time), AND
-        #   - dynamic_keys is not None (if None, all keys are
-        #     potentially dynamic so nothing can be skipped).
-        #
-        # At differentiate_fwd time, any key in _zero_tangent_keys
-        # will NOT appear in dyn_tangents_np (by contract), so we
-        # can skip the corresponding matvec / addition.
         if dynamic_keys is not None:
             all_fixed_keys = frozenset(self._d_fixed.keys())
             dyn = frozenset(dynamic_keys)
             self._zero_tangent_keys = all_fixed_keys - dyn
         else:
-            # All keys might be dynamic — nothing is guaranteed zero.
             self._zero_tangent_keys = frozenset()
 
         # ── Sparsity indices ─────────────────────────────────────────
@@ -363,6 +363,13 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
     ) -> tuple[SolverDiffOutFwdNP, dict[str, float]]:
         """Forward-mode (JVP) through KKT conditions.
 
+        Sparse matrix tangents (dP, dA, dG) may arrive as:
+        - ``csc_matrix`` in the unbatched case, or
+        - ``list[csc_matrix]`` in the batched case.
+
+        The batched path loops over batch elements performing sparse
+        matvecs, avoiding dense ``(batch, m, n)`` materialization.
+
         Args:
             sol_np: Tuple of (x, lam, mu) solution arrays.
             dyn_primals_np: Dynamic ingredients (primal values).
@@ -404,19 +411,15 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_active = int(np.sum(active_np))
 
         # ── Merge tangents (only for keys with nonzero tangents) ─────
-        # For keys in _zero_tangent_keys the tangent is structurally
-        # zero, so we never look them up.  We merge only keys whose
-        # tangent can actually be nonzero: dynamic tangents override
-        # fixed ones as before.
         if batched:
-            d_np: dict[str, ndarray] = {
+            d_np: dict[str, Union[ndarray, list[csc_matrix], csc_matrix]] = {
                 k: v for k, v in self._d_fixed_batched.items()
                 if _nz(k)
             }
-            d_np.update(dyn_tangents_np) #type: ignore
+            d_np.update(dyn_tangents_np)  # type: ignore
         else:
             d_np = {k: v for k, v in self._d_fixed.items() if _nz(k)}
-            d_np.update(dyn_tangents_np) #type: ignore
+            d_np.update(dyn_tangents_np)  # type: ignore
 
         # ── Build KKT LHS ────────────────────────────────────────────
         lhs, n_h = self._build_kkt_lhs(prob, P_sp, G_sp, active_np, n_active)
@@ -430,22 +433,32 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         #
         # Each addend is skipped when its tangent (dP, dq, dA, …) is
         # structurally zero, saving a matvec or vector add per term.
+        #
+        # In the batched case, sparse matrix tangents (dP, dA, dG) are
+        # list[csc_matrix]. We loop over batch elements performing
+        # sparse matvecs, which avoids materializing dense (batch,m,n).
 
         rhs_pieces: list[ndarray] = []
 
         if batched:
-            # -- dL accumulator: start from zero, add only live terms --
+            # -- dL accumulator: (batch, n_var) --
             dL_np = np.zeros((batch_size, n_var), dtype=_dtype)
 
             if _nz("P"):
-                dL_np = dL_np + d_np["P"] @ x_np
+                dP_list = d_np["P"]  # list[csc_matrix]
+                for i, dP_i in enumerate(dP_list):  # type: ignore
+                    dL_np[i] += dP_i @ x_np
             if _nz("q"):
                 dL_np = dL_np + d_np["q"]
 
             if n_eq > 0:
                 if _nz("A"):
-                    dL_np = dL_np + d_np["A"].transpose(0, 2, 1) @ mu_np
-                    rhs_pieces.append(d_np["A"] @ x_np)
+                    dA_list = d_np["A"]  # list[csc_matrix]
+                    rhs_eq = np.zeros((batch_size, n_eq), dtype=_dtype)
+                    for i, dA_i in enumerate(dA_list):  # type: ignore
+                        dL_np[i] += dA_i.T @ mu_np
+                        rhs_eq[i] = dA_i @ x_np
+                    rhs_pieces.append(rhs_eq)
                 else:
                     rhs_pieces.append(
                         np.zeros((batch_size, n_eq), dtype=_dtype)
@@ -455,10 +468,15 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
                     rhs_pieces[-1] = rhs_pieces[-1] - d_np["b"]
 
             if n_ineq > 0 and n_active > 0:
+                lam_active = lam_np[active_np]
                 if _nz("G"):
-                    dG_active = d_np["G"][:, active_np, :]
-                    dL_np = dL_np + dG_active.transpose(0, 2, 1) @ lam_np[active_np]
-                    rhs_pieces.append(dG_active @ x_np)
+                    dG_list = d_np["G"]  # list[csc_matrix]
+                    rhs_ineq = np.zeros((batch_size, n_active), dtype=_dtype)
+                    for i, dG_i in enumerate(dG_list):  # type: ignore
+                        dG_i_active = dG_i[active_np, :]
+                        dL_np[i] += dG_i_active.T @ lam_active
+                        rhs_ineq[i] = np.asarray(dG_i_active @ x_np).ravel()
+                    rhs_pieces.append(rhs_ineq)
                 else:
                     rhs_pieces.append(
                         np.zeros((batch_size, n_active), dtype=_dtype)
@@ -473,18 +491,20 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
                 for p in [dL_np] + rhs_pieces
             ], axis=1).T
         else:
-            # -- dL accumulator: start from zero, add only live terms --
-            dL_np = np.zeros(n_var, dtype=_dtype)
+            # ── Unbatched path (unchanged — tangents are csc_matrix) ──
+            dL_np_1d = np.zeros(n_var, dtype=_dtype)
 
             if _nz("P"):
-                dL_np = dL_np + d_np["P"] @ x_np
+                dL_np_1d = dL_np_1d + d_np["P"] @ x_np
             if _nz("q"):
-                dL_np = dL_np + d_np["q"]
+                dL_np_1d = dL_np_1d + d_np["q"] 
 
             if n_eq > 0:
                 if _nz("A"):
-                    dL_np = dL_np + d_np["A"].T @ mu_np
-                    rhs_pieces.append(d_np["A"] @ x_np)
+                    dL_np_1d = dL_np_1d + d_np["A"].T @ mu_np
+                    rhs_pieces.append(
+                        np.asarray(d_np["A"] @ x_np).ravel()
+                    )
                 else:
                     rhs_pieces.append(np.zeros(n_eq, dtype=_dtype))
 
@@ -494,15 +514,17 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
             if n_ineq > 0 and n_active > 0:
                 if _nz("G"):
                     dG_active = d_np["G"][active_np, :]
-                    dL_np = dL_np + dG_active.T @ lam_np[active_np]
-                    rhs_pieces.append(dG_active @ x_np)
+                    dL_np_1d = dL_np_1d + dG_active.T @ lam_np[active_np]
+                    rhs_pieces.append(
+                        np.asarray(dG_active @ x_np).ravel()
+                    )
                 else:
                     rhs_pieces.append(np.zeros(n_active, dtype=_dtype))
 
                 if _nz("h"):
                     rhs_pieces[-1] = rhs_pieces[-1] - d_np["h"][active_np]
 
-            rhs = np.hstack([dL_np] + rhs_pieces)
+            rhs = np.hstack([dL_np_1d] + rhs_pieces)
 
         t["build_system"] = perf_counter() - start
 
