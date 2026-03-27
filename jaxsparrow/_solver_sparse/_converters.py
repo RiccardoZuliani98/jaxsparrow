@@ -4,7 +4,7 @@ solver_sparse/converters.py
 JAX ↔ numpy conversions for the sparse path.
 
 *Primals*:  BCOO matrices → scipy CSC;  dense vectors → ndarray.
-*Tangents*: BCOO tangent → dense ndarray (the KKT RHS needs dense ops).
+*Tangents*: BCOO tangent → CSC (unbatched) or list[CSC] (batched).
 *Grads*:    gradient arrays → 1-D array of nonzero-value gradients
             (matching the BCOO ``.data`` layout so JAX can propagate them).
 
@@ -146,10 +146,11 @@ def make_sparse_tangent_converter(sparsity_info: SparsityInfo):
     ``val.data`` may be either ``(nnz,)`` (unbatched) or
     ``(batch, nnz)`` (batched).
 
-    Since SciPy sparse matrices are strictly 2-D, the unbatched case
-    returns a CSC matrix while the batched case materializes into a
-    dense ``(batch, m, n)`` array so the downstream numpy differentiator
-    can iterate over batch elements.
+    The unbatched case returns a single CSC matrix. The batched case
+    returns a ``list[csc_matrix]`` of length ``batch``, each sharing
+    the same sparsity pattern but with different data. This avoids
+    materializing a dense ``(batch, m, n)`` array and lets the
+    downstream differentiator perform sparse matvecs per batch element.
 
     Args:
         sparsity_info: Per-key mapping produced by ``build_sparsity_info``,
@@ -158,7 +159,7 @@ def make_sparse_tangent_converter(sparsity_info: SparsityInfo):
 
     Returns:
         A converter function with signature
-        ``(key: str, val, dtype) -> ndarray | csc_matrix``.
+        ``(key: str, val, dtype) -> ndarray | csc_matrix | list[csc_matrix]``.
 
     Raises:
         ValueError: If a key is identified as sparse by ``is_sparse_key``
@@ -166,7 +167,7 @@ def make_sparse_tangent_converter(sparsity_info: SparsityInfo):
         ValueError: If a sparse tangent has an unexpected number of
             dimensions (neither 1 nor 2).
     """
-    def converter(key: str, val, dtype) -> ndarray | csc_matrix:
+    def converter(key: str, val, dtype) -> ndarray | csc_matrix | list[csc_matrix]:
         if is_sparse_key(key):
             if key not in sparsity_info:
                 raise ValueError(
@@ -174,31 +175,25 @@ def make_sparse_tangent_converter(sparsity_info: SparsityInfo):
                     f"in sparsity_info (available: {list(sparsity_info)})"
                 )
             si = sparsity_info[key]
+            rows, cols, shape = si["rows"], si["cols"], si["shape"]
             data = np.asarray(val.data, dtype=dtype)
 
             if data.ndim == 1:
-                # Unbatched: (nnz,) → CSC
-                return csc_matrix(
-                    (data, (si["rows"], si["cols"])),
-                    shape=si["shape"],
-                )
+                # Unbatched: (nnz,) → single CSC
+                return csc_matrix((data, (rows, cols)), shape=shape)
             elif data.ndim == 2:
-                # Batched: (batch, nnz) → dense (batch, m, n)
-                # scipy.sparse is 2-D only
-                batch_size = data.shape[0]
-                #TODO: is this the fastest thing we can do here? Could we instead build
-                # a sparse matrix for this?
-                out = np.zeros((batch_size, *si["shape"]), dtype=dtype)
-                out[:, si["rows"], si["cols"]] = data
-                return out
+                # Batched: (batch, nnz) → list of CSC matrices
+                # All share the same (rows, cols, shape); only data differs.
+                return [
+                    csc_matrix((data[i], (rows, cols)), shape=shape)
+                    for i in range(data.shape[0])
+                ]
             else:
                 raise ValueError(
                     f"Unexpected tangent data ndim={data.ndim} for key '{key}'"
                 )
         else:
             arr = np.asarray(val, dtype=dtype)
-            # if arr.ndim > EXPECTED_NDIM[key]:
-            #     arr = arr[0]
             return arr
 
     return converter
@@ -227,11 +222,13 @@ def make_sparse_grad_to_jax_reverse(sparsity_info: SparsityInfo):
 def make_sparse_grad_to_jax_forward(sparsity_info: SparsityInfo):
     """Convert forward-mode gradients to JAX arrays.
 
-    The forward differentiator returns gradients for sparse keys as
-    full dense matrices, either ``(m, n)`` unbatched or
-    ``(batch, m, n)`` batched. This converter extracts only the entries
-    at the sparsity-pattern positions so that the result aligns with
-    the BCOO ``.data`` layout.
+    The forward differentiator returns solution tangents (dx, dlam, dmu),
+    which are always dense vectors. This converter simply wraps them as
+    JAX arrays.
+
+    Note: solution tangents are never sparse — the sparse-key check
+    that was here previously was dead code, since the forward
+    differentiator only returns "x", "lam", "mu" keys.
 
     Args:
         sparsity_info: Per-key mapping produced by ``build_sparsity_info``.
@@ -240,20 +237,6 @@ def make_sparse_grad_to_jax_forward(sparsity_info: SparsityInfo):
         A converter with signature ``(key, numpy_grad, dtype) -> jax.Array``.
     """
     def converter(key: str, val: ndarray, dtype) -> Array:
-        if is_sparse_key(key):
-            if key not in sparsity_info:
-                raise ValueError(
-                    f"Key '{key}' is marked as sparse but has no entry "
-                    f"in sparsity_info (available: {list(sparsity_info)})"
-                )
-            si = sparsity_info[key]
-            rows, cols = si["rows"], si["cols"]
-            if val.ndim == 2:
-                return jnp.asarray(val[rows, cols], dtype=dtype)
-            else:
-                # Batched: (batch, m, n) → (batch, nnz)
-                return jnp.asarray(val[:, rows, cols], dtype=dtype)
-        else:
-            return jnp.asarray(val, dtype=dtype)
+        return jnp.asarray(val, dtype=dtype)
 
     return converter

@@ -28,12 +28,14 @@ Usage
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
+import numpy as np
 import jax
 from jax.experimental.sparse import BCOO
 
 from jaxsparrow._utils._parsing_utils import parse_options
+from jaxsparrow._utils._sparse_utils import bcoo_to_csc
 from jaxsparrow._options_common import (
     DEFAULT_CONSTRUCTOR_OPTIONS,
     ConstructorOptions,
@@ -43,7 +45,8 @@ from jaxsparrow._solver_sparse._differentiators import (
     create_sparse_kkt_differentiator_fwd,
     create_sparse_kkt_differentiator_rev,
 )
-from jaxsparrow._solver_sparse._types import SparseIngredientsNP
+from jaxsparrow._solver_sparse._types import SparseIngredientsNP, SparseIngredients
+from jaxsparrow._solver_sparse._options import DEFAULT_SOLVER_OPTIONS
 from jaxsparrow._solver_sparse._converters import (
     build_sparsity_info,
     is_sparse_key,
@@ -66,7 +69,7 @@ def setup_sparse_solver(
     n_ineq: int = 0,
     n_eq: int = 0,
     sparsity_patterns: Optional[dict[str, BCOO]] = None,
-    fixed_elements: Optional[SparseIngredientsNP] = None,
+    fixed_elements: Optional[Union[SparseIngredientsNP, SparseIngredients]] = None,
     options: Optional[ConstructorOptions] = None,
 ):
     """Build a differentiable sparse solver.
@@ -99,11 +102,14 @@ def setup_sparse_solver(
             optionally ``"A"``, ``"G"``) to a ``BCOO`` matrix encoding
             the sparsity structure. Required for every matrix key that
             is dynamic (not in *fixed_elements*).
-        fixed_elements: ingredients that remain constant across
-            calls. Matrices should be ``scipy.sparse.csc_matrix``;
-            vectors should be ``ndarray``. Keys present here are
-            excluded from JAX's traced path and should not be passed
-            again at solve time.
+        fixed_elements: Ingredients that remain constant across
+            calls. May be supplied in either JAX form (``BCOO``
+            matrices and ``jax.Array`` vectors) or NumPy form
+            (``scipy.sparse.csc_matrix`` and ``ndarray``). JAX
+            inputs are automatically converted to their NumPy/SciPy
+            equivalents using the dtype from the solver options.
+            Keys present here are excluded from JAX's traced path
+            and should not be passed again at solve time.
         options: Solver and differentiator options. Unspecified keys
             are filled from ``DEFAULT_CONSTRUCTOR_OPTIONS``. Notable
             keys include ``"differentiator_type"`` (``"kkt_fwd"`` or
@@ -143,6 +149,33 @@ def setup_sparse_solver(
     fixed_keys_set: set[str] = set()
 
     if fixed_elements is not None:
+
+        # ── Convert JAX types to NumPy/SciPy if needed ───────────────
+        # Fixed elements may be supplied as BCOO matrices or JAX arrays.
+        # Convert them to scipy CSC / numpy ndarray using the solver
+        # dtype so downstream code always sees NumPy-side types.
+        solver_options_parsed = parse_options(
+            options_parsed["solver"], DEFAULT_SOLVER_OPTIONS,
+        )
+        _solver_dtype = solver_options_parsed["dtype"]
+
+        fixed_elements_converted: SparseIngredientsNP = {}
+        for key, val in fixed_elements.items():
+            if isinstance(val, BCOO):
+                fixed_elements_converted[key] = bcoo_to_csc(
+                    val, dtype=_solver_dtype,
+                )
+            elif isinstance(val, jax.Array):
+                # JAX array — convert to numpy
+                fixed_elements_converted[key] = np.asarray(
+                    val, dtype=_solver_dtype,
+                )
+            else:
+                # Already NumPy / SciPy — pass through
+                fixed_elements_converted[key] = val
+
+        fixed_elements = fixed_elements_converted
+
         fixed_keys_set = set(fixed_elements.keys())
         for key, val in fixed_elements.items():
             shape = val.shape  # works for both csc_matrix and ndarray #type:ignore

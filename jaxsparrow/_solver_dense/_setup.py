@@ -11,7 +11,10 @@ differentiator callables.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
+
+import numpy as np
+import jax
 
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import (
@@ -25,7 +28,8 @@ from jaxsparrow._solver_dense._differentiators import (
     create_dense_kkt_differentiator_fwd,
     create_dense_kkt_differentiator_rev
 )
-from jaxsparrow._solver_dense._types import DenseIngredientsNP
+from jaxsparrow._solver_dense._types import DenseIngredientsNP, DenseIngredients
+from jaxsparrow._solver_dense._options import DEFAULT_SOLVER_OPTIONS
 from jaxsparrow._solver_common import (
     build_solver, 
     make_expected_shapes, 
@@ -47,7 +51,7 @@ def setup_dense_solver(
     n_var: int,
     n_ineq: int = 0,
     n_eq: int = 0,
-    fixed_elements: Optional[DenseIngredientsNP] = None,
+    fixed_elements: Optional[Union[DenseIngredientsNP, DenseIngredients]] = None,
     options: Optional[ConstructorOptions] = None,
 ):
     """Set up a differentiable dense solver.
@@ -68,9 +72,12 @@ def setup_dense_solver(
             Zero if there are no inequality constraints.
         n_eq: Number of equality constraints (``A x = b``).
             Zero if there are no equality constraints.
-        fixed_elements: parameters that are constant across calls
+        fixed_elements: Parameters that are constant across calls
             and should not be differentiated through. Keys are any
-            subset of ``{"P", "q", "A", "b", "G", "h"}``. Fixed
+            subset of ``{"P", "q", "A", "b", "G", "h"}``. May be
+            supplied as JAX arrays (``jax.Array``) or NumPy arrays
+            (``ndarray``); JAX inputs are automatically converted to
+            NumPy using the dtype from the solver options. Fixed
             parameters are baked into the solver/differentiator
             closures at construction time. Remaining parameters must
             be supplied as dynamic arguments at each call.
@@ -100,6 +107,28 @@ def setup_dense_solver(
     fixed_keys_set: set[str] = set()
 
     if fixed_elements is not None:
+
+        # ── Convert JAX arrays to NumPy if needed ────────────────────
+        # Fixed elements may be supplied as JAX arrays. Convert them
+        # to numpy ndarrays using the solver dtype so downstream code
+        # always sees NumPy-side types.
+        solver_options_parsed = parse_options(
+            options_parsed["solver"], DEFAULT_SOLVER_OPTIONS,
+        )
+        _solver_dtype = solver_options_parsed["dtype"]
+
+        fixed_elements_converted: DenseIngredientsNP = {}
+        for key, val in fixed_elements.items():
+            if isinstance(val, jax.Array):
+                fixed_elements_converted[key] = np.asarray(
+                    val, dtype=_solver_dtype,
+                )
+            else:
+                # Already NumPy — pass through
+                fixed_elements_converted[key] = val
+
+        fixed_elements = fixed_elements_converted
+
         fixed_keys_set = set(fixed_elements.keys())
         for key, val in fixed_elements.items():
             assert val.shape == expected_shapes[key]  # type: ignore

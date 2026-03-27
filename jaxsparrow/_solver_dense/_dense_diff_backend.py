@@ -89,10 +89,14 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         )
 
         # Populated by setup()
-        self._fixed = {}
-        self._d_fixed = {}
-        self._d_fixed_batched = {}
+        self._fixed: dict[str, ndarray] = {}
+        self._d_fixed: dict[str, ndarray] = {}
+        self._d_fixed_batched: dict[str, ndarray] = {}
         self._dyn_set: Optional[frozenset[str]] = None
+        # Keys whose tangents are structurally zero (fixed and not
+        # in dynamic_keys).  Forward-mode skips all arithmetic
+        # involving these tangents instead of multiplying by zero.
+        self._zero_tangent_keys: frozenset[str] = frozenset()
 
     # ── Setup ────────────────────────────────────────────────────────
 
@@ -179,6 +183,14 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         else:
             self._dyn_set = None
 
+        # ── Determine which fixed keys have structurally zero tangents ──
+        if dynamic_keys is not None:
+            all_fixed_keys = frozenset(self._d_fixed.keys())
+            dyn = frozenset(dynamic_keys)
+            self._zero_tangent_keys = all_fixed_keys - dyn
+        else:
+            self._zero_tangent_keys = frozenset()
+
         return {"setup": perf_counter() - start}
 
     # ── Helpers ──────────────────────────────────────────────────────
@@ -186,6 +198,14 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
     def _need(self, key: str) -> bool:
         """Return True if gradient is needed for *key*."""
         return self._dyn_set is None or key in self._dyn_set
+
+    def _has_nonzero_tangent(self, key: str) -> bool:
+        """Return True if the tangent for *key* is potentially nonzero.
+
+        A tangent is structurally zero when the key is fixed and not
+        listed among the dynamic keys.
+        """
+        return key not in self._zero_tangent_keys
 
     def _compute_active_set(
         self, 
@@ -279,34 +299,64 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_eq = self._n_eq
         n_ineq = self._n_ineq
         _dtype = self._dtype
+        _nz = self._has_nonzero_tangent
 
         x_np, lam_np, mu_np = sol_np
 
-        # ── Merge primals and tangents ───────────────────────────────
+        # ── Merge primals ────────────────────────────────────────────
         prob_np = cast(DenseIngredientsNP, {**self._fixed, **dyn_primals_np})
 
+        # ── Merge tangents (only for keys with nonzero tangents) ─────
         if batched:
-            d_np = cast(dict[str, ndarray], {**self._d_fixed_batched, **dyn_tangents_np})
+            d_np: dict[str, ndarray] = {
+                k: v for k, v in self._d_fixed_batched.items()
+                if _nz(k)
+            }
+            d_np.update(dyn_tangents_np) #type: ignore
         else:
-            d_np = cast(dict[str, ndarray], {**self._d_fixed, **dyn_tangents_np})
+            d_np = {k: v for k, v in self._d_fixed.items() if _nz(k)}
+            d_np.update(dyn_tangents_np) #type: ignore
 
         # ── Active set and KKT LHS ──────────────────────────────────
         active_np = self._compute_active_set(prob_np, x_np)
         n_active = int(np.sum(active_np))
         lhs, n_h = self._build_kkt_lhs(prob_np, active_np, n_active)
 
-        # ── Build dense RHS ──────────────────────────────────────────
-        dL_np: ndarray = d_np["P"] @ x_np + d_np["q"]
+        # ── Build dense RHS (skip zero tangent terms) ────────────────
         rhs_pieces: list[ndarray] = []
 
         if batched:
+            dL_np = np.zeros((batch_size, n_var), dtype=_dtype)
+
+            if _nz("P"):
+                dL_np = dL_np + d_np["P"] @ x_np
+            if _nz("q"):
+                dL_np = dL_np + d_np["q"]
+
             if n_eq > 0:
-                dL_np = dL_np + d_np["A"].transpose(0, 2, 1) @ mu_np
-                rhs_pieces.append(d_np["A"] @ x_np - d_np["b"])
+                if _nz("A"):
+                    dL_np = dL_np + d_np["A"].transpose(0, 2, 1) @ mu_np
+                    rhs_pieces.append(d_np["A"] @ x_np)
+                else:
+                    rhs_pieces.append(
+                        np.zeros((batch_size, n_eq), dtype=_dtype)
+                    )
+
+                if _nz("b"):
+                    rhs_pieces[-1] = rhs_pieces[-1] - d_np["b"]
+
             if n_ineq > 0 and n_active > 0:
-                dG_active: ndarray = d_np["G"][:, active_np, :]
-                dL_np = dL_np + dG_active.transpose(0, 2, 1) @ lam_np[active_np]
-                rhs_pieces.append(dG_active @ x_np - d_np["h"][:, active_np])
+                if _nz("G"):
+                    dG_active: ndarray = d_np["G"][:, active_np, :]
+                    dL_np = dL_np + dG_active.transpose(0, 2, 1) @ lam_np[active_np]
+                    rhs_pieces.append(dG_active @ x_np)
+                else:
+                    rhs_pieces.append(
+                        np.zeros((batch_size, n_active), dtype=_dtype)
+                    )
+
+                if _nz("h"):
+                    rhs_pieces[-1] = rhs_pieces[-1] - d_np["h"][:, active_np]
 
             rhs = np.concatenate([
                 np.broadcast_to(p, (batch_size, p.shape[1]))
@@ -314,13 +364,33 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
                 for p in [dL_np] + rhs_pieces
             ], axis=1).T
         else:
+            dL_np = np.zeros(n_var, dtype=_dtype)
+
+            if _nz("P"):
+                dL_np = dL_np + d_np["P"] @ x_np
+            if _nz("q"):
+                dL_np = dL_np + d_np["q"]
+
             if n_eq > 0:
-                dL_np += d_np["A"].T @ mu_np
-                rhs_pieces.append(d_np["A"] @ x_np - d_np["b"])
+                if _nz("A"):
+                    dL_np = dL_np + d_np["A"].T @ mu_np
+                    rhs_pieces.append(d_np["A"] @ x_np)
+                else:
+                    rhs_pieces.append(np.zeros(n_eq, dtype=_dtype))
+
+                if _nz("b"):
+                    rhs_pieces[-1] = rhs_pieces[-1] - d_np["b"]
+
             if n_ineq > 0 and n_active > 0:
-                dG_active = d_np["G"][active_np, :]
-                dL_np += dG_active.T @ lam_np[active_np]
-                rhs_pieces.append(dG_active @ x_np - d_np["h"][active_np])
+                if _nz("G"):
+                    dG_active = d_np["G"][active_np, :]
+                    dL_np = dL_np + dG_active.T @ lam_np[active_np]
+                    rhs_pieces.append(dG_active @ x_np)
+                else:
+                    rhs_pieces.append(np.zeros(n_active, dtype=_dtype))
+
+                if _nz("h"):
+                    rhs_pieces[-1] = rhs_pieces[-1] - d_np["h"][active_np]
 
             rhs = np.hstack([dL_np] + rhs_pieces)
 

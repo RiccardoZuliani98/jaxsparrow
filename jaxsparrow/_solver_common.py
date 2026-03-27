@@ -184,7 +184,7 @@ def build_solver(
     }
 
     # ── Warmstart slot ───────────────────────────────────────────────
-    _warmstart: list[Optional[ndarray]] = [None]
+    _warmstart: list[Optional[Array]] = [None]
 
     # ── Aliases for readability ──────────────────────────────────────
     _solver_numpy = solver_numpy
@@ -224,7 +224,7 @@ def build_solver(
         # ── Warmstart ────────────────────────────────────────────────
         prob_np = dynamic_np
         if _warmstart[0] is not None:
-            prob_np["warmstart"] = _warmstart[0]
+            prob_np["warmstart"] = np.asarray(_warmstart[0])
 
         # ── Solve ────────────────────────────────────────────────────
         sol_np, t_solve = _solver_numpy(**prob_np)
@@ -277,7 +277,7 @@ def build_solver(
         # ── Warmstart ────────────────────────────────────────────────
         prob_np = dict(dyn_primals_np)
         if _warmstart[0] is not None:
-            prob_np["warmstart"] = _warmstart[0]
+            prob_np["warmstart"] = np.asarray(_warmstart[0])
 
         # ── Solve ────────────────────────────────────────────────────
         sol_np, t_solve = _solver_numpy(**prob_np)
@@ -578,7 +578,7 @@ def build_solver(
 
         # Store warmstart in mutable closure slot
         if warmstart is not None:
-            _warmstart[0] = np.asarray(warmstart, dtype=_dtype).reshape(-1)
+            _warmstart[0] = jnp.asarray(warmstart, dtype=_dtype).reshape(-1)
         else:
             _warmstart[0] = None
 

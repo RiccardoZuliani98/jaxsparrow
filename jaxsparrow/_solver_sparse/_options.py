@@ -60,14 +60,39 @@ DEFAULT_DIFF_OPTIONS: SparseKKTOptionsFull = {
 # ── Solver options ───────────────────────────────────────────────────
 
 class SparseSolverOptions(SolverOptions):
+    """Partial solver options for the sparse path.
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_SOLVER_OPTIONS`` via :func:`parse_options`.
+
+    Attributes:
+        solver_name: Name of the underlying QP solver
+            (e.g. ``"piqp"``).
+        dtype: NumPy floating-point dtype for arrays.
+        backend: Solver backend protocol name. Currently only
+            ``"qpsolvers"`` is supported.
+    """
     solver_name:    str
     dtype:          type[np.floating]
+    backend:        Literal["qpsolvers"]
 
 class SparseSolverOptionsFull(SolverOptions, total=True):
+    """Complete solver options for the sparse path.
+
+    All keys are required. This is the resolved form after merging
+    user-supplied options with defaults.
+
+    Attributes:
+        solver_name: Name of the underlying QP solver.
+        dtype: NumPy floating-point dtype for arrays.
+        backend: Solver backend protocol name (``"qpsolvers"``).
+    """
     solver_name:    str
     dtype:          type[np.floating]
+    backend:        Literal["qpsolvers"]
 
 DEFAULT_SOLVER_OPTIONS: SparseSolverOptionsFull = {
     "solver_name":  "piqp",
     "dtype":        np.float64,
+    "backend":      "qpsolvers",
 }
