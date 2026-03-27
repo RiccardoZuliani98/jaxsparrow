@@ -28,7 +28,7 @@ Usage
 from __future__ import annotations
 
 import logging
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 
 import numpy as np
 import jax
@@ -69,8 +69,8 @@ def setup_sparse_solver(
     n_ineq: int = 0,
     n_eq: int = 0,
     sparsity_patterns: Optional[dict[str, BCOO]] = None,
-    fixed_elements: Optional[Union[SparseIngredientsNP, SparseIngredients]] = None,
-    options: Optional[ConstructorOptions] = None,
+    fixed_elements: Optional[Union[SparseIngredientsNP, SparseIngredients,Dict[str, jax.Array | BCOO]]] = None,
+    options: Optional[ConstructorOptions | Dict[str, Any]] = None,
 ):
     """Build a differentiable sparse solver.
 

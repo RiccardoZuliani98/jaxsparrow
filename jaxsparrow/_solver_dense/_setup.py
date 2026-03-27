@@ -11,7 +11,7 @@ differentiator callables.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Sequence, Union
+from typing import Optional, Sequence, Union, Dict, Any
 
 import numpy as np
 import jax
@@ -51,8 +51,8 @@ def setup_dense_solver(
     n_var: int,
     n_ineq: int = 0,
     n_eq: int = 0,
-    fixed_elements: Optional[Union[DenseIngredientsNP, DenseIngredients]] = None,
-    options: Optional[ConstructorOptions] = None,
+    fixed_elements: Optional[Union[DenseIngredientsNP, DenseIngredients , Dict[str, jax.Array]]] = None,
+    options: Optional[ConstructorOptions | Dict[str, Any]] = None,
 ):
     """Set up a differentiable dense solver.
 
