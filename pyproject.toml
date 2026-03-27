@@ -1,33 +1,38 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "jaxsparrow"
-version = "0.1.0"
+version = "1.0.0"
 description = "JAX - Sensitivity for PARametric Optimization (Wow!)"
 readme = "README.md"
-license = "MIT"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     { name = "Riccardo Zuliani" },
 ]
 keywords = ["jax", "optimization", "qp", "sensitivity", "mpc", "autodiff"]
 dependencies = [
-    "jax>=0.4",
-    "jaxlib>=0.4",
-    "numpy>=1.24",
-    "scipy>=1.10",
-    "qpsolvers>=4.0",
-    "jaxtyping>=0.2",
+    "jax>=0.9.0",
+    "jaxlib>=0.9.0",
+    "jaxtyping>=0.3.0",
+    "ml_dtypes>=0.5.0",
+    "numpy>=2.4.0",
+    "opt_einsum>=3.4.0",
+    "piqp>=0.6.0",
+    "qpsolvers>=4.11.0",
+    "scipy>=1.17.0",
+    "osqp>=1.1.0",
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-]
-osqp = ["osqp>=0.6"]
-clarabel = ["clarabel>=0.6"]
+test = ["pytest>=9.0"]
+plot = ["matplotlib>=3.10"]
+dev = ["pytest>=9.0", "matplotlib>=3.10"]
 
 [project.urls]
 Homepage = "https://github.com/RiccardoZuliani98/jaxsparrow"
