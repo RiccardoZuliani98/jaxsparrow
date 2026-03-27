@@ -10,6 +10,7 @@ It's similar to [dQP](https://github.com/cwmagoon/dQP) but it's written in Jax i
 
 This library provides two functions that allow the definition of differentiable QP solvers, one is dense and one is sparse.
 The QP problem is solved using the wrapper offered by [qpsolvers](https://github.com/qpsolvers/qpsolvers), but more backends will be available soon.
+Everything is done on CPU because that's where the numpy solvers operate. If you are looking for GPU options, consider [QPax](https://github.com/kevin-tracy/qpax).
 
 This library implements efficient conversions between numpy and jax basically.
 Also you can take derivatives through the QP solver (both forward and reverse).
@@ -72,21 +73,23 @@ For large structured problems (e.g. MPC), the sparse path avoids dense matrix op
 
 ```python
 from jax.experimental.sparse import BCOO
-from scipy.sparse import csc_matrix
 from jaxsparrow import setup_sparse_solver
 
 # Define sparsity patterns (only structure matters, values are ignored)
-P_pattern = BCOO.fromdense(P_dense)
-A_pattern = BCOO.fromdense(A_dense)
-G_pattern = BCOO.fromdense(G_dense)
+P_sparse = BCOO.fromdense(P_dense)
+A_sparse = BCOO.fromdense(A_dense)
+G_sparse = BCOO.fromdense(G_dense)
 
 solver = setup_sparse_solver(
     n_var=n, n_eq=m_eq, n_ineq=m_ineq,
-    sparsity_patterns={"P": P_pattern, "A": A_pattern, "G": G_pattern},
-    # Fix constant ingredients to avoid repeated conversions:
+    # Pass sparsity of non-constant elements
+    sparsity_pattern={
+        "A": A_sparse
+    },
+    # Pass constant elements here
     fixed_elements={
-        "P": csc_matrix(P_dense),
-        "G": csc_matrix(G_dense),
+        "P": P_dense,
+        "G": G_dense,
         "h": h_array,
     },
 )
