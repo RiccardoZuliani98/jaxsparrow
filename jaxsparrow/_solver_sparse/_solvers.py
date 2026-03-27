@@ -67,7 +67,8 @@ def create_sparse_solver(
             - ``"solver_name"``: backend solver name (e.g. ``"piqp"``).
             - ``"backend"``: backend protocol name (default:
               ``"qpsolvers"``). Controls which :class:`SolverBackend`
-              implementation is used.
+              implementation is used. Currently only ``"qpsolvers"``
+              is supported.
             - ``"dtype"``: NumPy floating-point dtype for arrays.
 
             Defaults are filled for missing keys.
@@ -91,7 +92,7 @@ def create_sparse_solver(
 
     # ── Create backend ───────────────────────────────────────────────
 
-    backend_name: str = options_parsed.get("backend", "qpsolvers")
+    backend_name: str = options_parsed["backend"]
     backend: SolverBackend = get_backend(
         backend_name,
         solver_name=options_parsed["solver_name"],
