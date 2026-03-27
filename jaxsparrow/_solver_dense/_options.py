@@ -76,9 +76,21 @@ DEFAULT_DIFF_OPTIONS: DenseKKTfwdOptionsFull = {
 # ── Solver options ───────────────────────────────────────────────────
 
 class DenseSolverOptions(SolverOptions):
-    """Partial solver options for the dense path."""
+    """Partial solver options for the dense path.
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_SOLVER_OPTIONS`` via :func:`parse_options`.
+
+    Attributes:
+        solver_name: Backend solver name passed to ``qpsolvers``
+            (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
+        dtype: NumPy floating-point dtype for all arrays.
+        backend: Solver backend protocol name. Currently only
+            ``"qpsolvers"`` is supported.
+    """
     solver_name:    str
     dtype:          type[np.floating]
+    backend:        Literal["qpsolvers"]
 
 
 class DenseSolverOptionsFull(SolverOptions, total=True):
@@ -88,12 +100,15 @@ class DenseSolverOptionsFull(SolverOptions, total=True):
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
         dtype: NumPy floating-point dtype for all arrays.
+        backend: Solver backend protocol name (``"qpsolvers"``).
     """
     solver_name:    str
     dtype:          type[np.floating]
+    backend:        Literal["qpsolvers"]
 
 
 DEFAULT_SOLVER_OPTIONS: DenseSolverOptionsFull = {
     "solver_name": "piqp",
     "dtype": np.float64,
+    "backend": "qpsolvers",
 }

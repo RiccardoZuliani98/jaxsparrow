@@ -71,8 +71,11 @@ def create_dense_solver(
         n_eq: Number of equality constraints (zero if none).
         n_ineq: Number of inequality constraints (zero if none).
         options: Solver options (solver backend name, dtype,
-            constraint tolerance). Defaults are filled for missing
-            keys from ``DEFAULT_SOLVER_OPTIONS``.
+            constraint tolerance). The ``"backend"`` key selects the
+            solver backend protocol (default: ``"qpsolvers"``);
+            currently only ``"qpsolvers"`` is supported. Defaults
+            are filled for missing keys from
+            ``DEFAULT_SOLVER_OPTIONS``.
         fixed_elements: ingredients that remain constant across
             calls (e.g. constraint matrices that do not change).
             Passed directly to the backend's :meth:`setup` call;
@@ -97,7 +100,7 @@ def create_dense_solver(
 
     # ── Create backend ───────────────────────────────────────────────
 
-    backend_name: str = options_parsed.get("backend", "qpsolvers")
+    backend_name: str = options_parsed["backend"]
     backend: SolverBackend = get_backend(
         backend_name,
         solver_name=options_parsed["solver_name"],
