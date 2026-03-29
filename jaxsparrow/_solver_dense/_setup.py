@@ -120,7 +120,7 @@ def setup_dense_solver(
         solver_options_parsed = parse_options(
             options_parsed["solver"], solver_defaults,
         )
-        _solver_dtype = solver_options_parsed["dtype"]
+        _solver_dtype = solver_options_parsed["dtype"] #type: ignore
 
         fixed_elements_converted: DenseIngredientsNP = {}
         for key, val in fixed_elements.items():
