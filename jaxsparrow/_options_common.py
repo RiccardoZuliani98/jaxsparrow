@@ -8,6 +8,8 @@ dense and sparse solver paths:
 
 - **SolverOptions**: Configuration for the numerical QP solver backend.
 - **DifferentiatorOptions**: Configuration for the differentiation backend.
+  Declares the ``backend`` field that selects the concrete backend
+  implementation; all other keys are backend-specific.
 - **ConstructorOptions**: Top-level options controlling the overall
   differentiable solver construction (differentiation mode, solver
   selection, debugging flags, etc.).
@@ -41,17 +43,16 @@ class SolverOptions(TypedDict, total=False):
 class DifferentiatorOptions(TypedDict, total=False):
     """Configuration options for the differentiation backend.
 
-    This is a base type that can be extended by differentiator-specific
-    backends (e.g., KKT-based, adjoint-based). Common keys include:
-        - ``"backend"``: Name of the differentiator backend to use
-          (e.g., ``"dense_kkt"``, ``"sparse_kkt"``)
-        - ``"linear_solver"``: Linear solver to use for KKT systems
-        - ``"cst_tol"``: Tolerance for constraint satisfaction
-        - ``"dtype"``: Floating-point dtype for computations
+    The ``backend`` field is common to all differentiator backends
+    and selects the concrete implementation (e.g., ``"dense_kkt"``,
+    ``"dense_dbd"``, ``"sparse_kkt"``).  All remaining keys are
+    backend-specific and documented in the corresponding options
+    classes (e.g., :class:`DenseKKTDiffOptions`,
+    :class:`DenseDBDDiffOptions`).
 
     Missing keys are filled from backend-specific defaults.
     """
-    pass
+    backend: str
 
 
 # ----------------------------------------------------------------------

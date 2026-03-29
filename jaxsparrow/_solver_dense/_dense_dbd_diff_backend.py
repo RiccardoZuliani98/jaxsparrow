@@ -81,9 +81,7 @@ from jaxsparrow._types_common import (
     SolverDiffOutFwdNP,
     SolverDiffOutRevNP,
 )
-from jaxsparrow._options_common import DifferentiatorOptions
-from jaxsparrow._utils._parsing_utils import parse_options
-from jaxsparrow._solver_dense._options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._solver_dense._options import DenseDBDDiffOptionsFull
 from jaxsparrow._utils._linear_solvers import (
     DenseLinearSolver,
     get_dense_linear_solver,
@@ -93,9 +91,6 @@ from jaxsparrow._utils._diff_backends import (
     register_differentiator_backend,
 )
 from jaxsparrow._solver_sparse._converters import SparsityInfo
-
-
-_DEFAULT_RHO: float = 1e-5
 
 
 class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
@@ -131,7 +126,7 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         n_var: int,
         n_eq: int,
         n_ineq: int,
-        options: Optional[DifferentiatorOptions] = None,
+        options: DenseDBDDiffOptionsFull,
     ) -> None:
         if n_var < 0 or n_eq < 0 or n_ineq < 0:
             raise ValueError(
@@ -143,16 +138,15 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         self._n_eq = n_eq
         self._n_ineq = n_ineq
 
-        options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
-        self._dtype = options_parsed["dtype"]
-        self._bool_dtype = options_parsed["bool_dtype"]
-        self._cst_tol = options_parsed["cst_tol"]
-        self._rho = options_parsed["rho"]
+        self._dtype = options["dtype"]
+        self._bool_dtype = options["bool_dtype"]
+        self._cst_tol = options["cst_tol"]
+        self._rho = options["rho"]
         if self._rho <= 0:
             raise ValueError(f"rho must be > 0, got {self._rho}")
 
         self._solve_linear_system: DenseLinearSolver = (
-            get_dense_linear_solver(options_parsed["linear_solver"])
+            get_dense_linear_solver(options["linear_solver"])
         )
 
         # Populated by setup()
