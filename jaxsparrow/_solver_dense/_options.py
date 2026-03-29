@@ -4,8 +4,7 @@ solver_dense/_options.py
 Differentiator and solver options for the dense path.
 
 Defines backend-specific option TypedDicts and default values used by
-:func:`create_dense_kkt_differentiator_fwd` and
-:func:`create_dense_kkt_differentiator_rev`.
+the dense solver and differentiator factory functions.
 
 Each differentiator backend has its own options class and defaults:
 
@@ -14,15 +13,20 @@ Each differentiator backend has its own options class and defaults:
 - ``"dense_dbd"`` → :class:`DenseDBDDiffOptions` /
   ``DEFAULT_DENSE_DBD_DIFF_OPTIONS``
 
-The ``"backend"`` field is declared on the common base class
-:class:`~jaxsparrow._options_common.DifferentiatorOptions` and
-selects which backend implementation to use.
+Each solver backend has its own options class and defaults:
 
-The ``"linear_solver"`` field accepts any solver name registered in
-:func:`get_dense_linear_solver`, including native dense backends
-(``"solve"``, ``"lstsq"``, ``"lu"``) and sparse backends available
-via automatic conversion (``"splu"``, ``"spilu"``, ``"spsolve"``,
-``"sp_lstsq"``).
+- ``"qpsolvers"`` → :class:`DenseQpSolverOptions` /
+  ``DEFAULT_DENSE_QPSOLVERS_OPTIONS``
+
+The ``"backend"`` and ``"dtype"`` fields are declared on the common
+base classes :class:`~jaxsparrow._options_common.SolverOptions` and
+:class:`~jaxsparrow._options_common.DifferentiatorOptions`.
+
+The ``"linear_solver"`` field (differentiator) accepts any solver
+name registered in :func:`get_dense_linear_solver`, including native
+dense backends (``"solve"``, ``"lstsq"``, ``"lu"``) and sparse
+backends available via automatic conversion (``"splu"``, ``"spilu"``,
+``"spsolve"``, ``"sp_lstsq"``).
 """
 
 from jaxsparrow._options_common import DifferentiatorOptions
@@ -31,6 +35,9 @@ import numpy as np
 from typing import Literal
 
 
+# ======================================================================
+# Differentiator options
+# ======================================================================
 
 # ----------------------------------------------------------------------
 # Dense KKT backend options
@@ -149,60 +156,79 @@ DEFAULT_DENSE_DBD_DIFF_OPTIONS: DenseDBDDiffOptionsFull = {
 
 
 # ----------------------------------------------------------------------
-# Mapping from backend name to its defaults
+# Differentiator defaults registry
 # ----------------------------------------------------------------------
 
-"""Look-up table used by the factory functions in
-``_differentiators.py`` to select the correct defaults for the
-chosen backend."""
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
     "dense_kkt": DEFAULT_DENSE_KKT_DIFF_OPTIONS,
     "dense_dbd": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
 }
+"""Look-up table used by the factory functions in
+``_differentiators.py`` to select the correct defaults for the
+chosen differentiator backend."""
 
-# Default backend when no "backend" key is supplied in options
 DEFAULT_DIFF_BACKEND = "dense_kkt"
+"""Default differentiator backend when no ``"backend"`` key is
+supplied in the differentiator options."""
 
 
-
-# ----------------------------------------------------------------------
+# ======================================================================
 # Solver options
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# qpsolvers backend options
 # ----------------------------------------------------------------------
 
-class DenseSolverOptions(SolverOptions):
-    """Partial solver options for the dense path.
+class DenseQpSolverOptions(SolverOptions):
+    """Partial solver options for the ``qpsolvers`` backend.
 
     All keys are optional; missing keys are filled from
-    ``DEFAULT_SOLVER_OPTIONS`` via :func:`parse_options`.
+    ``DEFAULT_DENSE_QPSOLVERS_OPTIONS`` via :func:`parse_options`.
+
+    The ``backend`` and ``dtype`` fields are inherited from
+    :class:`SolverOptions`.
 
     Attributes:
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
-        dtype: NumPy floating-point dtype for all arrays.
-        backend: Solver backend protocol name. Currently only
-            ``"qpsolvers"`` is supported.
     """
     solver_name:    str
-    dtype:          type[np.floating]
-    backend:        Literal["qpsolvers"]
 
 
-class DenseSolverOptionsFull(SolverOptions, total=True):
-    """Complete solver options for the dense path.
+class DenseQpSolverOptionsFull(SolverOptions, total=True):
+    """Complete solver options for the ``qpsolvers`` backend.
+
+    All keys are required.  This is the resolved form after merging
+    user-supplied options with defaults.
+
+    The ``backend`` and ``dtype`` fields are inherited from
+    :class:`SolverOptions`.
 
     Attributes:
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
-        dtype: NumPy floating-point dtype for all arrays.
-        backend: Solver backend protocol name (``"qpsolvers"``).
     """
     solver_name:    str
-    dtype:          type[np.floating]
-    backend:        Literal["qpsolvers"]
 
 
-DEFAULT_SOLVER_OPTIONS: DenseSolverOptionsFull = {
-    "solver_name": "piqp",
-    "dtype": np.float64,
+DEFAULT_DENSE_QPSOLVERS_OPTIONS: DenseQpSolverOptionsFull = {
     "backend": "qpsolvers",
+    "dtype": np.float64,
+    "solver_name": "piqp",
 }
+
+
+# ----------------------------------------------------------------------
+# Solver defaults registry
+# ----------------------------------------------------------------------
+
+SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
+    "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS,
+}
+"""Look-up table used by the factory functions in ``_solvers.py``
+to select the correct defaults for the chosen solver backend."""
+
+DEFAULT_SOLVER_BACKEND = "qpsolvers"
+"""Default solver backend when no ``"backend"`` key is supplied
+in the solver options."""

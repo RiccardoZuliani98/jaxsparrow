@@ -7,6 +7,8 @@ These types define the configuration dictionaries used across both
 dense and sparse solver paths:
 
 - **SolverOptions**: Configuration for the numerical QP solver backend.
+  Declares the ``backend`` and ``dtype`` fields that are common to
+  all solver backends; all other keys are backend-specific.
 - **DifferentiatorOptions**: Configuration for the differentiation backend.
   Declares the ``backend`` field that selects the concrete backend
   implementation; all other keys are backend-specific.
@@ -21,8 +23,8 @@ defaults.
 """
 
 from typing import TypedDict, Final, Literal, Union, Dict, Any
+import numpy as np
 import jax.numpy as jnp
-from numpy import dtype as np_dtype
 
 
 # ----------------------------------------------------------------------
@@ -32,12 +34,20 @@ from numpy import dtype as np_dtype
 class SolverOptions(TypedDict, total=False):
     """Configuration options for the numerical QP solver.
 
-    This is a base type that can be extended by solver-specific
-    backends (e.g., qpsolvers, PIQP, OSQP). Keys are backend-dependent
-    but typically include solver name, tolerance settings, and iteration
-    limits. Missing keys are filled from backend-specific defaults.
+    The ``backend`` field is common to all solver backends and
+    selects the concrete implementation (e.g., ``"qpsolvers"``).
+    The ``dtype`` field sets the NumPy floating-point dtype for
+    all arrays and is used by both the solver backend and by
+    ``setup_dense_solver`` for fixed-element conversion.
+
+    All remaining keys are backend-specific and documented in the
+    corresponding options classes (e.g.,
+    :class:`DenseQpSolverOptions`).
+
+    Missing keys are filled from backend-specific defaults.
     """
-    pass
+    backend: str
+    dtype:   type[np.floating]
 
 
 class DifferentiatorOptions(TypedDict, total=False):

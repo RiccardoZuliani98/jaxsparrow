@@ -24,8 +24,8 @@ from typing import cast, Optional, Protocol
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
 from jaxsparrow._solver_dense._options import (
-    DEFAULT_SOLVER_OPTIONS, 
-    DenseSolverOptionsFull
+    SOLVER_OPTIONS_DEFAULTS,
+    DEFAULT_SOLVER_BACKEND,
 )
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
 from jaxsparrow._types_common import SolverOutputNP
@@ -38,6 +38,39 @@ class DenseSolverFn(Protocol):
     """Signature of the closure returned by :func:`create_dense_solver`."""
 
     def __call__(self, **kwargs: ndarray) -> tuple[SolverOutputNP, dict[str, float]]: ...
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _resolve_backend_defaults(
+    options: Optional[SolverOptions],
+) -> tuple[str, SolverOptions]:
+    """Determine the solver backend name and its matching defaults.
+
+    The backend is read from ``options["backend"]`` if present,
+    otherwise ``DEFAULT_SOLVER_BACKEND`` is used.  The returned
+    defaults dict is the one registered in
+    :data:`SOLVER_OPTIONS_DEFAULTS` for that backend.
+
+    Returns:
+        ``(backend_name, default_options)``
+
+    Raises:
+        KeyError: If the resolved backend name has no entry in
+            :data:`SOLVER_OPTIONS_DEFAULTS`.
+    """
+    if options is not None and "backend" in options:
+        backend_name: str = options["backend"]
+    else:
+        backend_name = DEFAULT_SOLVER_BACKEND
+
+    if backend_name not in SOLVER_OPTIONS_DEFAULTS:
+        raise KeyError(
+            f"Unknown solver backend {backend_name!r}.  "
+            f"Available backends: {sorted(SOLVER_OPTIONS_DEFAULTS)}"
+        )
+
+    return backend_name, SOLVER_OPTIONS_DEFAULTS[backend_name]
 
 
 # ── Factory ──────────────────────────────────────────────────────────
@@ -67,15 +100,15 @@ def create_dense_solver(
       them with the stored fixed elements, builds the
       ``qpsolvers.Problem``, and runs the numerical solver.
 
+    Each backend has its own default options; user-supplied keys
+    override the backend-specific defaults.
+
     Args:
         n_eq: Number of equality constraints (zero if none).
         n_ineq: Number of inequality constraints (zero if none).
-        options: Solver options (solver backend name, dtype,
-            constraint tolerance). The ``"backend"`` key selects the
-            solver backend protocol (default: ``"qpsolvers"``);
-            currently only ``"qpsolvers"`` is supported. Defaults
-            are filled for missing keys from
-            ``DEFAULT_SOLVER_OPTIONS``.
+        options: Solver options.  The ``"backend"`` key selects the
+            solver backend protocol (default: ``"qpsolvers"``).
+            Remaining keys are merged with that backend's defaults.
         fixed_elements: ingredients that remain constant across
             calls (e.g. constraint matrices that do not change).
             Passed directly to the backend's :meth:`setup` call;
@@ -94,17 +127,15 @@ def create_dense_solver(
         (from construction), ``"solve.*"``, ``"retrieve"``.
     """
 
-    # parse options
-    options_parsed: DenseSolverOptionsFull = parse_options(options, DEFAULT_SOLVER_OPTIONS)
+    # ── Resolve backend and parse options ────────────────────────────
+    backend_name, defaults = _resolve_backend_defaults(options)
+    options_parsed = parse_options(options, defaults)
     _dtype: type[np.floating] = options_parsed["dtype"]
 
     # ── Create backend ───────────────────────────────────────────────
-
-    backend_name: str = options_parsed["backend"]
     backend: SolverBackend = get_backend(
         backend_name,
-        solver_name=options_parsed["solver_name"],
-        dtype=_dtype,
+        options=options_parsed,
     )
 
     # ── Setup: pass fixed elements to the backend (once, now) ────────

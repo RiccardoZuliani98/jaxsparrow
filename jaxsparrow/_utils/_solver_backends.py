@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from time import perf_counter
-from typing import Any, Optional, Union, cast
+from typing import Optional, Union, cast
 
 import numpy as np
 from numpy import ndarray
@@ -39,6 +39,7 @@ from qpsolvers import Problem, solve_problem
 
 from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
+from jaxsparrow._options_common import SolverOptions
 
 
 # =====================================================================
@@ -136,15 +137,15 @@ class QpSolversBackend(SolverBackend):
     as the baseline implementation.
 
     Args:
-        solver_name: Backend solver name passed to
-            ``qpsolvers.solve_problem`` (e.g. ``"piqp"``, ``"osqp"``,
-            ``"clarabel"``).
-        dtype: NumPy floating-point dtype for all arrays.
+        options: Fully resolved solver options dict.  Expected
+            keys: ``"solver_name"`` (str), ``"dtype"``
+            (NumPy floating dtype).  The ``"backend"`` key is
+            ignored (already used for dispatch).
     """
 
-    def __init__(self, solver_name: str, dtype: type[np.floating] = np.float64) -> None:
-        self._solver_name: str = solver_name
-        self._dtype: type[np.floating] = dtype
+    def __init__(self, options: SolverOptions) -> None:
+        self._solver_name: str = options["solver_name"]
+        self._dtype: type[np.floating] = options["dtype"]
 
         # Fixed elements stored at setup time
         self._fixed: SparseIngredientsNP = {}
@@ -256,12 +257,13 @@ def register_backend(name: str, cls: type[SolverBackend]) -> None:
     _BACKEND_REGISTRY[name] = cls
 
 
-def get_backend(name: str, **kwargs: Any) -> SolverBackend:
+def get_backend(name: str, options: SolverOptions) -> SolverBackend:
     """Instantiate a QP solver backend by name.
 
     Args:
         name: Registered backend name.
-        **kwargs: Passed to the backend constructor.
+        options: Fully resolved solver options dict.  Passed
+            directly to the backend constructor.
 
     Returns:
         An instance of the requested backend.
@@ -274,4 +276,4 @@ def get_backend(name: str, **kwargs: Any) -> SolverBackend:
             f"Unknown QP backend: {name!r}. "
             f"Available: {sorted(_BACKEND_REGISTRY)}."
         )
-    return _BACKEND_REGISTRY[name](**kwargs)
+    return _BACKEND_REGISTRY[name](options=options)
