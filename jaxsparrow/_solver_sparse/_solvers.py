@@ -23,8 +23,44 @@ from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._options_common import SolverOptions
 from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._types_common import SolverOutputNP, Solver
-from jaxsparrow._solver_sparse._options import DEFAULT_SOLVER_OPTIONS
+from jaxsparrow._solver_sparse._options import (
+    SOLVER_OPTIONS_DEFAULTS,
+    DEFAULT_SOLVER_BACKEND,
+)
 from jaxsparrow._utils._solver_backends import SolverBackend, get_backend
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _resolve_backend_defaults(
+    options: Optional[SolverOptions],
+) -> tuple[str, SolverOptions]:
+    """Determine the solver backend name and its matching defaults.
+
+    The backend is read from ``options["backend"]`` if present,
+    otherwise ``DEFAULT_SOLVER_BACKEND`` is used.  The returned
+    defaults dict is the one registered in
+    :data:`SOLVER_OPTIONS_DEFAULTS` for that backend.
+
+    Returns:
+        ``(backend_name, default_options)``
+
+    Raises:
+        KeyError: If the resolved backend name has no entry in
+            :data:`SOLVER_OPTIONS_DEFAULTS`.
+    """
+    if options is not None and "backend" in options:
+        backend_name: str = options["backend"]
+    else:
+        backend_name = DEFAULT_SOLVER_BACKEND
+
+    if backend_name not in SOLVER_OPTIONS_DEFAULTS:
+        raise KeyError(
+            f"Unknown solver backend {backend_name!r}.  "
+            f"Available backends: {sorted(SOLVER_OPTIONS_DEFAULTS)}"
+        )
+
+    return backend_name, SOLVER_OPTIONS_DEFAULTS[backend_name]
 
 
 # ── Factory ──────────────────────────────────────────────────────────
@@ -87,16 +123,17 @@ def create_sparse_solver(
         ``"solve.*"``, ``"retrieve"``.
     """
 
-    options_parsed = parse_options(options, DEFAULT_SOLVER_OPTIONS)
-    _dtype: type[np.floating] = options_parsed["dtype"]
+    # ── Resolve backend and parse options ────────────────────────────
+    backend_name, defaults = _resolve_backend_defaults(options)
+    options_parsed = parse_options(options, defaults)
+
+    # dtype is guaranteed present after merging with backend defaults.
+    _dtype: type[np.floating] = options_parsed.get("dtype", np.float64)
 
     # ── Create backend ───────────────────────────────────────────────
-
-    backend_name: str = options_parsed["backend"]
     backend: SolverBackend = get_backend(
         backend_name,
-        solver_name=options_parsed["solver_name"],
-        dtype=_dtype,
+        options=options_parsed,
     )
 
     # ── Setup: pass fixed elements to the backend (once, now) ────────

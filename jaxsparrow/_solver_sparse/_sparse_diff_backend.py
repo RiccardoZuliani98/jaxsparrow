@@ -46,9 +46,7 @@ from jaxsparrow._types_common import (
     SolverDiffOutFwdNP,
     SolverDiffOutRevNP
 )
-from jaxsparrow._options_common import DifferentiatorOptions
-from jaxsparrow._utils._parsing_utils import parse_options
-from jaxsparrow._solver_sparse._options import DEFAULT_DIFF_OPTIONS
+from jaxsparrow._solver_sparse._options import SparseKKTDiffOptionsFull
 from jaxsparrow._utils._linear_solvers import (
     SparseLinearSolver, 
     get_sparse_linear_solver
@@ -122,7 +120,7 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_var: int,
         n_eq: int,
         n_ineq: int,
-        options: Optional[DifferentiatorOptions] = None,
+        options: SparseKKTDiffOptionsFull,
     ) -> None:
         if n_var < 0 or n_eq < 0 or n_ineq < 0:
             raise ValueError(
@@ -134,13 +132,12 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         self._n_eq = n_eq
         self._n_ineq = n_ineq
 
-        options_parsed = parse_options(options, DEFAULT_DIFF_OPTIONS)
-        self._dtype = options_parsed["dtype"]
-        self._bool_dtype = options_parsed["bool_dtype"]
-        self._cst_tol = options_parsed["cst_tol"]
+        self._dtype = options["dtype"]
+        self._bool_dtype = options["bool_dtype"]
+        self._cst_tol = options["cst_tol"]
 
         self._solve_linear_system: SparseLinearSolver = get_sparse_linear_solver(
-            options_parsed["linear_solver"]
+            options["linear_solver"]
         )
 
         # Populated by setup()
