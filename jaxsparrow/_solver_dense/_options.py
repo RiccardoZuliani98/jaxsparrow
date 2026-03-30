@@ -158,7 +158,7 @@ DEFAULT_DENSE_DBD_DIFF_OPTIONS: DenseDBDDiffOptionsFull = {
 # ----------------------------------------------------------------------
 # Differentiator defaults registry
 # ----------------------------------------------------------------------
-
+#TODO: fix this
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
     "dense_kkt": DEFAULT_DENSE_KKT_DIFF_OPTIONS,
     "dense_dbd": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
@@ -225,7 +225,7 @@ DEFAULT_DENSE_QPSOLVERS_OPTIONS: DenseQpSolverOptionsFull = {
 # ----------------------------------------------------------------------
 # Solver defaults registry
 # ----------------------------------------------------------------------
-
+#TODO: fix this type error
 SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
     "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS,
 }
