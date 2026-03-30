@@ -40,8 +40,9 @@ from jaxsparrow._utils._diff_backends import (
     get_differentiator_backend,
 )
 
-# Ensure the sparse backend is registered on import
+# Ensure the sparse backends are registered on import
 import jaxsparrow._solver_sparse._sparse_diff_backend  # noqa: F401 #import: ignore
+import jaxsparrow._solver_sparse._sparse_dbd_diff_backend  # noqa: F401
 
 # ── Callable protocols for the returned closures ─────────────────────
 
