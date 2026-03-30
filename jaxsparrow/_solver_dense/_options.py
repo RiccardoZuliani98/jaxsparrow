@@ -158,9 +158,8 @@ DEFAULT_DENSE_DBD_DIFF_OPTIONS: DenseDBDDiffOptionsFull = {
 # ----------------------------------------------------------------------
 # Differentiator defaults registry
 # ----------------------------------------------------------------------
-#TODO: fix this
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
-    "dense_kkt": DEFAULT_DENSE_KKT_DIFF_OPTIONS,
+    "dense_kkt": DEFAULT_DENSE_KKT_DIFF_OPTIONS, #type: ignore
     "dense_dbd": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
 }
 """Look-up table used by the factory functions in
@@ -170,6 +169,12 @@ chosen differentiator backend."""
 DEFAULT_DIFF_BACKEND = "dense_kkt"
 """Default differentiator backend when no ``"backend"`` key is
 supplied in the differentiator options."""
+
+# all options to be passed to the user
+ALL_DENSE_DIFF_OPTIONS = {
+    "dense_kkt":{"option":DenseKKTDiffOptions,"default":DEFAULT_DENSE_KKT_DIFF_OPTIONS},
+    "dense_dbd":{"option":DenseDBDDiffOptions,"default":DEFAULT_DENSE_DBD_DIFF_OPTIONS}
+}
 
 
 # ======================================================================
@@ -225,9 +230,8 @@ DEFAULT_DENSE_QPSOLVERS_OPTIONS: DenseQpSolverOptionsFull = {
 # ----------------------------------------------------------------------
 # Solver defaults registry
 # ----------------------------------------------------------------------
-#TODO: fix this type error
 SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
-    "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS,
+    "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS, #type: ignore
 }
 """Look-up table used by the factory functions in ``_solvers.py``
 to select the correct defaults for the chosen solver backend."""
@@ -235,3 +239,8 @@ to select the correct defaults for the chosen solver backend."""
 DEFAULT_SOLVER_BACKEND = "qpsolvers"
 """Default solver backend when no ``"backend"`` key is supplied
 in the solver options."""
+
+# all options to be passed to user
+ALL_DENSE_SOLVER_OPTIONS = {
+    "qpsolvers":{"option":DenseQpSolverOptions,"default":DEFAULT_DENSE_QPSOLVERS_OPTIONS}
+}

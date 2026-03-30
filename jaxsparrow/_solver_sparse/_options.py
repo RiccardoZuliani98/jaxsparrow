@@ -83,7 +83,7 @@ DEFAULT_SPARSE_KKT_DIFF_OPTIONS: SparseKKTDiffOptionsFull = {
 # ----------------------------------------------------------------------
 
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
-    "sparse_kkt": DEFAULT_SPARSE_KKT_DIFF_OPTIONS,
+    "sparse_kkt": DEFAULT_SPARSE_KKT_DIFF_OPTIONS, #type: ignore
 }
 """Look-up table used by the factory functions in
 ``_differentiators.py`` to select the correct defaults for the
@@ -93,6 +93,10 @@ DEFAULT_DIFF_BACKEND = "sparse_kkt"
 """Default differentiator backend when no ``"backend"`` key is
 supplied in the differentiator options."""
 
+# all options to be passed to the user
+ALL_SPARSE_DIFF_OPTIONS = {
+    "sparse_kkt":{"option":SparseKKTDiffOptions,"default":DEFAULT_SPARSE_KKT_DIFF_OPTIONS},
+}
 
 # ======================================================================
 # Solver options
@@ -144,7 +148,7 @@ DEFAULT_SPARSE_QPSOLVERS_OPTIONS: SparseQpSolverOptionsFull = {
 # ----------------------------------------------------------------------
 
 SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
-    "qpsolvers": DEFAULT_SPARSE_QPSOLVERS_OPTIONS,
+    "qpsolvers": DEFAULT_SPARSE_QPSOLVERS_OPTIONS, #type: ignore
 }
 """Look-up table used by the factory functions in ``_solvers.py``
 to select the correct defaults for the chosen solver backend."""
@@ -153,12 +157,7 @@ DEFAULT_SOLVER_BACKEND = "qpsolvers"
 """Default solver backend when no ``"backend"`` key is supplied
 in the solver options."""
 
-
-# ----------------------------------------------------------------------
-# Legacy aliases
-# ----------------------------------------------------------------------
-
-SparseSolverOptions = SparseQpSolverOptions
-SparseSolverOptionsFull = SparseQpSolverOptionsFull
-DEFAULT_DIFF_OPTIONS = DEFAULT_SPARSE_KKT_DIFF_OPTIONS
-DEFAULT_SOLVER_OPTIONS = DEFAULT_SPARSE_QPSOLVERS_OPTIONS
+# all options to be passed to user
+ALL_SPARSE_SOLVER_OPTIONS = {
+    "qpsolvers":{"option":SparseQpSolverOptions,"default":DEFAULT_SPARSE_QPSOLVERS_OPTIONS}
+}

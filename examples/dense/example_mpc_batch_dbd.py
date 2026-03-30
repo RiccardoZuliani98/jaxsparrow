@@ -70,8 +70,9 @@ dx0 = jnp.array([epsilon, 0.0])
 
 
 diff_options = {
-    "backend":"dense_dbd",
-    "rho":1e-5,
+    "backend":"dense_kkt",
+    # "rho":1e-5,
+    "linear_solver":"lstsq"
 }
 solver_options = {
     "solver_name":"osqp"
