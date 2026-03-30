@@ -93,10 +93,6 @@ DEFAULT_DIFF_BACKEND = "sparse_kkt"
 """Default differentiator backend when no ``"backend"`` key is
 supplied in the differentiator options."""
 
-# all options to be passed to the user
-ALL_SPARSE_DIFF_OPTIONS = {
-    "sparse_kkt":{"option":SparseKKTDiffOptions,"default":DEFAULT_SPARSE_KKT_DIFF_OPTIONS},
-}
 
 # ======================================================================
 # Solver options
@@ -157,7 +153,36 @@ DEFAULT_SOLVER_BACKEND = "qpsolvers"
 """Default solver backend when no ``"backend"`` key is supplied
 in the solver options."""
 
+
+
+# ======================================================================
+# Full description of options to be passed to user through utility
+# ======================================================================
+
+# all options to be passed to the user
+ALL_SPARSE_DIFF_OPTIONS = {
+    "sparse_kkt": {
+        "option": SparseKKTDiffOptions,
+        "default": DEFAULT_SPARSE_KKT_DIFF_OPTIONS,
+        "description": {
+            "backend": "Differentiator backend name (fixed to 'sparse_kkt' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all computations.",
+            "bool_dtype": "NumPy boolean dtype for active-set masks.",
+            "cst_tol": "Tolerance for determining active inequality constraints.",
+            "linear_solver": "Name of the sparse linear solver backend.",
+        },
+    },
+}
+
 # all options to be passed to user
 ALL_SPARSE_SOLVER_OPTIONS = {
-    "qpsolvers":{"option":SparseQpSolverOptions,"default":DEFAULT_SPARSE_QPSOLVERS_OPTIONS}
+    "qpsolvers": {
+        "option": SparseQpSolverOptions,
+        "default": DEFAULT_SPARSE_QPSOLVERS_OPTIONS,
+        "description": {
+            "backend": "Solver backend protocol name (fixed to 'qpsolvers' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all arrays.",
+            "solver_name": "Backend solver name passed to qpsolvers (e.g., 'piqp', 'osqp', 'clarabel').",
+        },
+    },
 }
