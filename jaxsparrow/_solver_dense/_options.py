@@ -170,12 +170,6 @@ DEFAULT_DIFF_BACKEND = "dense_kkt"
 """Default differentiator backend when no ``"backend"`` key is
 supplied in the differentiator options."""
 
-# all options to be passed to the user
-ALL_DENSE_DIFF_OPTIONS = {
-    "dense_kkt":{"option":DenseKKTDiffOptions,"default":DEFAULT_DENSE_KKT_DIFF_OPTIONS},
-    "dense_dbd":{"option":DenseDBDDiffOptions,"default":DEFAULT_DENSE_DBD_DIFF_OPTIONS}
-}
-
 
 # ======================================================================
 # Solver options
@@ -240,7 +234,47 @@ DEFAULT_SOLVER_BACKEND = "qpsolvers"
 """Default solver backend when no ``"backend"`` key is supplied
 in the solver options."""
 
+
+# ======================================================================
+# Full description of options to be passed to user through utility
+# ======================================================================
+
+# all options to be passed to the user
+ALL_DENSE_DIFF_OPTIONS = {
+    "dense_kkt": {
+        "option": DenseKKTDiffOptions,
+        "default": DEFAULT_DENSE_KKT_DIFF_OPTIONS,
+        "description": {
+            "backend": "Differentiator backend name (fixed to 'dense_kkt' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all computations.",
+            "bool_dtype": "NumPy boolean dtype for active-set masks.",
+            "cst_tol": "Tolerance for determining active inequality constraints (|G x - h| <= cst_tol).",
+            "linear_solver": "Name of the linear solver backend. Accepts any key from the dense or sparse solver registries.",
+        }
+    },
+    "dense_dbd": {
+        "option": DenseDBDDiffOptions,
+        "default": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
+        "description": {
+            "backend": "Differentiator backend name (fixed to 'dense_dbd' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all computations.",
+            "bool_dtype": "NumPy boolean dtype for active-set masks.",
+            "cst_tol": "Tolerance for determining active inequality constraints (|G x - h| <= cst_tol).",
+            "linear_solver": "Name of the linear solver backend.",
+            "rho": "Regularisation strength for the DBD perturbation (scalar > 0).",
+        }
+    }
+}
+
 # all options to be passed to user
 ALL_DENSE_SOLVER_OPTIONS = {
-    "qpsolvers":{"option":DenseQpSolverOptions,"default":DEFAULT_DENSE_QPSOLVERS_OPTIONS}
+    "qpsolvers": {
+        "option": DenseQpSolverOptions,
+        "default": DEFAULT_DENSE_QPSOLVERS_OPTIONS,
+        "description": {
+            "backend": "Solver backend protocol name (fixed to 'qpsolvers' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all arrays.",
+            "solver_name": "Backend solver name passed to qpsolvers (e.g. 'piqp', 'osqp', 'clarabel').",
+        }
+    }
 }

@@ -104,12 +104,22 @@ def print_options(
 
     print()
 
-def show_options(type_: str, mode: str, backend: str) -> None:
+def show_options(
+    type: Literal["solver","diff"], 
+    mode: Literal["dense","sparse"], 
+    backend: Literal[
+        "dense_kkt",
+        "dense_dbd",
+        "sparse_dbd",
+        "dense_kkt",
+        "qpsolvers"
+    ]
+) -> None:
     """
     Display available options, defaults, and descriptions for a given backend.
 
     Args:
-        type_ (str): "solver" or "diff".
+        type (str): "solver" or "diff".
         mode (str): "dense" or "sparse".
         backend (str): Backend name as used in the registries
                        (e.g., "dense_kkt", "dense_dbd", "qpsolvers").
@@ -118,14 +128,14 @@ def show_options(type_: str, mode: str, backend: str) -> None:
         ValueError: If unknown type, mode, or backend is provided.
     """
     # Select the appropriate registry based on type and mode
-    if type_ == "diff":
+    if type == "diff":
         if mode == "dense":
             registry = ALL_DENSE_DIFF_OPTIONS
         elif mode == "sparse":
             registry = ALL_SPARSE_DIFF_OPTIONS
         else:
             raise ValueError(f"Unknown mode: {mode}. Must be 'dense' or 'sparse'.")
-    elif type_ == "solver":
+    elif type == "solver":
         if mode == "dense":
             registry = ALL_DENSE_SOLVER_OPTIONS
         elif mode == "sparse":
@@ -133,13 +143,13 @@ def show_options(type_: str, mode: str, backend: str) -> None:
         else:
             raise ValueError(f"Unknown mode: {mode}. Must be 'dense' or 'sparse'.")
     else:
-        raise ValueError(f"Unknown type: {type_}. Must be 'solver' or 'diff'.")
+        raise ValueError(f"Unknown type: {type}. Must be 'solver' or 'diff'.")
 
     # Check if backend exists in the registry
     if backend not in registry:
         available = list(registry.keys())
         raise ValueError(
-            f"Unknown {type_} backend '{backend}' for mode '{mode}'. "
+            f"Unknown {type} backend '{backend}' for mode '{mode}'. "
             f"Available: {available}"
         )
 
