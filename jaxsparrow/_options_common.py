@@ -34,8 +34,12 @@ import jax.numpy as jnp
 class SolverOptions(TypedDict, total=False):
     """Configuration options for the numerical QP solver.
 
-    The ``backend`` field is common to all solver backends and
-    selects the concrete implementation (e.g., ``"qpsolvers"``).
+    The ``backend`` field selects the solver *protocol* — the
+    library or interface used to solve the QP (e.g.,
+    ``"qpsolvers"``).  The concrete solver *within* that protocol
+    is chosen by backend-specific keys (e.g., ``solver_name`` for
+    the ``qpsolvers`` backend selects ``"piqp"``, ``"osqp"``, etc.).
+
     The ``dtype`` field sets the NumPy floating-point dtype for
     all arrays and is used by both the solver backend and by
     ``setup_dense_solver`` for fixed-element conversion.
@@ -53,11 +57,13 @@ class SolverOptions(TypedDict, total=False):
 class DifferentiatorOptions(TypedDict, total=False):
     """Configuration options for the differentiation backend.
 
-    The ``backend`` field is common to all differentiator backends
-    and selects the concrete implementation (e.g., ``"dense_kkt"``,
-    ``"dense_dbd"``, ``"sparse_kkt"``).  All remaining keys are
-    backend-specific and documented in the corresponding options
-    classes (e.g., :class:`DenseKKTDiffOptions`,
+    The ``backend`` field selects the differentiation *algorithm*
+    (e.g., ``"dense_kkt"`` for standard KKT differentiation,
+    ``"dense_dbd"`` for the regularised Differentiable-by-Design
+    method, ``"sparse_kkt"`` for the sparse variant).
+
+    All remaining keys are backend-specific and documented in the
+    corresponding options classes (e.g., :class:`DenseKKTDiffOptions`,
     :class:`DenseDBDDiffOptions`).
 
     Missing keys are filled from backend-specific defaults.

@@ -130,7 +130,10 @@ def create_dense_solver(
     # ── Resolve backend and parse options ────────────────────────────
     backend_name, defaults = _resolve_backend_defaults(options)
     options_parsed = parse_options(options, defaults)
-    _dtype: type[np.floating] = options_parsed["dtype"] #type: ignore
+
+    # dtype is guaranteed present after merging with backend defaults
+    # (every backend's defaults include it via SolverOptions).
+    _dtype: type[np.floating] = options_parsed.get("dtype", np.float64)
 
     # ── Create backend ───────────────────────────────────────────────
     backend: SolverBackend = get_backend(

@@ -22,10 +22,7 @@ from jaxsparrow._options_common import (
     ConstructorOptions,
     ConstructorOptionsFull,
 )
-from jaxsparrow._solver_dense._solvers import (
-    create_dense_solver,
-    _resolve_backend_defaults as _resolve_solver_defaults,
-)
+from jaxsparrow._solver_dense._solvers import create_dense_solver
 from jaxsparrow._types_common import Solver
 from jaxsparrow._solver_dense._differentiators import (
     create_dense_kkt_differentiator_fwd,
@@ -114,13 +111,14 @@ def setup_dense_solver(
         # Fixed elements may be supplied as JAX arrays. Convert them
         # to numpy ndarrays using the solver dtype so downstream code
         # always sees NumPy-side types.
-        _, solver_defaults = _resolve_solver_defaults(
-            options_parsed["solver"],
+        #
+        # dtype is a common field on SolverOptions; read it directly
+        # from the user-supplied solver options (or fall back to the
+        # constructor-level default).  The full resolution against
+        # backend-specific defaults happens inside create_dense_solver.
+        _solver_dtype: type[np.floating] = options_parsed["solver"].get(
+            "dtype", np.float64,
         )
-        solver_options_parsed = parse_options(
-            options_parsed["solver"], solver_defaults,
-        )
-        _solver_dtype = solver_options_parsed["dtype"] #type: ignore
 
         fixed_elements_converted: DenseIngredientsNP = {}
         for key, val in fixed_elements.items():

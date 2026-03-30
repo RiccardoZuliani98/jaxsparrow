@@ -27,8 +27,6 @@ from jaxsparrow._types_common import (
     SolverDiffOutFwdNP,
     SolverDiffOutRevNP
 )
-from jaxsparrow._options_common import DifferentiatorOptions
-from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._solver_dense._options import DenseKKTDiffOptionsFull
 from jaxsparrow._utils._linear_solvers import DenseLinearSolver, get_dense_linear_solver
 from jaxsparrow._utils._diff_backends import (

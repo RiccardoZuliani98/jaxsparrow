@@ -64,10 +64,9 @@ class DenseKKTDiffOptionsFull(DifferentiatorOptions, total=True):
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    The ``backend`` field is inherited from
-    :class:`DifferentiatorOptions`.
-
     Attributes:
+        backend: Differentiator backend name (``"dense_kkt"``).
+            Redeclared here to make it required in the resolved form.
         dtype: NumPy floating-point dtype for all computations.
         bool_dtype: NumPy boolean dtype for active-set masks.
         cst_tol: Tolerance for determining active inequality
@@ -75,6 +74,7 @@ class DenseKKTDiffOptionsFull(DifferentiatorOptions, total=True):
         linear_solver: Name of the linear solver backend.  Accepts
             any key from the dense or sparse solver registries.
     """
+    backend:        str
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
@@ -123,10 +123,9 @@ class DenseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    The ``backend`` field is inherited from
-    :class:`DifferentiatorOptions`.
-
     Attributes:
+        backend: Differentiator backend name (``"dense_dbd"``).
+            Redeclared here to make it required in the resolved form.
         dtype: NumPy floating-point dtype for all computations.
         bool_dtype: NumPy boolean dtype for active-set masks.
         cst_tol: Tolerance for determining active inequality
@@ -135,6 +134,7 @@ class DenseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
         rho: Regularisation strength for the DBD perturbation
             (scalar ``> 0``).
     """
+    backend:        str
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
@@ -202,13 +202,16 @@ class DenseQpSolverOptionsFull(SolverOptions, total=True):
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    The ``backend`` and ``dtype`` fields are inherited from
-    :class:`SolverOptions`.
-
     Attributes:
+        backend: Solver backend protocol name (``"qpsolvers"``).
+            Redeclared here to make it required in the resolved form.
+        dtype: NumPy floating-point dtype for all arrays.
+            Redeclared here to make it required in the resolved form.
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
     """
+    backend:        str
+    dtype:          type[np.floating]
     solver_name:    str
 
 
