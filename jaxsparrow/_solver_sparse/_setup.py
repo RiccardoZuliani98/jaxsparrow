@@ -40,7 +40,10 @@ from jaxsparrow._options_common import (
     DEFAULT_CONSTRUCTOR_OPTIONS,
     ConstructorOptions,
 )
-from jaxsparrow._solver_sparse._solvers import create_sparse_solver
+from jaxsparrow._solver_sparse._solvers import (
+    create_sparse_solver,
+    _resolve_backend_defaults as _resolve_solver_defaults,
+)
 from jaxsparrow._solver_sparse._differentiators import (
     create_sparse_kkt_differentiator_fwd,
     create_sparse_kkt_differentiator_rev,
@@ -154,13 +157,14 @@ def setup_sparse_solver(
         # Convert them to scipy CSC / numpy ndarray using the solver
         # dtype so downstream code always sees NumPy-side types.
         #
-        # dtype is a common field on SolverOptions; read it directly
-        # from the user-supplied solver options (or fall back to the
-        # constructor-level default).  The full resolution against
-        # backend-specific defaults happens inside create_sparse_solver.
-        _solver_dtype: type[np.floating] = options_parsed["solver"].get(
-            "dtype", np.float64,
+        _, solver_defaults = _resolve_solver_defaults(
+            options_parsed["solver"],
         )
+        solver_options_parsed = parse_options(
+            options_parsed["solver"], solver_defaults,
+        )
+        assert "dtype" in solver_options_parsed
+        _solver_dtype = solver_options_parsed["dtype"]
 
         fixed_elements_converted: SparseIngredientsNP = {}
         for key, val in fixed_elements.items():
