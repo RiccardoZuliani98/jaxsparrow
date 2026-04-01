@@ -10,8 +10,6 @@ Each differentiator backend has its own options class and defaults:
 
 - ``"dense_kkt"`` → :class:`DenseKKTDiffOptions` /
   ``DEFAULT_DENSE_KKT_DIFF_OPTIONS``
-- ``"dense_dbd"`` → :class:`DenseDBDDiffOptions` /
-  ``DEFAULT_DENSE_DBD_DIFF_OPTIONS``
 
 Each solver backend has its own options class and defaults:
 
@@ -94,73 +92,10 @@ DEFAULT_DENSE_KKT_DIFF_OPTIONS: DenseKKTDiffOptionsFull = {
 
 
 # ----------------------------------------------------------------------
-# Dense DBD backend options
-# ----------------------------------------------------------------------
-
-class DenseDBDDiffOptions(DifferentiatorOptions):
-    """Partial differentiator options for the ``dense_dbd`` backend.
-
-    All keys are optional; missing keys are filled from
-    ``DEFAULT_DENSE_DBD_DIFF_OPTIONS`` via :func:`parse_options`.
-
-    The ``backend`` field is inherited from
-    :class:`DifferentiatorOptions`.
-
-    Attributes:
-        rho: Regularisation strength for the DBD perturbation.
-            Must be ``> 0``.
-    """
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-    linear_solver:  str
-    rho:            float
-
-
-class DenseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
-    """Complete differentiator options for the ``dense_dbd`` backend.
-
-    All keys are required.  This is the resolved form after merging
-    user-supplied options with defaults.
-
-    Attributes:
-        backend: Differentiator backend name (``"dense_dbd"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all computations.
-        bool_dtype: NumPy boolean dtype for active-set masks.
-        cst_tol: Tolerance for determining active inequality
-            constraints (``|G x - h| <= cst_tol``).
-        linear_solver: Name of the linear solver backend.
-        rho: Regularisation strength for the DBD perturbation
-            (scalar ``> 0``).
-    """
-    backend:        str
-    dtype:          type[np.floating]
-    bool_dtype:     type[np.bool]
-    cst_tol:        float
-    linear_solver:  Literal[
-                        "splu", "spilu", "spsolve", "lu",
-                        "sp_lstsq", "lstsq", "solve"
-                    ]
-    rho:            float
-
-
-DEFAULT_DENSE_DBD_DIFF_OPTIONS: DenseDBDDiffOptionsFull = {
-    "backend": "dense_dbd",
-    "dtype": np.float64,
-    "bool_dtype": np.bool_,
-    "cst_tol": 1e-8,
-    "linear_solver": "solve",
-    "rho": 1e-5,
-}
-
-
-# ----------------------------------------------------------------------
 # Differentiator defaults registry
 # ----------------------------------------------------------------------
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
     "dense_kkt": DEFAULT_DENSE_KKT_DIFF_OPTIONS, #type: ignore
-    "dense_dbd": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
 }
 """Look-up table used by the factory functions in
 ``_differentiators.py`` to select the correct defaults for the
@@ -252,18 +187,6 @@ ALL_DENSE_DIFF_OPTIONS = {
             "linear_solver": "Name of the linear solver backend. Accepts any key from the dense or sparse solver registries.",
         }
     },
-    "dense_dbd": {
-        "option": DenseDBDDiffOptions,
-        "default": DEFAULT_DENSE_DBD_DIFF_OPTIONS,
-        "description": {
-            "backend": "Differentiator backend name (fixed to 'dense_dbd' in resolved form).",
-            "dtype": "NumPy floating-point dtype for all computations.",
-            "bool_dtype": "NumPy boolean dtype for active-set masks.",
-            "cst_tol": "Tolerance for determining active inequality constraints (|G x - h| <= cst_tol).",
-            "linear_solver": "Name of the linear solver backend.",
-            "rho": "Regularisation strength for the DBD perturbation (scalar > 0).",
-        }
-    }
 }
 
 # all options to be passed to user

@@ -46,7 +46,6 @@ from jaxsparrow._utils._diff_backends import (
 
 # Ensure both dense backends are registered on import
 import jaxsparrow._solver_dense._dense_diff_backend  # noqa: F401
-import jaxsparrow._solver_dense._dense_dbd_diff_backend  # noqa: F401
 
 
 # ----------------------------------------------------------------------
