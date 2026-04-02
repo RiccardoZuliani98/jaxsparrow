@@ -17,6 +17,8 @@ Each solver backend has its own options class and defaults:
 
 - ``"qpsolvers"`` → :class:`DenseQpSolverOptions` /
   ``DEFAULT_DENSE_QPSOLVERS_OPTIONS``
+- ``"qoco"`` → :class:`DenseQOCOSolverOptions` /
+  ``DEFAULT_DENSE_QOCO_OPTIONS``
 
 The ``"backend"`` and ``"dtype"`` fields are declared on the common
 base classes :class:`~jaxsparrow._options_common.SolverOptions` and
@@ -222,10 +224,70 @@ DEFAULT_DENSE_QPSOLVERS_OPTIONS: DenseQpSolverOptionsFull = {
 
 
 # ----------------------------------------------------------------------
+# QOCO backend options
+# ----------------------------------------------------------------------
+
+class DenseQOCOSolverOptions(SolverOptions):
+    """Partial solver options for the ``qoco`` backend (dense).
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_DENSE_QOCO_OPTIONS`` via :func:`parse_options`.
+
+    The ``backend`` and ``dtype`` fields are inherited from
+    :class:`SolverOptions`.
+
+    Note: QOCO operates on sparse (CSC) matrices internally.
+    When used with the dense path, the backend automatically
+    converts dense matrices to CSC format before passing them
+    to the solver.
+
+    Attributes:
+        verbose: Verbosity level passed to QOCO (0 = silent).
+        abstol: Absolute feasibility tolerance.
+        reltol: Relative feasibility tolerance.
+    """
+    verbose:    int
+    abstol:     float
+    reltol:     float
+
+
+class DenseQOCOSolverOptionsFull(SolverOptions, total=True):
+    """Complete solver options for the ``qoco`` backend (dense).
+
+    All keys are required.  This is the resolved form after merging
+    user-supplied options with defaults.
+
+    Attributes:
+        backend: Solver backend protocol name (``"qoco"``).
+            Redeclared here to make it required in the resolved form.
+        dtype: NumPy floating-point dtype for all arrays.
+            Redeclared here to make it required in the resolved form.
+        verbose: Verbosity level passed to QOCO (0 = silent).
+        abstol: Absolute feasibility tolerance.
+        reltol: Relative feasibility tolerance.
+    """
+    backend:    str
+    dtype:      type[np.floating]
+    verbose:    int
+    abstol:     float
+    reltol:     float
+
+
+DEFAULT_DENSE_QOCO_OPTIONS: DenseQOCOSolverOptionsFull = {
+    "backend":  "qoco",
+    "dtype":    np.float64,
+    "verbose":  0,
+    "abstol":   1e-7,
+    "reltol":   1e-7,
+}
+
+
+# ----------------------------------------------------------------------
 # Solver defaults registry
 # ----------------------------------------------------------------------
 SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
     "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS, #type: ignore
+    "qoco":      DEFAULT_DENSE_QOCO_OPTIONS,      #type: ignore
 }
 """Look-up table used by the factory functions in ``_solvers.py``
 to select the correct defaults for the chosen solver backend."""
@@ -275,6 +337,17 @@ ALL_DENSE_SOLVER_OPTIONS = {
             "backend": "Solver backend protocol name (fixed to 'qpsolvers' in resolved form).",
             "dtype": "NumPy floating-point dtype for all arrays.",
             "solver_name": "Backend solver name passed to qpsolvers (e.g. 'piqp', 'osqp', 'clarabel').",
+        }
+    },
+    "qoco": {
+        "option": DenseQOCOSolverOptions,
+        "default": DEFAULT_DENSE_QOCO_OPTIONS,
+        "description": {
+            "backend": "Solver backend protocol name (fixed to 'qoco' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all arrays.",
+            "verbose": "Verbosity level passed to QOCO (0 = silent).",
+            "abstol": "Absolute feasibility tolerance for QOCO.",
+            "reltol": "Relative feasibility tolerance for QOCO.",
         }
     }
 }
