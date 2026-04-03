@@ -495,9 +495,12 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
                 if _nz("h"):
                     dg_inact = dg_inact - d_np["h"][:, inactive]
                 # l = G_Ibar^T diag(w) dg_Ibar
-                dL_np = dL_np + (
-                    dg_inact * w_inact[None, :]
-                ) @ G_inact.toarray()
+                # Rewritten as (G_inact.T @ weighted.T).T to keep
+                # G_inact sparse: scipy supports sparse @ dense but
+                # not dense @ sparse with broadcasting, so we
+                # transpose both sides instead of calling toarray().
+                weighted = dg_inact * w_inact[None, :]     # (batch, n_inactive)
+                dL_np = dL_np + (G_inact.T @ weighted.T).T
 
             # Equality constraints
             if n_eq > 0:
