@@ -14,6 +14,9 @@ in :data:`DIFF_OPTIONS_DEFAULTS`:
 
 - ``"dense_kkt"`` — standard KKT differentiator
   (see :mod:`jaxsparrow._solver_dense._dense_diff_backend`)
+- ``"dense_dbd"`` — regularised Differentiable-by-Design
+  differentiator
+  (see :mod:`jaxsparrow._solver_dense._dense_dbd_diff_backend`)
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from jaxsparrow._utils._diff_backends import (
 
 # Ensure both dense backends are registered on import
 import jaxsparrow._solver_dense._dense_diff_backend  # noqa: F401
+import jaxsparrow._solver_dense._dense_dbd_diff_backend  # noqa: F401
 
 
 # ----------------------------------------------------------------------

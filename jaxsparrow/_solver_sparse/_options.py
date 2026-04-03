@@ -78,6 +78,67 @@ DEFAULT_SPARSE_KKT_DIFF_OPTIONS: SparseKKTDiffOptionsFull = {
 }
 
 
+# ----------------------------------------------------------------------
+# Sparse DBD backend options
+# ----------------------------------------------------------------------
+
+class SparseDBDDiffOptions(DifferentiatorOptions):
+    """Partial differentiator options for the ``sparse_dbd`` backend.
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_SPARSE_DBD_DIFF_OPTIONS`` via :func:`parse_options`.
+
+    The ``backend`` field is inherited from
+    :class:`DifferentiatorOptions`.
+
+    Attributes:
+        rho: Regularisation strength for the DBD perturbation.
+            Must be ``> 0``.
+    """
+    dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
+    linear_solver:  str
+    rho:            float
+
+
+class SparseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
+    """Complete differentiator options for the ``sparse_dbd`` backend.
+
+    All keys are required.  This is the resolved form after merging
+    user-supplied options with defaults.
+
+    Attributes:
+        backend: Differentiator backend name (``"sparse_dbd"``).
+            Redeclared here to make it required in the resolved form.
+        dtype: NumPy floating-point dtype for all computations.
+        bool_dtype: NumPy boolean dtype for active-set masks.
+        cst_tol: Tolerance for determining active inequality
+            constraints (``|G x - h| <= cst_tol``).
+        linear_solver: Name of the sparse linear solver backend.
+        rho: Regularisation strength for the DBD perturbation
+            (scalar ``> 0``).
+    """
+    backend:        str
+    dtype:          type[np.floating]
+    bool_dtype:     type[np.bool]
+    cst_tol:        float
+    linear_solver:  Literal[
+                        "splu", "spilu", "spsolve", "lu",
+                        "sp_lstsq", "lstsq", "solve"
+                    ]
+    rho:            float
+
+
+DEFAULT_SPARSE_DBD_DIFF_OPTIONS: SparseDBDDiffOptionsFull = {
+    "backend":       "sparse_dbd",
+    "dtype":         np.float64,
+    "bool_dtype":    np.bool_,
+    "cst_tol":       1e-8,
+    "linear_solver": "splu",
+    "rho":           1e-5,
+}
+
 
 # ----------------------------------------------------------------------
 # Differentiator defaults registry
@@ -85,6 +146,7 @@ DEFAULT_SPARSE_KKT_DIFF_OPTIONS: SparseKKTDiffOptionsFull = {
 
 DIFF_OPTIONS_DEFAULTS: dict[str, DifferentiatorOptions] = {
     "sparse_kkt": DEFAULT_SPARSE_KKT_DIFF_OPTIONS, #type: ignore
+    "sparse_dbd": DEFAULT_SPARSE_DBD_DIFF_OPTIONS,
 }
 """Look-up table used by the factory functions in
 ``_differentiators.py`` to select the correct defaults for the
@@ -171,6 +233,18 @@ ALL_SPARSE_DIFF_OPTIONS = {
             "bool_dtype": "NumPy boolean dtype for active-set masks.",
             "cst_tol": "Tolerance for determining active inequality constraints.",
             "linear_solver": "Name of the sparse linear solver backend.",
+        },
+    },
+    "sparse_dbd": {
+        "option": SparseDBDDiffOptions,
+        "default": DEFAULT_SPARSE_DBD_DIFF_OPTIONS,
+        "description": {
+            "backend": "Differentiator backend name (fixed to 'sparse_dbd' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all computations.",
+            "bool_dtype": "NumPy boolean dtype for active-set masks.",
+            "cst_tol": "Tolerance for determining active inequality constraints.",
+            "linear_solver": "Name of the sparse linear solver backend.",
+            "rho": "Regularisation strength for the DBD perturbation (> 0).",
         },
     },
 }
