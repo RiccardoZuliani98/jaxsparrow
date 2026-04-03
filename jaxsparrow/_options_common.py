@@ -59,7 +59,8 @@ class DifferentiatorOptions(TypedDict, total=False):
 
     The ``backend`` field selects the differentiation *algorithm*
     (e.g., ``"dense_kkt"`` for standard KKT differentiation,
-    ``"sparse_kkt"`` for the sparse variant).
+    ``"dense_dbd"`` for the regularised Differentiable-by-Design
+    method, ``"sparse_kkt"`` for the sparse variant).
 
     All remaining keys are backend-specific and documented in the
     corresponding options classes (e.g., :class:`DenseKKTDiffOptions`,
