@@ -70,12 +70,13 @@ dx0 = jnp.array([epsilon, 0.0])
 
 
 diff_options = {
-    "backend":"dense_kkt",
-    # "rho":1e-5,
-    "linear_solver":"lstsq"
+    "rho":1e-5,
+    "backend":"dense_dbd",
+    # "backend":"dense_kkt",
+    # "linear_solver":"lstsq"
 }
 solver_options = {
-    "solver_name":"osqp"
+    "solver_name":"piqp"
 }
 solver = setup_dense_solver(
     n_var=nz, 
@@ -157,3 +158,5 @@ start = perf_counter()
 jac_x0 = jvp_func(x0,e_mat)
 elapsed = perf_counter() - start
 print(f"  Jacobian computation: {elapsed:.6f}s")
+
+print(solver.timings.summary())

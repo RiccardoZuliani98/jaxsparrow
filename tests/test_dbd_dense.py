@@ -39,11 +39,12 @@ DBD_FWD_OPTS = {
         # "backend":"dense_kkt",
         # "linear_solver":"lstsq",
         "backend":"dense_dbd",
-        "rho":1e-6
+        "rho":50*1e-6
+        # "rho":5e-6
     },
     "solver": {
         "backend":"qpsolvers",
-        "solver_name": "osqp"
+        "solver_name": "piqp"
     },
 }
 
@@ -53,11 +54,11 @@ DBD_REV_OPTS = {
         # "backend":"dense_kkt",
         # "linear_solver":"lstsq",
         "backend":"dense_dbd",
-        "rho":1e-6
+        "rho":5e-6
     },
     "solver": {
         "backend":"qpsolvers",
-        "solver_name": "osqp"
+        "solver_name": "piqp"
     },
 }
 
@@ -66,7 +67,7 @@ KKT_FWD_OPTS = {
     "differentiator": {"backend":"dense_kkt"},
     "solver": {
         "backend":"qpsolvers",
-        "solver_name": "osqp"
+        "solver_name": "piqp"
     },
 }
 
@@ -75,13 +76,13 @@ KKT_REV_OPTS = {
     "differentiator": {"backend":"dense_kkt"},
     "solver": {
         "backend":"qpsolvers",
-        "solver_name": "osqp"
+        "solver_name": "piqp"
     },
 }
 
 # OSQP options for warmstarted finite differences
 OSQP_OPTS = {
-    "solver": {"solver_name": "osqp"},
+    "solver": {"solver_name": "piqp"},
 }
 
 
@@ -785,6 +786,7 @@ class TestDBDJVPFiniteDiffPSD:
                                      sol0["x"])
 
         np.testing.assert_allclose(_cos_sim(tang_dbd["x"], fd["x"]), 1.0, atol=self.ATOL_X)
+        np.testing.assert_allclose(tang_dbd["x"], fd["x"], atol=self.ATOL_X)
 
     def test_jvp_db_psd_full(self, psd_full):
         d = psd_full
@@ -869,6 +871,7 @@ class TestDBDJVPFiniteDiffPSD:
         # np.linalg.norm(tang_dbd["x"])/ np.linalg.norm(fd["x"])
 
         np.testing.assert_allclose(_cos_sim(tang_dbd["x"], fd["x"]), 1.0, atol=self.ATOL_X)
+        np.testing.assert_allclose(tang_dbd["x"], fd["x"], atol=self.ATOL_X)
 
     def test_jvp_db_psd_mpc(self, psd_mpc_problem):
         """JVP on MPC with PSD cost (zero control weight)."""
@@ -1036,6 +1039,7 @@ class TestDBDVJPFiniteDiffPSD:
                                   sol0["x"])
 
         np.testing.assert_allclose(_cos_sim(grad, fd), 1.0, atol=1e-3)
+        np.testing.assert_allclose(grad, fd, atol=self.ATOL_X)
 
     def test_vjp_db_psd_full(self, psd_full):
         d = psd_full
