@@ -147,6 +147,7 @@ class SolverBackend(ABC):
 # =====================================================================
 
 from jaxsparrow._solver_dense._options import DenseQpSolverOptionsFull
+from jaxsparrow._solver_sparse._options import SparseQpSolverOptionsFull
 
 
 class QpSolversBackend(SolverBackend):
@@ -164,7 +165,7 @@ class QpSolversBackend(SolverBackend):
             ignored (already used for dispatch).
     """
 
-    def __init__(self, options: DenseQpSolverOptionsFull) -> None:
+    def __init__(self, options: DenseQpSolverOptionsFull| SparseQpSolverOptionsFull) -> None:
         self._solver_name: str = options["solver_name"]
         self._dtype: type[np.floating] = options["dtype"] #type: ignore
 
@@ -260,7 +261,7 @@ class QpSolversBackend(SolverBackend):
 SolverBackendFactory = Callable[[SolverOptions], SolverBackend]
 
 _BACKEND_REGISTRY: dict[str, SolverBackendFactory] = {
-    "qpsolvers": QpSolversBackend, #type: ignore
+    "qpsolvers": QpSolversBackend,
 }
 
 
