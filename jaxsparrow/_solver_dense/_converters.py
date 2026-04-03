@@ -10,7 +10,14 @@ move data across the JAX ↔ NumPy boundary:
 - **primal converter**: JAX → NumPy, squeezing spurious batch-1 dims.
 - **tangent converter**: JAX → NumPy, preserving the batch dimension.
 - **grad-to-JAX converter**: NumPy → JAX, for returning gradients.
+
+The ``dtype`` parameter received by each converter is the JAX-level
+dtype from ``ConstructorOptionsFull["dtype"]`` (e.g. ``jnp.float64``).
+NumPy and JAX dtypes are interchangeable at runtime, but the
+annotations use ``jnp.dtype`` to match the source.
 """
+
+from typing import Union
 
 import numpy as np
 from numpy import ndarray
@@ -19,8 +26,12 @@ import jax.numpy as jnp
 
 from jaxsparrow._solver_common import EXPECTED_NDIM
 
+# The dtype flowing through build_solver is a JAX dtype, but NumPy
+# dtypes are also accepted at runtime.  This alias covers both.
+DtypeLike = Union[jnp.dtype, type[np.floating]]
 
-def dense_primal_converter(key: str, val: Array, dtype: type[np.floating]) -> ndarray:
+
+def dense_primal_converter(key: str, val: Array, dtype: DtypeLike) -> ndarray:
     """Convert a JAX primal array to a dense NumPy array.
 
     Squeezes a leading batch-1 dimension if the resulting ``ndim``
@@ -42,7 +53,7 @@ def dense_primal_converter(key: str, val: Array, dtype: type[np.floating]) -> nd
     return arr
 
 
-def dense_tangent_converter(key: str, val: Array, dtype: type[np.floating]) -> ndarray:
+def dense_tangent_converter(key: str, val: Array, dtype: DtypeLike) -> ndarray:
     """Convert a JAX tangent array to a dense NumPy array.
 
     Unlike the primal converter, the batch dimension (if present)
@@ -60,7 +71,7 @@ def dense_tangent_converter(key: str, val: Array, dtype: type[np.floating]) -> n
     return np.asarray(val, dtype=dtype)
 
 
-def dense_grad_to_jax(key: str, val: ndarray, dtype: type[np.floating]) -> Array:
+def dense_grad_to_jax(key: str, val: ndarray, dtype: DtypeLike) -> Array:
     """Convert a NumPy gradient array back to a JAX array.
 
     Used when returning parameter gradients from the NumPy

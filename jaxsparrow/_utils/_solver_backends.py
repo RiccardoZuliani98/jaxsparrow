@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from time import perf_counter
-from typing import Any, Optional, Union, cast
+from typing import Callable, Optional, Union, cast
 
 import numpy as np
 from numpy import ndarray
@@ -39,6 +39,7 @@ from qpsolvers import Problem, solve_problem
 
 from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
+from jaxsparrow._options_common import SolverOptions
 
 
 # =====================================================================
@@ -50,19 +51,37 @@ class SolverBackend(ABC):
 
     Subclasses implement a two-phase lifecycle:
 
-    1. :meth:`setup` — one-time structural initialization.
-    2. :meth:`solve` — per-call numerical solve.
+    1. :meth:`__init__` — receive fully resolved options.
+    2. :meth:`setup` — one-time structural initialization.
+    3. :meth:`solve` — per-call numerical solve.
+
+    The ``__init__`` call receives the fully resolved options dict
+    (after merging user-supplied values with backend-specific
+    defaults).  Concrete backends should narrow the type annotation
+    to their own ``*OptionsFull`` TypedDict so the type checker
+    knows which keys are available.
 
     The ``setup`` call receives the fixed QP ingredients as a
-    :class:`SparseIngredientsNP` dict.  Backends should cast the
-    values to the configured dtype, store them, and perform any
-    symbolic analysis or workspace allocation.
+    dict.  Backends should cast the values to the configured dtype,
+    store them, and perform any symbolic analysis or workspace
+    allocation.
 
     The ``solve`` call receives runtime QP ingredients as keyword
     arguments, merges them with the stored fixed elements, builds
     the problem, runs the solver, and returns the raw solution
     arrays plus a timing dict.
     """
+
+    @abstractmethod
+    def __init__(self, options: SolverOptions) -> None:
+        """Receive fully resolved backend options.
+
+        Args:
+            options: Fully resolved options dict (all keys present).
+                Concrete backends should narrow this type to their
+                own ``*OptionsFull`` TypedDict.
+        """
+        ...
 
     @abstractmethod
     def setup(
@@ -127,6 +146,10 @@ class SolverBackend(ABC):
 # qpsolvers backend (stateless, default)
 # =====================================================================
 
+from jaxsparrow._solver_dense._options import DenseQpSolverOptionsFull
+from jaxsparrow._solver_sparse._options import SparseQpSolverOptionsFull
+
+
 class QpSolversBackend(SolverBackend):
     """Stateless backend wrapping the ``qpsolvers`` library.
 
@@ -136,15 +159,15 @@ class QpSolversBackend(SolverBackend):
     as the baseline implementation.
 
     Args:
-        solver_name: Backend solver name passed to
-            ``qpsolvers.solve_problem`` (e.g. ``"piqp"``, ``"osqp"``,
-            ``"clarabel"``).
-        dtype: NumPy floating-point dtype for all arrays.
+        options: Fully resolved solver options dict.  Expected
+            keys: ``"solver_name"`` (str), ``"dtype"``
+            (NumPy floating dtype).  The ``"backend"`` key is
+            ignored (already used for dispatch).
     """
 
-    def __init__(self, solver_name: str, dtype: type[np.floating] = np.float64) -> None:
-        self._solver_name: str = solver_name
-        self._dtype: type[np.floating] = dtype
+    def __init__(self, options: DenseQpSolverOptionsFull| SparseQpSolverOptionsFull) -> None:
+        self._solver_name: str = options["solver_name"]
+        self._dtype: type[np.floating] = options["dtype"] #type: ignore
 
         # Fixed elements stored at setup time
         self._fixed: SparseIngredientsNP = {}
@@ -233,35 +256,42 @@ class QpSolversBackend(SolverBackend):
 # Registry and factory
 # =====================================================================
 
-_BACKEND_REGISTRY: dict[str, type[SolverBackend]] = {
+# Type alias for backend constructors: each takes a SolverOptions
+# dict and returns a SolverBackend instance.
+SolverBackendFactory = Callable[[SolverOptions], SolverBackend]
+
+_BACKEND_REGISTRY: dict[str, SolverBackendFactory] = {
     "qpsolvers": QpSolversBackend,
 }
 
 
-def register_backend(name: str, cls: type[SolverBackend]) -> None:
+def register_backend(name: str, cls: SolverBackendFactory) -> None:
     """Register a new QP solver backend.
 
     Args:
         name: Short identifier for the backend (e.g. ``"osqp"``,
             ``"piqp"``).
-        cls: The backend class (must subclass :class:`SolverBackend`).
+        cls: The backend class or callable.  Must accept a single
+            ``options: SolverOptions`` argument and return a
+            :class:`SolverBackend` instance.
 
     Raises:
         TypeError: If *cls* is not a subclass of :class:`SolverBackend`.
     """
-    if not (isinstance(cls, type) and issubclass(cls, SolverBackend)):
+    if isinstance(cls, type) and not issubclass(cls, SolverBackend):
         raise TypeError(
             f"Expected a SolverBackend subclass, got {cls!r}"
         )
     _BACKEND_REGISTRY[name] = cls
 
 
-def get_backend(name: str, **kwargs: Any) -> SolverBackend:
+def get_backend(name: str, options: SolverOptions) -> SolverBackend:
     """Instantiate a QP solver backend by name.
 
     Args:
         name: Registered backend name.
-        **kwargs: Passed to the backend constructor.
+        options: Fully resolved solver options dict.  Passed
+            directly to the backend constructor.
 
     Returns:
         An instance of the requested backend.
@@ -274,4 +304,4 @@ def get_backend(name: str, **kwargs: Any) -> SolverBackend:
             f"Unknown QP backend: {name!r}. "
             f"Available: {sorted(_BACKEND_REGISTRY)}."
         )
-    return _BACKEND_REGISTRY[name](**kwargs)
+    return _BACKEND_REGISTRY[name](options)

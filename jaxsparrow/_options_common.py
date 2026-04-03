@@ -7,7 +7,11 @@ These types define the configuration dictionaries used across both
 dense and sparse solver paths:
 
 - **SolverOptions**: Configuration for the numerical QP solver backend.
+  Declares the ``backend`` and ``dtype`` fields that are common to
+  all solver backends; all other keys are backend-specific.
 - **DifferentiatorOptions**: Configuration for the differentiation backend.
+  Declares the ``backend`` field that selects the concrete backend
+  implementation; all other keys are backend-specific.
 - **ConstructorOptions**: Top-level options controlling the overall
   differentiable solver construction (differentiation mode, solver
   selection, debugging flags, etc.).
@@ -19,8 +23,8 @@ defaults.
 """
 
 from typing import TypedDict, Final, Literal, Union, Dict, Any
+import numpy as np
 import jax.numpy as jnp
-from numpy import dtype as np_dtype
 
 
 # ----------------------------------------------------------------------
@@ -30,28 +34,40 @@ from numpy import dtype as np_dtype
 class SolverOptions(TypedDict, total=False):
     """Configuration options for the numerical QP solver.
 
-    This is a base type that can be extended by solver-specific
-    backends (e.g., qpsolvers, PIQP, OSQP). Keys are backend-dependent
-    but typically include solver name, tolerance settings, and iteration
-    limits. Missing keys are filled from backend-specific defaults.
+    The ``backend`` field selects the solver *protocol* — the
+    library or interface used to solve the QP (e.g.,
+    ``"qpsolvers"``).  The concrete solver *within* that protocol
+    is chosen by backend-specific keys (e.g., ``solver_name`` for
+    the ``qpsolvers`` backend selects ``"piqp"``, ``"osqp"``, etc.).
+
+    The ``dtype`` field sets the NumPy floating-point dtype for
+    all arrays and is used by both the solver backend and by
+    ``setup_dense_solver`` for fixed-element conversion.
+
+    All remaining keys are backend-specific and documented in the
+    corresponding options classes (e.g.,
+    :class:`DenseQpSolverOptions`).
+
+    Missing keys are filled from backend-specific defaults.
     """
-    pass
+    backend: str
+    dtype:   type[np.floating]
 
 
 class DifferentiatorOptions(TypedDict, total=False):
     """Configuration options for the differentiation backend.
 
-    This is a base type that can be extended by differentiator-specific
-    backends (e.g., KKT-based, adjoint-based). Common keys include:
-        - ``"backend"``: Name of the differentiator backend to use
-          (e.g., ``"dense_kkt"``, ``"sparse_kkt"``)
-        - ``"linear_solver"``: Linear solver to use for KKT systems
-        - ``"cst_tol"``: Tolerance for constraint satisfaction
-        - ``"dtype"``: Floating-point dtype for computations
+    The ``backend`` field selects the differentiation *algorithm*
+    (e.g., ``"dense_kkt"`` for standard KKT differentiation,
+    ``"sparse_kkt"`` for the sparse variant).
+
+    All remaining keys are backend-specific and documented in the
+    corresponding options classes (e.g., :class:`DenseKKTDiffOptions`,
+    :class:`DenseDBDDiffOptions`).
 
     Missing keys are filled from backend-specific defaults.
     """
-    pass
+    backend: str
 
 
 # ----------------------------------------------------------------------

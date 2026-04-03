@@ -143,7 +143,7 @@ def build_solver(
     """
 
     logger = logging.getLogger(__name__)
-    _dtype = options_parsed["dtype"]
+    _dtype: jnp.dtype = options_parsed["dtype"]
 
     # ── Timing recorder ──────────────────────────────────────────────
     _timings = TimingRecorder()
@@ -198,7 +198,7 @@ def build_solver(
     # BASE SOLVER CALLBACK
     # =================================================================
 
-    def _solver(*dynamic_vals: jax.Array) -> SolverOutput:
+    def _solver(*dynamic_vals: jax.Array | BCOO) -> SolverOutput:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -250,7 +250,7 @@ def build_solver(
     # FORWARD DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_forward(*args) -> tuple[SolverDiffOutFwd, SolverOutput]:
+    def _diff_forward(*args: jax.Array | BCOO) -> tuple[SolverDiffOutFwd, SolverOutput]:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -356,7 +356,7 @@ def build_solver(
     # REVERSE DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_reverse(*args) -> SolverDiffOutRev:
+    def _diff_reverse(*args : jax.Array | BCOO) -> SolverDiffOutRev:
 
         t_start = perf_counter()
         t: dict[str, float] = {}
