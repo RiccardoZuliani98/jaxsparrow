@@ -326,7 +326,7 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── H from inactive constraints (Eq. 12) ────────────────────
         w_inact = self._inactive_weights(slack, inactive)
         if n_inactive > 0:
-            G_inact = prob_np["G"][inactive, :] #type: ignore
+            G_inact = prob_np["G"][inactive, :]
             H_reg = G_inact.T @ (w_inact[:, None] * G_inact)
         else:
             G_inact = np.empty((0, n_var), dtype=_dtype)
@@ -335,9 +335,9 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Constraint rows (equality + active inequality) ───────────
         C_parts: list[ndarray] = []
         if n_eq > 0:
-            C_parts.append(prob_np["A"]) #type: ignore
+            C_parts.append(prob_np["A"])
         if self._n_ineq > 0 and n_active > 0:
-            C_parts.append(prob_np["G"][active, :]) #type: ignore
+            C_parts.append(prob_np["G"][active, :])
 
         C_np = (
             np.vstack(C_parts)
