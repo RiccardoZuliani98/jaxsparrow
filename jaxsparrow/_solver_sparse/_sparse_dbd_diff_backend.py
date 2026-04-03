@@ -189,6 +189,28 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         self._d_fixed = {}
 
         if fixed_elements is not None:
+            # ── Shape validation ─────────────────────────────────────
+            _expected_shapes: dict[str, tuple[int, ...]] = {
+                "P": (n_var, n_var),
+                "q": (n_var,),
+                "A": (n_eq, n_var),
+                "b": (n_eq,),
+                "G": (n_ineq, n_var),
+                "h": (n_ineq,),
+            }
+            for k, v in fixed_elements.items():
+                if k in _expected_shapes:
+                    shape = v.shape
+                    if issparse(v):
+                        expected = _expected_shapes[k]
+                    else:
+                        expected = _expected_shapes[k]
+                        shape = np.asarray(v).squeeze().shape
+                    if shape != expected:
+                        raise ValueError(
+                            f"{k} shape {shape} != {expected}"
+                        )
+
             for k, v in fixed_elements.items():
                 if issparse(v):
                     self._fixed[k] = csc_matrix(v, dtype=_dtype)
@@ -268,45 +290,37 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
 
     def _compute_active_inactive(
         self,
-        prob: SparseIngredientsNP,
-        x_np: ndarray,
-    ) -> tuple[ndarray, ndarray, csc_matrix]:
-        """Return ``(active, inactive, G_sp)`` where active/inactive
-        are boolean masks of shape ``(n_ineq,)``."""
+        residual: ndarray,
+    ) -> tuple[ndarray, ndarray]:
+        """Return ``(active, inactive)`` boolean masks of shape
+        ``(n_ineq,)``."""
         if self._n_ineq > 0:
-            if "G" not in prob or "h" not in prob:
-                raise KeyError(
-                    "G and h are required when n_ineq > 0. "
-                    "Provide them via fixed_elements or as dynamic arguments."
-                )
-            G_sp = prob["G"]
-            Gx = np.asarray(G_sp @ x_np).ravel()
-            h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
-            residual = np.abs(Gx - h_vec)
             active = np.asarray(
                 residual <= self._cst_tol,
                 dtype=self._bool_dtype,
             ).reshape(-1)
-            return active, ~active, G_sp
+            return active, ~active
         empty = np.empty(0, dtype=self._bool_dtype)
-        return empty, empty, _sparse_zeros(0, self._n_var, self._dtype)
+        return empty, empty
 
     def _inactive_weights(
         self,
-        prob: SparseIngredientsNP,
-        x_np: ndarray,
+        slack: ndarray,
         inactive: ndarray,
     ) -> ndarray:
         """Compute  ``w_i = rho / (z_i^2 + rho^2)`` for inactive
-        constraints, where ``z_i^2 = 2(h - Gx)_i``."""
+        constraints, where ``z_i^2 = 2(h - Gx)_i``.
+
+        Slack values that are negative or below ``cst_tol`` are
+        clamped to zero before computing the weights.  This avoids
+        numerical issues when a constraint is only marginally
+        inactive.
+        """
         n_inactive = int(np.sum(inactive))
         if self._n_ineq == 0 or n_inactive == 0:
             return np.empty(0, dtype=self._dtype)
-        G_sp = prob["G"]
-        h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
-        Gx = np.asarray(G_sp @ x_np).ravel()
-        z_sq = 2.0 * (h_vec - Gx)[inactive]
-        z_sq = np.maximum(z_sq, 1e-30)  # numerical guard
+        z_sq = 2.0 * slack[inactive]
+        z_sq[z_sq < self._cst_tol] = 0.0
         return self._rho / (z_sq + self._rho ** 2)
 
     # ── Regularized KKT assembly (Eqs. 11-12, sparse) ───────────────
@@ -319,6 +333,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         inactive: ndarray,
         n_active: int,
         G_sp: csc_matrix,
+        slack: ndarray,
     ) -> tuple[csc_matrix, int, ndarray, csc_matrix]:
         """Build the regularized KKT LHS in sparse CSC form.
 
@@ -339,7 +354,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         P_sp: csc_matrix = prob["P"]
 
         # ── H from inactive constraints (Eq. 12) ────────────────────
-        w_inact = self._inactive_weights(prob, x_np, inactive)
+        w_inact = self._inactive_weights(slack, inactive)
         if n_inactive > 0:
             G_inact = G_sp[inactive, :]
             W_diag = sp_diags(w_inact, format="csc")
@@ -351,10 +366,11 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Constraint rows (equality + active inequality) ───────────
         C_parts: list[csc_matrix] = []
         if n_eq > 0:
-            assert "A" in prob, (
-                "A is required when n_eq > 0. "
-                "Provide it via fixed_elements or as a dynamic argument."
-            )
+            if "A" not in prob:
+                raise ValueError(
+                    "A is required when n_eq > 0. "
+                    "Provide it via fixed_elements or as a dynamic argument."
+                )
             C_parts.append(prob["A"])
         if self._n_ineq > 0 and n_active > 0:
             C_parts.append(G_sp[active, :])
@@ -416,10 +432,11 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Merge primals & tangents ─────────────────────────────────
         prob = cast(SparseIngredientsNP, {**self._fixed, **dyn_primals_np})
 
-        assert "P" in prob and "q" in prob, (
-            "P and q are required. "
-            "Provide them via fixed_elements or as dynamic arguments."
-        )
+        if "P" not in prob or "q" not in prob:
+            raise ValueError(
+                "P and q are required. "
+                "Provide them via fixed_elements or as dynamic arguments."
+            )
 
         if batched:
             d_np: dict[str, Union[ndarray, list[csc_matrix], csc_matrix]] = {
@@ -432,7 +449,17 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
             d_np.update(dyn_tangents_np)  # type: ignore
 
         # ── Active / inactive sets ───────────────────────────────────
-        active, inactive, G_sp = self._compute_active_inactive(prob, x_np)
+        if self._n_ineq > 0:
+            G_sp = prob["G"]
+            Gx = np.asarray(G_sp @ x_np).ravel()
+            h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
+            residual = np.abs(Gx - h_vec)
+            slack = h_vec - Gx
+        else:
+            G_sp = _sparse_zeros(0, self._n_var, _dtype)
+            residual = np.empty(0, dtype=_dtype)
+            slack = np.empty(0, dtype=_dtype)
+        active, inactive = self._compute_active_inactive(residual)
         n_active = int(np.sum(active))
         n_inactive = int(np.sum(inactive))
         t["active_set"] = perf_counter() - start
@@ -440,7 +467,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Regularized LHS ──────────────────────────────────────────
         start = perf_counter()
         lhs, n_h, w_inact, G_inact = self._build_regularized_kkt(
-            prob, x_np, active, inactive, n_active, G_sp,
+            prob, x_np, active, inactive, n_active, G_sp, slack,
         )
 
         # ── Build RHS (b_theta + d^rho) contracted with tangent ──────
@@ -641,7 +668,17 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Active / inactive ────────────────────────────────────────
         start = perf_counter()
-        active, inactive, G_sp = self._compute_active_inactive(prob, x_np)
+        if self._n_ineq > 0:
+            G_sp = prob["G"]
+            Gx = np.asarray(G_sp @ x_np).ravel()
+            h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
+            residual = np.abs(Gx - h_vec)
+            slack = h_vec - Gx
+        else:
+            G_sp = _sparse_zeros(0, self._n_var, _dtype)
+            residual = np.empty(0, dtype=_dtype)
+            slack = np.empty(0, dtype=_dtype)
+        active, inactive = self._compute_active_inactive(residual)
         n_active = int(np.sum(active))
         n_inactive = int(np.sum(inactive))
         t["active_set"] = perf_counter() - start
@@ -649,7 +686,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Regularized LHS ──────────────────────────────────────────
         start = perf_counter()
         lhs, n_h, w_inact, G_inact = self._build_regularized_kkt(
-            prob, x_np, active, inactive, n_active, G_sp,
+            prob, x_np, active, inactive, n_active, G_sp, slack,
         )
 
         # ── RHS from cotangent vectors ───────────────────────────────

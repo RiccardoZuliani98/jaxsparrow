@@ -190,6 +190,30 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
                     raise ValueError(
                         f"q shape {q.shape} != ({n_var},)"
                     )
+            if "A" in fixed_elements:
+                A = np.asarray(fixed_elements["A"])
+                if A.shape != (n_eq, n_var):
+                    raise ValueError(
+                        f"A shape {A.shape} != ({n_eq}, {n_var})"
+                    )
+            if "b" in fixed_elements:
+                b = np.asarray(fixed_elements["b"]).squeeze()
+                if b.shape != (n_eq,):
+                    raise ValueError(
+                        f"b shape {b.shape} != ({n_eq},)"
+                    )
+            if "G" in fixed_elements:
+                G = np.asarray(fixed_elements["G"])
+                if G.shape != (n_ineq, n_var):
+                    raise ValueError(
+                        f"G shape {G.shape} != ({n_ineq}, {n_var})"
+                    )
+            if "h" in fixed_elements:
+                h = np.asarray(fixed_elements["h"]).squeeze()
+                if h.shape != (n_ineq,):
+                    raise ValueError(
+                        f"h shape {h.shape} != ({n_ineq},)"
+                    )
 
             self._fixed = {
                 k: np.asarray(v, dtype=_dtype).squeeze()
@@ -240,13 +264,11 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
 
     def _compute_active_inactive(
         self,
-        prob_np: DenseIngredientsNP,
-        x_np: ndarray,
+        residual: ndarray,
     ) -> tuple[ndarray, ndarray]:
         """Return ``(active, inactive)`` boolean masks of shape
         ``(n_ineq,)``."""
         if self._n_ineq > 0:
-            residual = np.abs(prob_np.get("G") @ x_np - prob_np.get("h"))
             active = residual <= self._cst_tol
             return active, ~active
         empty = np.empty(0, dtype=self._bool_dtype)
@@ -254,17 +276,22 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
 
     def _inactive_weights(
         self,
-        prob_np: DenseIngredientsNP,
-        x_np: ndarray,
+        slack: ndarray,
         inactive: ndarray,
     ) -> ndarray:
         """Compute  ``w_i = rho / (z_i^2 + rho^2)`` for inactive
-        constraints, where ``z_i^2 = 2(h - Gx)_i``."""
+        constraints, where ``z_i^2 = 2(h - Gx)_i``.
+
+        Slack values that are negative or below ``cst_tol`` are
+        clamped to zero before computing the weights.  This avoids
+        numerical issues when a constraint is only marginally
+        inactive.
+        """
         n_inactive = int(np.sum(inactive))
         if self._n_ineq == 0 or n_inactive == 0:
             return np.empty(0, dtype=self._dtype)
-        z_sq = 2.0 * (prob_np.get("h") - prob_np.get("G") @ x_np)[inactive]
-        z_sq = np.maximum(z_sq, 1e-30)  # numerical guard
+        z_sq = 2.0 * slack[inactive]
+        z_sq[z_sq < self._cst_tol] = 0.0
         return self._rho / (z_sq + self._rho ** 2)
 
     # ── regularized KKT assembly (Eqs. 11-12) ───────────────────────
@@ -276,6 +303,7 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         active: ndarray,
         inactive: ndarray,
         n_active: int,
+        slack: ndarray,
     ) -> tuple[ndarray, int, ndarray, ndarray]:
         """Build the regularized KKT LHS and auxiliary data.
 
@@ -293,12 +321,12 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         rho, _dtype = self._rho, self._dtype
         n_inactive = int(np.sum(inactive))
 
-        P = prob_np.get("P")
+        P = prob_np["P"]
 
         # ── H from inactive constraints (Eq. 12) ────────────────────
-        w_inact = self._inactive_weights(prob_np, x_np, inactive)
+        w_inact = self._inactive_weights(slack, inactive)
         if n_inactive > 0:
-            G_inact = prob_np.get("G")[inactive, :] #type: ignore
+            G_inact = prob_np["G"][inactive, :] #type: ignore
             H_reg = G_inact.T @ (w_inact[:, None] * G_inact)
         else:
             G_inact = np.empty((0, n_var), dtype=_dtype)
@@ -373,7 +401,11 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
             d_np.update(dyn_tangents_np)  # type: ignore
 
         # ── Active / inactive sets ───────────────────────────────────
-        active, inactive = self._compute_active_inactive(prob_np, x_np)
+        Gx = prob_np["G"] @ x_np if self._n_ineq > 0 else np.empty(0, dtype=_dtype)
+        h_vec = prob_np["h"] if self._n_ineq > 0 else np.empty(0, dtype=_dtype)
+        residual = np.abs(Gx - h_vec)
+        slack = h_vec - Gx
+        active, inactive = self._compute_active_inactive(residual)
         n_active = int(np.sum(active))
         n_inactive = int(np.sum(inactive))
         t["active_set"] = perf_counter() - start
@@ -381,7 +413,7 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── regularized LHS ──────────────────────────────────────────
         start = perf_counter()
         lhs, n_h, w_inact, G_inact = self._build_regularized_kkt(
-            prob_np, x_np, active, inactive, n_active,
+            prob_np, x_np, active, inactive, n_active, slack,
         )
 
         # ── Build RHS  (b_theta + d^rho) contracted with tangent ────
@@ -582,9 +614,11 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Active / inactive ────────────────────────────────────────
         start = perf_counter()
-        active, inactive = self._compute_active_inactive(
-            prob_np, x_np
-        )
+        Gx = prob_np["G"] @ x_np if self._n_ineq > 0 else np.empty(0, dtype=_dtype)
+        h_vec = prob_np["h"] if self._n_ineq > 0 else np.empty(0, dtype=_dtype)
+        residual = np.abs(Gx - h_vec)
+        slack = h_vec - Gx
+        active, inactive = self._compute_active_inactive(residual)
         n_active = int(np.sum(active))
         n_inactive = int(np.sum(inactive))
         t["active_set"] = perf_counter() - start
@@ -592,7 +626,7 @@ class DenseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── regularized LHS ──────────────────────────────────────────
         start = perf_counter()
         lhs, n_h, w_inact, G_inact = self._build_regularized_kkt(
-            prob_np, x_np, active, inactive, n_active,
+            prob_np, x_np, active, inactive, n_active, slack,
         )
 
         # ── RHS from cotangent vectors ───────────────────────────────
