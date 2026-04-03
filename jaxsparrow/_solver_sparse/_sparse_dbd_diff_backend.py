@@ -451,7 +451,9 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # ── Active / inactive sets ───────────────────────────────────
         if self._n_ineq > 0:
             G_sp = prob["G"]
-            Gx = np.asarray(G_sp @ x_np).ravel()
+            # I don't think there is a better way to do this,
+            # scipy should already return a numpy array.
+            Gx = (G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
             residual = np.abs(Gx - h_vec)
             slack = h_vec - Gx
@@ -478,7 +480,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
 
             if _nz("P"):
                 dP_list = d_np["P"]
-                for i, dP_i in enumerate(dP_list):  # type: ignore
+                for i, dP_i in enumerate(dP_list):
                     dL_np[i] += dP_i @ x_np
             if _nz("q"):
                 dL_np = dL_np + d_np["q"]
@@ -488,10 +490,8 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
                 dg_inact = np.zeros((batch_size, n_inactive), dtype=_dtype)
                 if _nz("G"):
                     dG_list = d_np["G"]
-                    for i, dG_i in enumerate(dG_list):  # type: ignore
-                        dg_inact[i] += np.asarray(
-                            dG_i[inactive, :] @ x_np
-                        ).ravel()
+                    for i, dG_i in enumerate(dG_list):
+                        dg_inact[i] += dG_i[inactive, :] @ x_np
                 if _nz("h"):
                     dg_inact = dg_inact - d_np["h"][:, inactive]
                 # l = G_Ibar^T diag(w) dg_Ibar
@@ -507,9 +507,10 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
                 if _nz("A"):
                     dA_list = d_np["A"]
                     rhs_eq = np.zeros((batch_size, n_eq), dtype=_dtype)
-                    for i, dA_i in enumerate(dA_list):  # type: ignore
+                    for i, dA_i in enumerate(dA_list):
+                        # I don't think we can be any faster than this
                         dL_np[i] += dA_i.T @ mu_np
-                        rhs_eq[i] = np.asarray(dA_i @ x_np).ravel()
+                        rhs_eq[i] = dA_i @ x_np
                     rhs_pieces.append(rhs_eq)
                 else:
                     rhs_pieces.append(
@@ -526,12 +527,11 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
                     rhs_ineq = np.zeros(
                         (batch_size, n_active), dtype=_dtype
                     )
-                    for i, dG_i in enumerate(dG_list):  # type: ignore
+                    for i, dG_i in enumerate(dG_list):
                         dG_i_active = dG_i[active, :]
+                        # same here, I don't think we can be any faster than this
                         dL_np[i] += dG_i_active.T @ lam_active
-                        rhs_ineq[i] = np.asarray(
-                            dG_i_active @ x_np
-                        ).ravel()
+                        rhs_ineq[i] = dG_i_active @ x_np
                     rhs_pieces.append(rhs_ineq)
                 else:
                     rhs_pieces.append(
@@ -560,21 +560,15 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
             if n_inactive > 0:
                 dg_inact = np.zeros(n_inactive, dtype=_dtype)
                 if _nz("G"):
-                    dg_inact = dg_inact + np.asarray(
-                        d_np["G"][inactive, :] @ x_np
-                    ).ravel()
+                    dg_inact = dg_inact + d_np["G"][inactive, :] @ x_np
                 if _nz("h"):
                     dg_inact = dg_inact - d_np["h"][inactive]
-                dL_np_1d = dL_np_1d + np.asarray(
-                    G_inact.T @ (w_inact * dg_inact)
-                ).ravel()
+                dL_np_1d = dL_np_1d + G_inact.T @ (w_inact * dg_inact)
 
             if n_eq > 0:
                 if _nz("A"):
                     dL_np_1d = dL_np_1d + d_np["A"].T @ mu_np
-                    rhs_pieces.append(
-                        np.asarray(d_np["A"] @ x_np).ravel()
-                    )
+                    rhs_pieces.append(d_np["A"] @ x_np)
                 else:
                     rhs_pieces.append(np.zeros(n_eq, dtype=_dtype))
                 if _nz("b"):
@@ -584,9 +578,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
                 if _nz("G"):
                     dG_active = d_np["G"][active, :]
                     dL_np_1d = dL_np_1d + dG_active.T @ lam_np[active]
-                    rhs_pieces.append(
-                        np.asarray(dG_active @ x_np).ravel()
-                    )
+                    rhs_pieces.append(dG_active @ x_np)
                 else:
                     rhs_pieces.append(np.zeros(n_active, dtype=_dtype))
                 if _nz("h"):
@@ -604,6 +596,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract dx, dlam, dmu ────────────────────────────────────
+        start = perf_counter()
         if batched:
             dx_np = sol[:n_var, :].T
             dmu_np = (
@@ -624,6 +617,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
             dlam_np = np.zeros(n_ineq, dtype=_dtype)
             if n_ineq > 0 and n_active > 0:
                 dlam_np[active] = sol[n_var + n_eq:]
+        t["extract"] = perf_counter() - start
 
         return cast(SolverDiffOutFwdNP, (dx_np, dlam_np, dmu_np)), t
 
@@ -673,7 +667,7 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         start = perf_counter()
         if self._n_ineq > 0:
             G_sp = prob["G"]
-            Gx = np.asarray(G_sp @ x_np).ravel()
+            Gx = (G_sp @ x_np).ravel()
             h_vec = np.asarray(prob["h"], dtype=self._dtype).ravel()
             residual = np.abs(Gx - h_vec)
             slack = h_vec - Gx
@@ -762,11 +756,11 @@ class SparseDBDDifferentiatorBackend(DifferentiatorBackend):
         # Pre-compute inactive-constraint adjoint correction
         if n_inactive > 0:
             if batched:
-                Gv = np.asarray(G_inact @ v_x.T)   # (n_inactive, batch)
-                wGv = w_inact[:, None] * Gv          # (n_inactive, batch)
+                Gv = G_inact @ v_x.T              # (n_inactive, batch)
+                wGv = w_inact[:, None] * Gv        # (n_inactive, batch)
             else:
-                Gv = np.asarray(G_inact @ v_x).ravel()  # (n_inactive,)
-                wGv = w_inact * Gv                        # (n_inactive,)
+                Gv = (G_inact @ v_x).ravel()       # (n_inactive,)
+                wGv = w_inact * Gv                  # (n_inactive,)
 
         grads: dict[str, ndarray] = {}
         _sp = self._sp_indices
