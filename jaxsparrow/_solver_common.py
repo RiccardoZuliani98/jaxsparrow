@@ -320,23 +320,32 @@ def build_solver(
         # ── Build JAX results ────────────────────────────────────────
         start = perf_counter()
         if batch_size > 0:
-            res: SolverOutput = {
-                "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
-                "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
-                "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
-            }
+            x_bc  = np.broadcast_to(x_np, (batch_size, n_var)).copy()
+            lam_bc = np.broadcast_to(lam_np, (batch_size, n_ineq)).copy()
+            mu_bc = np.broadcast_to(mu_np, (batch_size, n_eq)).copy()
+            res = {"x": x_bc, "lam": lam_bc, "mu": mu_bc}
+            diff_out = {"x": dx_np, "lam": dlam_np, "mu": dmu_np}
         else:
-            res: SolverOutput = {
-                "x":   jnp.array(x_np, dtype=_dtype),
-                "lam": jnp.array(lam_np, dtype=_dtype),
-                "mu":  jnp.array(mu_np, dtype=_dtype),
-            }
+            res = {"x": x_np, "lam": lam_np, "mu": mu_np}
+            diff_out = {"x": dx_np, "lam": dlam_np, "mu": dmu_np}
+        # if batch_size > 0:
+        #     res: SolverOutput = {
+        #         "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
+        #         "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
+        #         "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
+        #     }
+        # else:
+        #     res: SolverOutput = {
+        #         "x":   jnp.array(x_np, dtype=_dtype),
+        #         "lam": jnp.array(lam_np, dtype=_dtype),
+        #         "mu":  jnp.array(mu_np, dtype=_dtype),
+        #     }
 
-        diff_out: SolverDiffOutFwd = {
-            "x":   jnp.array(dx_np, dtype=_dtype),
-            "lam": jnp.array(dlam_np, dtype=_dtype),
-            "mu":  jnp.array(dmu_np, dtype=_dtype),
-        }
+        # diff_out: SolverDiffOutFwd = {
+        #     "x":   jnp.array(dx_np, dtype=_dtype),
+        #     "lam": jnp.array(dlam_np, dtype=_dtype),
+        #     "mu":  jnp.array(dmu_np, dtype=_dtype),
+        # }
         t["build_sol"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
