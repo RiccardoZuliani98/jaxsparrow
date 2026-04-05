@@ -1,0 +1,5 @@
+* remove numpy => converters from everywhere
+* remove double jax => numpy conversion in _solver_common
+* instead of passing nonzeros, pass a single concatenated vector, the concatenation function should be registered in the converters (for dense mode, stack along the x dimension which is shared by all elements)
+* I could also change the vmap mode to "legacy_vectorized" if that helps
+* store KKT matrix if it does not change across calls (and cache the linear system too!) better yet cache the linear system dynamically
