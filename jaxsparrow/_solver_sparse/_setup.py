@@ -6,23 +6,6 @@ Sparse differentiable solver.
 Thin wrapper around :func:`solver_common.build_solver` that supplies
 sparse-specific converters and creates the sparse numpy solver /
 differentiator callables.
-
-Usage
------
->>> from jax.experimental.sparse import BCOO
->>> import jax.numpy as jnp
->>>
->>> # Define sparsity patterns (values don't matter, only structure)
->>> P_pattern = BCOO.fromdense(jnp.eye(3))
->>> G_pattern = BCOO.fromdense(jnp.ones((2, 3)))
->>>
->>> solver = setup_sparse_solver(
-...     n_var=3, n_ineq=2,
-...     sparsity_patterns={"P": P_pattern, "G": G_pattern},
-... )
->>>
->>> # At solve time, pass BCOO matrices for P/G and dense arrays for q/h
->>> result = solver(P=P_bcoo, q=q_arr, G=G_bcoo, h=h_arr)
 """
 
 from __future__ import annotations
@@ -33,6 +16,7 @@ from typing import Optional, Union, Dict, Any
 import numpy as np
 import jax
 from jax.experimental.sparse import BCOO
+from scipy.sparse import csc_matrix
 
 from jaxsparrow._utils._parsing_utils import parse_options
 from jaxsparrow._utils._sparse_utils import bcoo_to_csc
@@ -54,8 +38,8 @@ from jaxsparrow._solver_sparse._converters import (
     is_sparse_key,
     make_sparse_primal_converter,
     make_sparse_tangent_converter,
-    make_sparse_grad_to_jax_forward,
-    make_sparse_grad_to_jax_reverse
+    make_sparse_residual_extractor,
+    make_sparse_residual_reconstructor,
 )
 from jaxsparrow._solver_common import (
     build_solver,
@@ -71,71 +55,22 @@ def setup_sparse_solver(
     n_ineq: int = 0,
     n_eq: int = 0,
     sparsity_patterns: Optional[dict[str, BCOO]] = None,
-    fixed_elements: Optional[Union[SparseIngredientsNP, SparseIngredients,Dict[str, jax.Array | BCOO]]] = None,
+    fixed_elements: Optional[Union[SparseIngredientsNP, SparseIngredients, Dict[str, jax.Array | BCOO]]] = None,
     options: Optional[ConstructorOptions | Dict[str, Any]] = None,
 ):
     """Build a differentiable sparse solver.
 
-    Constructs a JAX-traceable callable that solves quadratic programs
-    of the form::
-
-        min  0.5 * x^T P x + q^T x
-        s.t. A x = b
-             G x <= h
-
-    where P, A, G are sparse (JAX ``BCOO`` at call time, SciPy CSC
-    internally) and q, b, h are dense vectors.
-
-    The returned solver supports ``jax.jvp``, ``jax.vjp``, and
-    ``jax.vmap`` via ``pure_callback`` with ``custom_jvp`` or
-    ``custom_vjp``, depending on the configured differentiator mode.
-
-    Sparsity patterns must be provided for every matrix key that will
-    be passed dynamically (i.e., not fixed at setup). Only the
-    ``.indices`` of each pattern are used; the ``.data`` values are
-    ignored.
-
     Args:
         n_var: Number of decision variables.
-        n_ineq: Number of inequality constraints. Zero if there are
-            none.
-        n_eq: Number of equality constraints. Zero if there are none.
-        sparsity_patterns: Mapping from sparse key name (``"P"``, and
-            optionally ``"A"``, ``"G"``) to a ``BCOO`` matrix encoding
-            the sparsity structure. Required for every matrix key that
-            is dynamic (not in *fixed_elements*).
-        fixed_elements: Ingredients that remain constant across
-            calls. May be supplied in either JAX form (``BCOO``
-            matrices and ``jax.Array`` vectors) or NumPy form
-            (``scipy.sparse.csc_matrix`` and ``ndarray``). JAX
-            inputs are automatically converted to their NumPy/SciPy
-            equivalents using the dtype from the solver options.
-            Keys present here are excluded from JAX's traced path
-            and should not be passed again at solve time.
-        options: Solver and differentiator options. Unspecified keys
-            are filled from ``DEFAULT_CONSTRUCTOR_OPTIONS``. Notable
-            keys include ``"differentiator_type"`` (``"kkt_fwd"`` or
-            ``"kkt_rev"``), ``"solver_type"``, ``"dtype"``,
-            ``"fd_check"``, and ``"fd_eps"``.
+        n_ineq: Number of inequality constraints.
+        n_eq: Number of equality constraints.
+        sparsity_patterns: BCOO matrices encoding sparsity structure
+            for each dynamic sparse key.
+        fixed_elements: Parameters constant across calls.
+        options: Constructor-level options.
 
     Returns:
-        A solver callable with signature
-        ``solver(*, P=..., q=..., ..., warmstart=None) -> SolverOutput``.
-        Matrices (P, A, G) should be passed as JAX ``BCOO``; vectors
-        (q, b, h) as regular ``jax.Array``. The returned ``SolverOutput``
-        is a dict with keys ``"x"``, ``"lam"``, ``"mu"``.
-
-        The callable also exposes ``.timings`` (a ``TimingRecorder``)
-        and ``.fd_check`` (a ``FiniteDifferenceRecorder``) for
-        diagnostics.
-
-    Raises:
-        ValueError: If a dynamic sparse key has no corresponding entry
-            in *sparsity_patterns*.
-        ValueError: If ``"differentiator_type"`` is unknown.
-        ValueError: If ``"solver_type"`` is unknown.
-        AssertionError: If any fixed element or sparsity pattern has a
-            shape that doesn't match the declared problem dimensions.
+        A JAX-compatible callable supporting automatic differentiation.
     """
     logger = logging.getLogger(__name__)
 
@@ -153,10 +88,6 @@ def setup_sparse_solver(
     if fixed_elements is not None:
 
         # ── Convert JAX types to NumPy/SciPy if needed ───────────────
-        # Fixed elements may be supplied as BCOO matrices or JAX arrays.
-        # Convert them to scipy CSC / numpy ndarray using the solver
-        # dtype so downstream code always sees NumPy-side types.
-        #
         _, solver_defaults = _resolve_solver_defaults(
             options_parsed["solver"],
         )
@@ -173,19 +104,17 @@ def setup_sparse_solver(
                     val, dtype=_solver_dtype,
                 )
             elif isinstance(val, jax.Array):
-                # JAX array — convert to numpy
                 fixed_elements_converted[key] = np.asarray(
                     val, dtype=_solver_dtype,
                 )
             else:
-                # Already NumPy / SciPy — pass through
                 fixed_elements_converted[key] = val
 
         fixed_elements = fixed_elements_converted
 
         fixed_keys_set = set(fixed_elements.keys())
         for key, val in fixed_elements.items():
-            shape = val.shape  # works for both csc_matrix and ndarray #type:ignore
+            shape = val.shape  # type: ignore
             assert shape == expected_shapes[key], (
                 f"Fixed element '{key}' has shape {shape}, "
                 f"expected {expected_shapes[key]}"
@@ -213,32 +142,34 @@ def setup_sparse_solver(
     sparsity_info = build_sparsity_info(sparsity_patterns)
 
     # ── Build converters ─────────────────────────────────────────────
-    primal_converter  = make_sparse_primal_converter(sparsity_info)
+    primal_converter = make_sparse_primal_converter(sparsity_info)
     tangent_converter = make_sparse_tangent_converter(sparsity_info)
-    if options_parsed["diff_mode"] == "fwd":
-        grad_to_jax   = make_sparse_grad_to_jax_forward(sparsity_info)
-    elif options_parsed["diff_mode"] == "rev":
-        grad_to_jax   = make_sparse_grad_to_jax_reverse(sparsity_info)
-    else:
-        raise ValueError("Allowed differentiator keys are 'rev' and 'fwd', "
-            f"got {options_parsed['diff_mode']}")
+    residual_extractor = make_sparse_residual_extractor(sparsity_info)
+    residual_reconstructor = make_sparse_residual_reconstructor(sparsity_info)
 
-    # ── VJP backward shapes ──────────────────────────────────────────
-    # For sparse keys: gradient is w.r.t. the nnz nonzero values (1-D).
-    # For dense keys:  gradient has the full expected shape.
+    # ── VJP backward shapes ─────────────────────────────────────────
+    # Gradient shapes: (nnz,) for sparse keys, full shape for dense.
     vjp_bwd_shapes: dict[str, jax.ShapeDtypeStruct] = {}
     for k in dynamic_keys:
-        if is_sparse_key(k):
-            if k not in sparsity_info:
-                raise ValueError(
-                    f"Key '{k}' is marked as sparse but has no entry "
-                    f"in sparsity_info (available: {list(sparsity_info)})"
-                )
+        if is_sparse_key(k) and k in sparsity_info:
             nnz = sparsity_info[k]["nnz"]
             vjp_bwd_shapes[k] = jax.ShapeDtypeStruct((nnz,), _dtype)
         else:
             vjp_bwd_shapes[k] = jax.ShapeDtypeStruct(
-                expected_shapes[k], _dtype
+                expected_shapes[k], _dtype,
+            )
+
+    # ── VJP residual shapes ──────────────────────────────────────────
+    # Residual shapes: (nnz,) for sparse keys (only .data is saved),
+    # full shape for dense keys.
+    vjp_residual_shapes: dict[str, jax.ShapeDtypeStruct] = {}
+    for k in dynamic_keys:
+        if is_sparse_key(k) and k in sparsity_info:
+            nnz = sparsity_info[k]["nnz"]
+            vjp_residual_shapes[k] = jax.ShapeDtypeStruct((nnz,), _dtype)
+        else:
+            vjp_residual_shapes[k] = jax.ShapeDtypeStruct(
+                expected_shapes[k], _dtype,
             )
 
     # ── Create numpy solver ──────────────────────────────────────────
@@ -250,11 +181,6 @@ def setup_sparse_solver(
     )
 
     # ── Create differentiators ───────────────────────────────────────
-    # Both forward and reverse differentiators are created regardless
-    # of differentiator_type — the type only controls which JAX
-    # differentiation rule is registered (custom_jvp vs custom_vjp).
-    # The backend algorithm is selected by the "backend" key inside
-    # options_parsed["differentiator"] (default: "kkt").
     diff_forward_numpy = create_sparse_kkt_differentiator_fwd(
         n_var=n_var, n_eq=n_eq, n_ineq=n_ineq,
         options=options_parsed["differentiator"],
@@ -265,7 +191,7 @@ def setup_sparse_solver(
         options=options_parsed["differentiator"],
         fixed_elements=fixed_elements,
         dynamic_keys=dynamic_keys,
-        sparsity_info=sparsity_info
+        sparsity_info=sparsity_info,
     )
 
     # ── FD recorder ──────────────────────────────────────────────────
@@ -297,7 +223,9 @@ def setup_sparse_solver(
         diff_reverse_numpy=diff_reverse_numpy,
         primal_converter=primal_converter,
         tangent_converter=tangent_converter,
-        grad_to_jax=grad_to_jax,
         vjp_bwd_shapes=vjp_bwd_shapes,
+        residual_extractor=residual_extractor,
+        residual_reconstructor=residual_reconstructor,
+        vjp_residual_shapes=vjp_residual_shapes,
         fd_check=fd_check,
     )

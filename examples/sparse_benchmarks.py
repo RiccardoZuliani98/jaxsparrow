@@ -47,9 +47,9 @@ jax.config.update("jax_enable_x64", True)
 # ║                        USER CONFIG                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-DIFF_MODE   = "rev"       # "fwd" | "rev"
-BATCHED     = True         # True  → vmap over all tangent dirs at once
-DIFF_SCOPE  = "large"      # "small" | "large"  (see docstring above)
+DIFF_MODE   = "fwd"       # "fwd" | "rev"
+BATCHED     = False         # True  → vmap over all tangent dirs at once
+DIFF_SCOPE  = "small"      # "small" | "large"  (see docstring above)
 
 HORIZON     = 350          # MPC prediction horizon
 N_SAMPLES   = 50           # number of random initial conditions to benchmark

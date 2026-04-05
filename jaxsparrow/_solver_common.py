@@ -1,6 +1,6 @@
 """
-solver_common.py
-================
+_solver_common.py
+=================
 Shared scaffolding for dense and sparse differentiable solvers.
 
 This module contains all format-agnostic logic:
@@ -16,26 +16,39 @@ Dense and sparse entry-points call :func:`build_solver` and supply:
   2. Pre-built solver / differentiator callables.
   3. The ``_vjp_bwd_shapes`` dict (because the sparse path returns
      gradients w.r.t. nonzero values, not full matrices).
+
+All ``pure_callback`` functions return raw numpy arrays.  The
+callback infrastructure applies ``tree_map(np.asarray, ...)`` on
+return values, so explicit ``jnp.array()`` wrapping inside
+callbacks is unnecessary and would double the conversion cost.
+
+VJP residual compression
+-------------------------
+By default, the VJP forward pass saves full dynamic primals as
+residuals.  For sparse problems this is wasteful: BCOO matrices
+carry indices that are constant (fixed at setup via sparsity
+patterns).  The optional ``residual_extractor``,
+``residual_reconstructor``, and ``vjp_residual_shapes`` parameters
+allow the sparse path to save only the nonzero values (``.data``)
+as residuals and reconstruct the full CSC matrices on the backward
+pass from cached sparsity patterns.  The dense path omits these
+parameters and gets the default (full-array) behavior.
 """
 
 from __future__ import annotations
 
-from jax import custom_jvp, custom_vjp, pure_callback, Array
+from jax import custom_jvp, custom_vjp, pure_callback
 import jax
 import jax.numpy as jnp
 import numpy as np
 import logging
 from time import perf_counter
-from typing import Optional, cast, Callable, Any, Union
+from typing import Optional, Callable, Any, Union
 from numpy import ndarray
 
 from jaxsparrow._utils._printing_utils import fmt_times
 from jaxsparrow._utils._timing_utils import TimingRecorder
-from jaxsparrow._types_common import (
-    SolverDiffOutFwd,
-    SolverDiffOutRev,
-    SolverOutput
-)
+from jaxsparrow._types_common import SolverOutput
 from jaxsparrow._options_common import ConstructorOptionsFull
 from jaxsparrow._utils._fd_recorder import FiniteDifferenceRecorder
 from jax.experimental.sparse import BCOO
@@ -47,16 +60,16 @@ SolverInput = Union[jax.Array, BCOO]
 
 
 # ── Constants ────────────────────────────────────────────────────────
- 
+
 # Expected ndim for each ingredient (unbatched).
 # Used to detect batching in the JVP / VJP paths.
 EXPECTED_NDIM: dict[str, int] = {
     "P": 2, "q": 1, "A": 2, "b": 1, "G": 2, "h": 1,
 }
- 
+
 # Expected shapes for each ingredient (unbatched), given problem dims.
 def make_expected_shapes(
-    n_var: int, n_eq: int, n_ineq: int
+    n_var: int, n_eq: int, n_ineq: int,
 ) -> dict[str, tuple[int, ...]]:
     return {
         "P": (n_var, n_var),
@@ -66,12 +79,12 @@ def make_expected_shapes(
         "G": (n_ineq, n_var),
         "h": (n_ineq,),
     }
- 
- 
+
+
 # ── Key partitioning helpers ─────────────────────────────────────────
- 
+
 def compute_required_keys(
-    n_eq: int, n_ineq: int
+    n_eq: int, n_ineq: int,
 ) -> tuple[str, ...]:
     """Return the tuple of ingredient names required by the problem."""
     keys: tuple[str, ...] = ("P", "q")
@@ -80,8 +93,8 @@ def compute_required_keys(
     if n_ineq > 0:
         keys += ("G", "h")
     return keys
- 
- 
+
+
 def compute_dynamic_keys(
     required_keys: tuple[str, ...],
     fixed_keys: set[str],
@@ -89,16 +102,12 @@ def compute_dynamic_keys(
     """Keys that are *not* fixed and must flow through JAX's traced path."""
     return tuple(k for k in required_keys if k not in fixed_keys)
 
-# ── Converter protocol ───────────────────────────────────────────────
+
+# ── Converter protocols ──────────────────────────────────────────────
 #
-# Dense and sparse callers each supply a *converter* with the following
-# signature.  It receives a JAX array (or BCOO) and a key name, and
-# returns the numpy representation expected by the solver.
-#
-#   converter(key: str, jax_val: jax.Array, dtype) -> ndarray | csc_matrix
-#
-# The common code never inspects the returned object — it just passes
-# it through to the solver / differentiator callables.
+# Dense and sparse callers each supply converters with the following
+# signatures.  The common code never inspects the returned objects —
+# it just passes them through to the solver / differentiator.
 
 PrimalConverter = Callable[[str, Any, Any], Any]
 """(key, jax_value, dtype) -> numpy representation."""
@@ -106,8 +115,23 @@ PrimalConverter = Callable[[str, Any, Any], Any]
 TangentConverter = Callable[[str, Any, Any], Any]
 """(key, jax_value, dtype) -> numpy tangent representation."""
 
-GradToJaxConverter = Callable[[str, Any, Any], Array]
-"""(key, numpy_grad, dtype) -> JAX array for backward pass."""
+ResidualExtractor = Callable[[str, Any], jax.Array]
+"""(key, jax_value) -> minimal JAX array to save as VJP residual.
+
+For dense keys this is the identity.  For sparse BCOO keys this
+extracts ``.data`` (the nonzero values), discarding the constant
+indices.
+"""
+
+ResidualReconstructor = Callable[[str, Any, Any], Any]
+"""(key, residual_array, dtype) -> numpy primal.
+
+Reconstructs a full numpy primal (ndarray or csc_matrix) from the
+minimal residual saved by ``ResidualExtractor``.  For dense keys
+this is equivalent to the primal converter.  For sparse keys it
+rebuilds a CSC matrix from the residual data vector and cached
+sparsity indices.
+"""
 
 
 # ── Builder ──────────────────────────────────────────────────────────
@@ -126,17 +150,39 @@ def build_solver(
     solver_numpy: Callable[..., Any],
     diff_forward_numpy: Callable[..., Any],
     diff_reverse_numpy: Callable[..., Any],
-    # Converters
+    # Converters (JAX → numpy)
     primal_converter: PrimalConverter,
     tangent_converter: TangentConverter,
-    grad_to_jax: GradToJaxConverter,
-    # VJP backward shapes — caller builds these because sparse differs
+    # VJP backward shapes (gradient shapes per dynamic key)
     vjp_bwd_shapes: dict[str, jax.ShapeDtypeStruct] | None = None,
+    # Optional: minimal VJP residuals (sparse path only)
+    residual_extractor: ResidualExtractor | None = None,
+    residual_reconstructor: ResidualReconstructor | None = None,
+    vjp_residual_shapes: dict[str, jax.ShapeDtypeStruct] | None = None,
     # Finite-difference recorder (caller creates it)
     fd_check: FiniteDifferenceRecorder | None = None,
 ):
     """
     Wire up JAX custom differentiation rules around a numpy solver.
+
+    All callbacks return raw numpy arrays.  The ``pure_callback``
+    infrastructure handles numpy-to-JAX conversion automatically
+    via ``tree_map(np.asarray, ...)``.
+
+    Parameters
+    ----------
+    residual_extractor : optional
+        If provided, used in the VJP forward pass to extract minimal
+        residuals from dynamic primals (e.g. ``.data`` from BCOO).
+        When ``None``, full primals are saved as residuals.
+    residual_reconstructor : optional
+        If provided, used in the VJP backward callback to reconstruct
+        numpy primals from minimal residuals.  When ``None``, the
+        standard ``primal_converter`` is used.
+    vjp_residual_shapes : optional
+        Per-key ``ShapeDtypeStruct`` for the minimal residuals.
+        Required when ``residual_extractor`` is provided.  When
+        ``None``, residual shapes are the full expected shapes.
 
     Returns the public ``solver`` callable (with ``.timings`` and
     ``.fd_check`` attributes).
@@ -151,7 +197,7 @@ def build_solver(
     # ── FD recorder (use caller's or create a default) ───────────────
     _fd_check = fd_check or FiniteDifferenceRecorder(
         enabled=options_parsed["fd_check"],
-        eps=options_parsed["fd_eps"]
+        eps=options_parsed["fd_eps"],
     )
 
     # ── Key partitioning ─────────────────────────────────────────────
@@ -160,6 +206,19 @@ def build_solver(
     _dynamic_keys_set = set(_dynamic_keys)
     _n_dyn = len(_dynamic_keys)
     _expected_shapes = make_expected_shapes(n_var, n_eq, n_ineq)
+
+    # ── Residual mode ────────────────────────────────────────────────
+    #
+    # When all three residual params are provided, the VJP path saves
+    # minimal residuals (e.g. only .data for sparse BCOO keys).
+    # Otherwise it falls back to saving full primals.
+    _use_minimal_residuals = (
+        residual_extractor is not None
+        and residual_reconstructor is not None
+        and vjp_residual_shapes is not None
+    )
+    _extract_residual = residual_extractor
+    _reconstruct_from_residual = residual_reconstructor
 
     # ── JAX shape structs for pure_callback ──────────────────────────
     _fwd_shapes = {
@@ -177,14 +236,15 @@ def build_solver(
         _fwd_shapes,
     )
 
-    # VJP backward shapes — if not supplied, default to dense.
+    # VJP backward shapes — gradient shapes per dynamic key.
+    # If not supplied, default to the full expected shapes.
     _vjp_bwd_shapes = vjp_bwd_shapes or {
         k: jax.ShapeDtypeStruct(_expected_shapes[k], _dtype)
         for k in _dynamic_keys
     }
 
     # ── Warmstart slot ───────────────────────────────────────────────
-    _warmstart: list[Optional[Array]] = [None]
+    _warmstart: list[Optional[jax.Array]] = [None]
 
     # ── Aliases for readability ──────────────────────────────────────
     _solver_numpy = solver_numpy
@@ -192,13 +252,20 @@ def build_solver(
     _diff_reverse_numpy = diff_reverse_numpy
     _primal_conv = primal_converter
     _tangent_conv = tangent_converter
-    _grad_to_jax = grad_to_jax
 
     # =================================================================
     # BASE SOLVER CALLBACK
     # =================================================================
 
-    def _solver(*dynamic_vals: jax.Array | BCOO) -> SolverOutput:
+    def _solver(
+        *dynamic_vals: jax.Array | BCOO,
+    ) -> dict[str, ndarray]:
+        """Solve the QP and return raw numpy arrays.
+
+        Returns a dict with keys ``x``, ``lam``, ``mu`` whose values
+        are numpy ndarrays.  ``pure_callback`` converts them to JAX
+        arrays automatically.
+        """
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -231,14 +298,8 @@ def build_solver(
         x_np, lam_np, mu_np = sol_np
         t.update(t_solve)
 
-        # ── Return JAX arrays ────────────────────────────────────────
-        start = perf_counter()
-        result = cast(SolverOutput, {
-            "x":   jnp.array(x_np, dtype=_dtype),
-            "lam": jnp.array(lam_np, dtype=_dtype),
-            "mu":  jnp.array(mu_np, dtype=_dtype),
-        })
-        t["convert_to_jax"] = perf_counter() - start
+        # ── Return numpy arrays ──────────────────────────────────────
+        result = {"x": x_np, "lam": lam_np, "mu": mu_np}
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_solver | {fmt_times(t)}")
@@ -250,7 +311,14 @@ def build_solver(
     # FORWARD DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_forward(*args: jax.Array | BCOO) -> tuple[SolverDiffOutFwd, SolverOutput]:
+    def _diff_forward(
+        *args: jax.Array | BCOO,
+    ) -> tuple[dict[str, ndarray], dict[str, ndarray]]:
+        """Solve + forward-mode differentiate, returning raw numpy.
+
+        Returns ``(diff_out, res)`` where both are dicts with keys
+        ``x``, ``lam``, ``mu`` containing numpy ndarrays.
+        """
 
         t_start = perf_counter()
         t: dict[str, float] = {}
@@ -260,6 +328,8 @@ def build_solver(
 
         # ── Convert primals ──────────────────────────────────────────
         start = perf_counter()
+        #TODO: need to get nonzero entries only for sparse mode
+        # I already changed the primal converter for this
         dyn_primals_np: dict[str, Any] = {
             k: _primal_conv(k, v, _dtype)
             for k, v in zip(_dynamic_keys, dyn_primal_vals)
@@ -286,8 +356,8 @@ def build_solver(
         t.update(t_solve)
 
         # ── Convert tangents ─────────────────────────────────────────
-        
         start = perf_counter()
+        #TODO: same goes here, I changed the tangent converter too
         dyn_tangents_np: dict[str, Any] = {
             k: _tangent_conv(k, v, _dtype)
             for k, v in zip(_dynamic_keys, dyn_tangent_vals)
@@ -317,35 +387,18 @@ def build_solver(
         dx_np, dlam_np, dmu_np = diff_out_np
         t.update(t_diff)
 
-        # ── Build JAX results ────────────────────────────────────────
+        # ── Build results ────────────────────────────────────────────
         start = perf_counter()
         if batch_size > 0:
-            x_bc  = np.broadcast_to(x_np, (batch_size, n_var)).copy()
-            lam_bc = np.broadcast_to(lam_np, (batch_size, n_ineq)).copy()
-            mu_bc = np.broadcast_to(mu_np, (batch_size, n_eq)).copy()
-            res = {"x": x_bc, "lam": lam_bc, "mu": mu_bc}
-            diff_out = {"x": dx_np, "lam": dlam_np, "mu": dmu_np}
+            res = {
+                "x":   np.broadcast_to(x_np, (batch_size, n_var)).copy(),
+                "lam": np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(),
+                "mu":  np.broadcast_to(mu_np, (batch_size, n_eq)).copy(),
+            }
         else:
             res = {"x": x_np, "lam": lam_np, "mu": mu_np}
-            diff_out = {"x": dx_np, "lam": dlam_np, "mu": dmu_np}
-        # if batch_size > 0:
-        #     res: SolverOutput = {
-        #         "x":   jnp.array(np.broadcast_to(x_np, (batch_size, n_var)).copy(), dtype=_dtype),
-        #         "lam": jnp.array(np.broadcast_to(lam_np, (batch_size, n_ineq)).copy(), dtype=_dtype),
-        #         "mu":  jnp.array(np.broadcast_to(mu_np, (batch_size, n_eq)).copy(), dtype=_dtype),
-        #     }
-        # else:
-        #     res: SolverOutput = {
-        #         "x":   jnp.array(x_np, dtype=_dtype),
-        #         "lam": jnp.array(lam_np, dtype=_dtype),
-        #         "mu":  jnp.array(mu_np, dtype=_dtype),
-        #     }
 
-        # diff_out: SolverDiffOutFwd = {
-        #     "x":   jnp.array(dx_np, dtype=_dtype),
-        #     "lam": jnp.array(dlam_np, dtype=_dtype),
-        #     "mu":  jnp.array(dmu_np, dtype=_dtype),
-        # }
+        diff_out = {"x": dx_np, "lam": dlam_np, "mu": dmu_np}
         t["build_sol"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
@@ -365,17 +418,37 @@ def build_solver(
     # REVERSE DIFFERENTIATION CALLBACK
     # =================================================================
 
-    def _diff_reverse(*args : jax.Array | BCOO) -> SolverDiffOutRev:
+    def _diff_reverse(
+        *args: jax.Array | BCOO,
+    ) -> dict[str, ndarray]:
+        """Reverse-mode differentiate, returning raw numpy gradients.
+
+        The first ``_n_dyn`` args are VJP residuals.  When minimal
+        residuals are enabled, these are compressed representations
+        (e.g. only the nonzero values for sparse keys); the
+        reconstructor rebuilds full numpy primals from them.  When
+        disabled, these are full primals converted via the standard
+        primal converter.
+
+        Returns a dict keyed by dynamic parameter names whose values
+        are numpy ndarrays.
+        """
 
         t_start = perf_counter()
         t: dict[str, float] = {}
 
-        # ── Unpack ───────────────────────────────────────────────────
+        # ── Unpack primals from residuals ────────────────────────────
         start = perf_counter()
-        prob_np: dict[str, Any] = {
-            k: _primal_conv(k, args[i], _dtype)
-            for i, k in enumerate(_dynamic_keys)
-        }
+        if _use_minimal_residuals:
+            prob_np: dict[str, Any] = {
+                k: _reconstruct_from_residual(k, args[i], _dtype)  # type: ignore
+                for i, k in enumerate(_dynamic_keys)
+            }
+        else:
+            prob_np = {
+                k: _primal_conv(k, args[i], _dtype)
+                for i, k in enumerate(_dynamic_keys)
+            }
 
         off = _n_dyn
         x_np   = np.asarray(args[off],     dtype=_dtype)
@@ -408,15 +481,7 @@ def build_solver(
             batch_size=batch_size,
         )
         t.update(t_diff)
-        t["total_numpy_operations"] = perf_counter()-start
-
-        # ── Convert back to JAX ──────────────────────────────────────
-        start = perf_counter()
-        grads = {
-            k: _grad_to_jax(k, grads_np[k], _dtype)
-            for k in _dynamic_keys
-        }
-        t["convert_to_jax"] = perf_counter()-start
+        t["total_numpy_operations"] = perf_counter() - start
 
         t["total"] = perf_counter() - t_start
         logger.info(f"_kkt_vjp | {fmt_times(t)}")
@@ -429,7 +494,7 @@ def build_solver(
                 g_x, g_lam, g_mu, batched,
             )
 
-        return cast(SolverDiffOutRev, grads)
+        return grads_np
 
     # =================================================================
     # FD CHECK HELPERS
@@ -492,23 +557,47 @@ def build_solver(
     def _solver_dynamic_jvp_mode(
         *dynamic_vals: SolverInput,
     ) -> SolverOutput:
-        return pure_callback(_solver, _fwd_shapes, *dynamic_vals)
+        # Convert BCOO → .data, leave dense arrays as-is
+        converted = []
+        for k, v in zip(_dynamic_keys, dynamic_vals):
+            if isinstance(v, BCOO):
+                converted.append(v.data)          # pass only the nonzero values
+            else:
+                converted.append(v)               # dense JAX array
+        return pure_callback(_solver, _fwd_shapes, *converted)
 
     @_solver_dynamic_jvp_mode.defjvp
     def _solver_dynamic_jvp_rule(
         primals: tuple[SolverInput, ...],
         tangents: tuple[SolverInput, ...],
-    ) -> tuple[SolverOutput, SolverDiffOutFwd]:
+    ) -> tuple[SolverOutput, dict[str, jax.Array]]:
+        # Convert primals (BCOO → .data)
+        primals_converted = []
+        for k, v in zip(_dynamic_keys, primals):
+            if isinstance(v, BCOO):
+                primals_converted.append(v.data)
+            else:
+                primals_converted.append(v)
+
+        # Convert tangents (BCOO → .data)
+        tangents_converted = []
+        for k, v in zip(_dynamic_keys, tangents):
+            if isinstance(v, BCOO):
+                tangents_converted.append(v.data)
+            else:
+                tangents_converted.append(v)
+
         tangents_out, res = pure_callback(
             _diff_forward,
             _jvp_shapes,
-            *primals,
-            *tangents,
+            *primals_converted,
+            *tangents_converted,
             vmap_method="expand_dims",
         )
         return res, tangents_out
 
     # ── VJP path ─────────────────────────────────────────────────────
+
     @custom_vjp
     def _solver_dynamic_vjp_mode(
         *dynamic_vals: SolverInput,
@@ -517,22 +606,44 @@ def build_solver(
             _solver, _fwd_shapes, *dynamic_vals,
         )
 
-    def _solver_dynamic_vjp_fwd(
-        *dynamic_vals: SolverInput,
-    ) -> tuple[SolverOutput, tuple[SolverInput, ...]]:
-        result = pure_callback(
-            _solver, _fwd_shapes, *dynamic_vals,
-        )
-        x = result["x"]
-        lam = result["lam"]
-        mu = result["mu"]
-        residuals = (*dynamic_vals, x, lam, mu)
-        return result, residuals
-    
+    if _use_minimal_residuals:
+
+        # Minimal residuals: save only .data for sparse BCOO keys,
+        # full arrays for dense keys.  Shapes come from
+        # vjp_residual_shapes.
+
+        def _solver_dynamic_vjp_fwd(
+            *dynamic_vals: SolverInput,
+        ) -> tuple[SolverOutput, tuple[jax.Array, ...]]:
+            result = pure_callback(
+                _solver, _fwd_shapes, *dynamic_vals,
+            )
+            saved = tuple(
+                _extract_residual(k, v)  # type: ignore
+                for k, v in zip(_dynamic_keys, dynamic_vals)
+            )
+            residuals = (*saved, result["x"], result["lam"], result["mu"])
+            return result, residuals
+
+    else:
+        # Default: save full primals as residuals.
+
+        def _solver_dynamic_vjp_fwd(
+            *dynamic_vals: SolverInput,
+        ) -> tuple[SolverOutput, tuple[SolverInput, ...]]:
+            result = pure_callback(
+                _solver, _fwd_shapes, *dynamic_vals,
+            )
+            x = result["x"]
+            lam = result["lam"]
+            mu = result["mu"]
+            residuals = (*dynamic_vals, x, lam, mu)
+            return result, residuals
+
     def _solver_dynamic_vjp_bwd(
-        residuals: tuple[SolverInput, ...],
+        residuals: tuple[jax.Array, ...],
         g: dict[str, jax.Array],
-    ) -> tuple[SolverInput, ...]:
+    ) -> tuple[jax.Array, ...]:
         g_x   = g["x"]
         g_lam = g["lam"]
         g_mu  = g["mu"]
