@@ -16,6 +16,13 @@ Experiments
                   fwd: tangents w.r.t. all QP parameters (P,q,A,b,G,h)
                   rev: cotangent on full solution vector (nz dirs)
 
+Profiling
+---------
+  Set PROFILE = True to capture Perfetto traces of:
+    1. A single forward solve (no differentiation)
+    2. A single differentiation call (fwd or rev, batched or sequential)
+  Traces are saved to PROFILE_DIR. Open at https://ui.perfetto.dev/
+
 Set the knobs in the "USER CONFIG" block below, then run:
 
     python sparse_benchmarks.py
@@ -40,12 +47,15 @@ jax.config.update("jax_enable_x64", True)
 # ║                        USER CONFIG                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-DIFF_MODE  = "rev"       # "fwd" | "rev"
-BATCHED    = True         # True  → vmap over all tangent dirs at once
-DIFF_SCOPE = "large"      # "small" | "large"  (see docstring above)
+DIFF_MODE   = "rev"       # "fwd" | "rev"
+BATCHED     = True         # True  → vmap over all tangent dirs at once
+DIFF_SCOPE  = "large"      # "small" | "large"  (see docstring above)
 
-HORIZON    = 350          # MPC prediction horizon
-N_SAMPLES  = 50           # number of random initial conditions to benchmark
+HORIZON     = 350          # MPC prediction horizon
+N_SAMPLES   = 50           # number of random initial conditions to benchmark
+
+PROFILE     = True        # True → capture Perfetto traces
+PROFILE_DIR = "./.perfetto_trace"   # directory for trace output
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                     MPC PROBLEM SETUP                            ║
@@ -116,13 +126,10 @@ sparsity_patterns = {"P": P, "A": Aeq, "G": G}
 # ── Determine which parameters are dynamic based on diff_scope ──────
 
 if DIFF_SCOPE == "small":
-    # Only x0 flows through differentiation → only b is dynamic
-    # (b = beq(x0), all other QP parameters are fixed)
     fixed_elements = {"P": P, "q": q, "A": Aeq, "G": G, "h": h}
     dynamic_keys = ("b",)
     scope_desc = "x0 only → b dynamic"
 elif DIFF_SCOPE == "large":
-    # All QP parameters flow through differentiation
     fixed_elements = {}
     dynamic_keys = ("P", "q", "A", "b", "G", "h")
     scope_desc = "all QP parameters dynamic"
@@ -145,7 +152,6 @@ solver = setup_sparse_solver(
 # ╚══════════════════════════════════════════════════════════════════╝
 
 if DIFF_SCOPE == "small":
-    # Only b = beq(x0) is dynamic; everything else is fixed at setup
     @jit
     def solve_mpc(x_init):
         return solver(b=beq(x_init))
@@ -154,11 +160,9 @@ if DIFF_SCOPE == "small":
     def get_x(x_init):
         return solve_mpc(x_init)["x"]
 
-    # Tangent/cotangent dimensions are w.r.t. x0 (shape: nx)
     n_tangent_input = nx
 
 elif DIFF_SCOPE == "large":
-    # All parameters are dynamic — pass them all through
     @jit
     def solve_mpc(x_init):
         return solver(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
@@ -167,9 +171,6 @@ elif DIFF_SCOPE == "large":
     def get_x(x_init):
         return solve_mpc(x_init)["x"]
 
-    # Tangent/cotangent dimensions are still w.r.t. x0 (shape: nx),
-    # but JAX traces through all parameters so the JVP/VJP is much
-    # heavier (tangents flow through P, q, A, b, G, h).
     n_tangent_input = nx
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -179,28 +180,21 @@ elif DIFF_SCOPE == "large":
 rng = np.random.default_rng(0)
 
 if DIFF_MODE == "fwd":
-    # Forward: tangent directions in x0 space (nx-dimensional)
     if DIFF_SCOPE == "small":
-        # nx tangent directions (identity in x0 space)
         n_diff = nx
         tangent_dirs = jnp.eye(nx)
     else:
-        # Still nx tangent directions in x0, but all parameters are
-        # traced so the tangents propagate through everything
         n_diff = nx
         tangent_dirs = jnp.eye(nx)
 
 elif DIFF_MODE == "rev":
-    # Reverse: cotangent directions in output space (nz-dimensional)
     if DIFF_SCOPE == "small":
-        # Cotangent w.r.t. first state only → nx directions
         n_diff = nx
-        cotangent_dirs = jnp.eye(nz, nx)  # (nz, nx) → first nx columns
-        cotangent_dirs = cotangent_dirs.T  # (nx, nz)
+        cotangent_dirs = jnp.eye(nz, nx)
+        cotangent_dirs = cotangent_dirs.T
     else:
-        # Cotangent w.r.t. full solution → nz directions
         n_diff = nz
-        cotangent_dirs = jnp.eye(nz)  # (nz, nz)
+        cotangent_dirs = jnp.eye(nz)
 
 else:
     raise ValueError(f"Unknown diff_mode: {DIFF_MODE!r}. Use 'fwd' or 'rev'.")
@@ -210,8 +204,6 @@ else:
 # ╚══════════════════════════════════════════════════════════════════╝
 
 if DIFF_MODE == "fwd":
-    # ── Forward mode ─────────────────────────────────────────────────
-
     @jit
     def jvp_single(x0, dx0):
         return jvp(get_x, (x0,), (dx0,))
@@ -220,13 +212,10 @@ if DIFF_MODE == "fwd":
         jvp_batched = jit(vmap(jvp_single, in_axes=(None, 0)))
 
         def diff_fn(x0):
-            """Batched JVP: vmap over all tangent directions at once."""
             primals, tangents = jvp_batched(x0, tangent_dirs)
             return primals[0], tangents
 
 elif DIFF_MODE == "rev":
-    # ── Reverse mode ─────────────────────────────────────────────────
-
     @jit
     def vjp_setup(x0):
         return vjp(get_x, x0)
@@ -238,9 +227,8 @@ elif DIFF_MODE == "rev":
     if BATCHED:
         @jit
         def diff_fn(x0):
-            """Batched VJP: vmap over all cotangent directions at once."""
             sol, vjp_func = vjp(get_x, x0)
-            jac = vmap(vjp_func)(cotangent_dirs)  # tuple of len 1
+            jac = vmap(vjp_func)(cotangent_dirs)
             return sol, jac[0]
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -264,6 +252,48 @@ elif DIFF_MODE == "rev":
 jit_time = perf_counter() - t0
 print(f"  JIT compile time: {jit_time:.3f} s")
 
+# Also warmup the plain solve (no diff) for profiling
+_ = solve_mpc(x0_warmup)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                   PROFILING (optional)                           ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+if PROFILE:
+    from pathlib import Path as _P
+    _profile_root = _P(PROFILE_DIR).resolve()
+    _profile_root.mkdir(parents=True, exist_ok=True)
+
+    x0_prof = jnp.array([-1.0, -1.0])
+
+    # ── Profile a single solve (no differentiation) ──────────────────
+    solve_dir = str(_profile_root / "solve")
+    print(f"\n  Profiling single solve → {solve_dir}/")
+    with jax.profiler.trace(solve_dir, create_perfetto_link=True):
+        result = solve_mpc(x0_prof)
+        result["x"].block_until_ready()
+
+    # ── Profile a single differentiation call ────────────────────────
+    diff_label = f"diff_{DIFF_MODE}"
+    if BATCHED:
+        diff_label += "_batched"
+    diff_dir = str(_profile_root / diff_label)
+    print(f"  Profiling single {DIFF_MODE} diff → {diff_dir}/")
+
+    with jax.profiler.trace(diff_dir, create_perfetto_link=True):
+        if BATCHED:
+            sol, jac = diff_fn(x0_prof)
+            sol.block_until_ready()
+        elif DIFF_MODE == "fwd":
+            sol, t = jvp_single(x0_prof, tangent_dirs[0])
+            sol.block_until_ready()
+        elif DIFF_MODE == "rev":
+            sol, vjp_func = vjp_setup(x0_prof)
+            sol.block_until_ready()
+            g = vjp_single(vjp_func, cotangent_dirs[0])
+            g.block_until_ready()
+
+
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                        BENCHMARK                                 ║
 # ╚══════════════════════════════════════════════════════════════════╝
@@ -276,7 +306,6 @@ solver.timings.reset()
 wall_times = []
 
 if BATCHED:
-    # ── Batched: one call per sample ─────────────────────────────────
     for i in range(N_SAMPLES):
         x0_i = jnp.array(x0_samples[i])
         start = perf_counter()
@@ -285,7 +314,6 @@ if BATCHED:
         wall_times.append(perf_counter() - start)
 
 elif DIFF_MODE == "fwd":
-    # ── Sequential fwd: time each JVP individually ──────────────────
     for i in range(N_SAMPLES):
         x0_i = jnp.array(x0_samples[i])
         for j in range(n_diff):
@@ -295,7 +323,6 @@ elif DIFF_MODE == "fwd":
             wall_times.append(perf_counter() - start)
 
 elif DIFF_MODE == "rev":
-    # ── Sequential rev: time each VJP individually ──────────────────
     for i in range(N_SAMPLES):
         x0_i = jnp.array(x0_samples[i])
         sol, vjp_func = vjp_setup(x0_i)
@@ -327,6 +354,8 @@ print(f"  horizon               : {HORIZON}")
 print(f"  n_var / n_eq / n_ineq : {nz} / {neq} / {nineq}")
 print(f"  N_SAMPLES             : {N_SAMPLES}")
 print(f"  total calls timed     : {n_calls}")
+if PROFILE:
+    print(f"  profiling             : ON → {PROFILE_DIR}/")
 print(f"{'=' * 65}")
 print(f"\n  JIT compile time  : {jit_time:.4f} s")
 print(f"  Wall-clock total  : {wall_times.sum():.4f} s")
