@@ -328,8 +328,8 @@ def build_solver(
 
         # ── Convert primals ──────────────────────────────────────────
         start = perf_counter()
-        #TODO: need to get nonzero entries only for sparse mode
-        # I already changed the primal converter for this
+        #TODO: this needs to change after I stack all inputs together,
+        # use a function from the "converter"
         dyn_primals_np: dict[str, Any] = {
             k: _primal_conv(k, v, _dtype)
             for k, v in zip(_dynamic_keys, dyn_primal_vals)
@@ -357,7 +357,8 @@ def build_solver(
 
         # ── Convert tangents ─────────────────────────────────────────
         start = perf_counter()
-        #TODO: same goes here, I changed the tangent converter too
+        #TODO: this needs to change after I stack all inputs together,
+        # use a function from the "converter"
         dyn_tangents_np: dict[str, Any] = {
             k: _tangent_conv(k, v, _dtype)
             for k, v in zip(_dynamic_keys, dyn_tangent_vals)
@@ -439,6 +440,8 @@ def build_solver(
 
         # ── Unpack primals from residuals ────────────────────────────
         start = perf_counter()
+        #TODO: this is the same as above, we need to somehow unstack the
+        # QP ingredients
         if _use_minimal_residuals:
             prob_np: dict[str, Any] = {
                 k: _reconstruct_from_residual(k, args[i], _dtype)  # type: ignore
@@ -571,7 +574,8 @@ def build_solver(
         primals: tuple[SolverInput, ...],
         tangents: tuple[SolverInput, ...],
     ) -> tuple[SolverOutput, dict[str, jax.Array]]:
-        # Convert primals (BCOO → .data)
+        #TODO: this needs to change, there should be a converter that comes in
+        # and does the "stacking"
         primals_converted = []
         for k, v in zip(_dynamic_keys, primals):
             if isinstance(v, BCOO):
@@ -579,7 +583,7 @@ def build_solver(
             else:
                 primals_converted.append(v)
 
-        # Convert tangents (BCOO → .data)
+        #TODO: same exact thing here
         tangents_converted = []
         for k, v in zip(_dynamic_keys, tangents):
             if isinstance(v, BCOO):
@@ -587,6 +591,7 @@ def build_solver(
             else:
                 tangents_converted.append(v)
 
+        #TODO: we might change to "legacy_vectorized"
         tangents_out, res = pure_callback(
             _diff_forward,
             _jvp_shapes,
@@ -612,6 +617,8 @@ def build_solver(
         # full arrays for dense keys.  Shapes come from
         # vjp_residual_shapes.
 
+        #TODO: same here, we need to do some stacking, and we must not
+        # branch based on "_use_minimal_residuals"
         def _solver_dynamic_vjp_fwd(
             *dynamic_vals: SolverInput,
         ) -> tuple[SolverOutput, tuple[jax.Array, ...]]:
@@ -640,6 +647,7 @@ def build_solver(
             residuals = (*dynamic_vals, x, lam, mu)
             return result, residuals
 
+    #TODO: here we need to also put some stacking converter
     def _solver_dynamic_vjp_bwd(
         residuals: tuple[jax.Array, ...],
         g: dict[str, jax.Array],
