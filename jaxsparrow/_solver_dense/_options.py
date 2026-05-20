@@ -348,4 +348,5 @@ ALL_DENSE_SOLVER_OPTIONS = {
             "abstol": "Absolute feasibility tolerance for QOCO.",
             "reltol": "Relative feasibility tolerance for QOCO.",
         }
+    }
 }
