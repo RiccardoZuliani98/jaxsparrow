@@ -106,7 +106,8 @@ solver_fixed = setup_dense_solver(
     n_ineq=nineq,
     n_eq=neq,
     fixed_elements={"P":np.array(P),"q":np.array(q)},
-    options={"solver":{"solver_name":"daqp"},"dtype":ctypes.c_double,"bool_dtype":ctypes.c_int}
+    # options={"solver":{"solver_name":"daqp"},"dtype":ctypes.c_double,"bool_dtype":ctypes.c_int}
+    options={"solver":{"backend":"piqp"}}
 )
 sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)
 sol2_fixed = solver_fixed(A=Aeq, b=beq(x0), G=G, h=h)
