@@ -115,7 +115,7 @@ solver_fixed = setup_sparse_solver(
         "P": sp_csc(np.array(P_dense)),
         "q": np.array(q),
     },
-    options={"solver":{"backend":"piqp"}}
+    options={"solver":{"backend":"qoco"}}
 )
 
 sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)

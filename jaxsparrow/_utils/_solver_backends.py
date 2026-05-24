@@ -511,141 +511,138 @@ class QOCOBackend(SolverBackend):
             ``qoco.QOCO.update_settings``.
     """
 
-    def __init__(self, options: SolverOptions) -> None:
-        self._dtype: type[np.floating] = options.get("dtype", np.float64) #type: ignore
+    def __init__(self, options: "SolverOptions") -> None:
+        # Standardized try-except import
+        try:
+            import qoco
+            self._qoco = qoco
+        except ImportError as e:
+            raise ImportError(
+                "The QOCO backend requires the 'qoco' package. "
+                "Please install it using 'pip install qoco'."
+            ) from e
 
-        # QOCO solver settings forwarded to update_settings.
-        # Filter out keys consumed by the backend protocol.
-        _RESERVED = frozenset({"backend", "solver_name", "dtype"})
+        self.options = options
+        self._dtype = self.options.get("dtype", np.float64)
+        
+        # Check if dense mode was requested and fail early
+        if not self.options.get("sparse", True):
+            raise ValueError("The QOCO backend only supports sparse matrices. Please set 'sparse=True' or use a different solver.")
+        
+        # Check if failed QP ingredients should be dumped
+        self._dump_failed = self.options.get("dump_failed", True)
+
+        # QOCO solver settings forwarded to setup
+        _RESERVED = frozenset({"backend", "solver_name", "dtype", "dump_failed", "sparse"})
         self._qoco_settings: dict = {
             k: v for k, v in options.items()
             if k not in _RESERVED
         }
-        # Default to quiet output unless the caller asked for verbose.
         self._qoco_settings.setdefault("verbose", 0)
 
-        # Fixed elements stored at setup time
-        self._fixed: SparseIngredientsNP = {}
+        self._fixed = {}
+        self._solver = None
 
-        # Problem dimensions (set during first solve)
-        self._n: int = 0       # number of variables
-        self._n_eq: int = 0    # number of equality constraints
-        self._n_ineq: int = 0  # number of inequality constraints
-
-        # QOCO solver instance — lazily created on first solve
-        self._solver: Optional["qoco.QOCO"] = None  # type: ignore[name-defined]
-        self._setup_done: bool = False
-
-    # ── Helpers ──────────────────────────────────────────────────────
-
-    def _to_csc(
-        self, val: Union[ndarray, csc_matrix],
-    ) -> csc_matrix:
-        """Ensure a matrix is CSC with the configured dtype."""
-        if issparse(val):
-            return csc_matrix(val, dtype=self._dtype)
-        return csc_matrix(np.asarray(val, dtype=self._dtype))
-
-    def _to_vec(self, val: ndarray) -> ndarray:
-        """Cast a vector to the configured dtype and squeeze."""
-        return np.atleast_1d(np.asarray(val, dtype=self._dtype).squeeze())
-
-    # ── Lifecycle ────────────────────────────────────────────────────
+        # Problem dimensions
+        self._n = 0
+        self._n_eq = 0
+        self._n_ineq = 0
 
     def setup(
         self,
-        fixed_elements: Optional[SparseIngredientsNP] = None,
+        fixed_elements: Optional[dict] = None,
         sparsity_pattern: Optional[dict] = None
     ) -> dict[str, float]:
-        """Cast and store the fixed QP ingredients.
+        """One-time structural initialization (Eager setup)."""
+        start = perf_counter()
 
-        The actual QOCO solver setup is deferred to the first
-        :meth:`solve` call, because dimensions may not be known
-        until all ingredients (fixed + dynamic) are available.
-        """
-        start: float = perf_counter()
-
+        # Store fixed elements and enforce sparsity on matrices
         self._fixed = {}
         for k, v in (fixed_elements or {}).items():
-            if issparse(v) or (isinstance(v, ndarray) and v.ndim == 2):
-                self._fixed[k] = self._to_csc(v) #type: ignore
+            if k in ("P", "A", "G") and v is not None:
+                if not issparse(v):
+                    raise TypeError(f"QOCO backend only supports sparse matrices. Received a dense matrix for fixed element '{k}'.")
+                self._fixed[k] = _store_matrix(v, self._dtype)
             else:
-                self._fixed[k] = self._to_vec(v) #type: ignore
+                if issparse(v) or hasattr(v, "indices") or (isinstance(v, np.ndarray) and v.ndim == 2):
+                    self._fixed[k] = _store_matrix(v, self._dtype)
+                else:
+                    self._fixed[k] = _store_vector(v, self._dtype)
 
-        # Reset solver so next solve triggers a fresh QOCO setup
-        self._solver = None
-        self._setup_done = False
+        sparsity_pattern = sparsity_pattern or {}
+
+        # Infer dimensions immediately
+        P_ref = self._fixed.get('P') if 'P' in self._fixed else sparsity_pattern.get('P')
+        self._n = P_ref.shape[0] if P_ref is not None else 0
+        
+        A_ref = self._fixed.get('A') if 'A' in self._fixed else sparsity_pattern.get('A')
+        self._n_eq = A_ref.shape[0] if A_ref is not None else 0
+        
+        G_ref = self._fixed.get('G') if 'G' in self._fixed else sparsity_pattern.get('G')
+        self._n_ineq = G_ref.shape[0] if G_ref is not None else 0
+
+        # Build setup args
+        setup_args = {}
+        for key in ['P', 'A', 'G']:
+            mat = None
+            if key in self._fixed:
+                mat = self._fixed[key]
+            elif key in sparsity_pattern:
+                mat = _store_matrix(ensure_csc(sparsity_pattern[key]), dtype=self._dtype).copy()
+                
+            if mat is not None:
+                mat = _store_matrix(mat, dtype=self._dtype)
+                if key == "P":
+                    from scipy.sparse import triu
+                    mat = triu(mat, format="csc")
+                        
+            setup_args[key] = mat
+
+        setup_args['c'] = self._fixed.get('q', np.zeros(self._n, dtype=self._dtype) if self._n > 0 else None)
+        setup_args['b'] = self._fixed.get('b', np.zeros(self._n_eq, dtype=self._dtype) if self._n_eq > 0 else None)
+        setup_args['h'] = self._fixed.get('h', np.zeros(self._n_ineq, dtype=self._dtype) if self._n_ineq > 0 else None)
+
+        self._solver = self._qoco.QOCO()
+        self._solver.setup(
+            n=self._n,
+            m=self._n_ineq,       # total cone dimension = n_ineq
+            p=self._n_eq,
+            P=setup_args.get("P"),
+            c=setup_args.get("c"),
+            A=setup_args.get("A"),
+            b=setup_args.get("b"),
+            G=setup_args.get("G"),
+            h=setup_args.get("h"),
+            l=self._n_ineq,       # non-negative orthant dimension
+            nsoc=0,
+            q=None,
+            **self._qoco_settings,
+        )
 
         return {"setup": perf_counter() - start}
 
-    def _do_qoco_setup(self, merged: dict) -> dict[str, float]:
-        """Perform the one-time QOCO solver setup."""
-        import qoco
-
-        t: dict[str, float] = {}
-        start = perf_counter()
-
-        P_csc: Optional[csc_matrix] = self._to_csc(merged["P"]) if "P" in merged else None
-        c_vec: ndarray = self._to_vec(merged["q"])  # QP 'q' → QOCO 'c'
-
-        A_csc: Optional[csc_matrix] = None
-        b_vec: Optional[ndarray] = None
-        G_csc: Optional[csc_matrix] = None
-        h_vec: Optional[ndarray] = None
-
-        if "A" in merged:
-            A_csc = self._to_csc(merged["A"])
-            b_vec = self._to_vec(merged["b"]) if "b" in merged else np.zeros(A_csc.shape[0], dtype=self._dtype)
-            self._n_eq = A_csc.shape[0]
-        else:
-            self._n_eq = 0
-
-        if "G" in merged:
-            G_csc = self._to_csc(merged["G"])
-            h_vec = self._to_vec(merged["h"]) if "h" in merged else np.zeros(G_csc.shape[0], dtype=self._dtype)
-            self._n_ineq = G_csc.shape[0]
-        else:
-            self._n_ineq = 0
-
-        self._n = c_vec.shape[0]
-
-        self._solver = qoco.QOCO()
-        self._solver.setup(
-            n=self._n,
-            m=self._n_ineq,       # total cone dimension = n_ineq (orthant only)
-            p=self._n_eq,
-            P=P_csc,
-            c=c_vec,
-            A=A_csc,
-            b=b_vec,
-            G=G_csc,
-            h=h_vec,
-            l=self._n_ineq,       # non-negative orthant dimension
-            nsoc=0,               # no second-order cones
-            q=None,               # no SOC sizes
-            **self._qoco_settings,
-        )
-        self._setup_done = True
-        t["qoco_setup"] = perf_counter() - start
-        return t
-
-    def _update_data(self, merged: dict) -> dict[str, float]:
-        """Update QOCO solver data for a re-solve (same sparsity)."""
-        t: dict[str, float] = {}
-        start = perf_counter()
-
+    def solve(self, **runtime_ingredients) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], dict[str, float]]:
+        """Update only the non-fixed values for the current iteration and solve."""
         assert self._solver is not None
 
-        # Determine which matrices need updating (compare against fixed)
-        mat_updates: dict[str, Optional[ndarray]] = {}
+        t = {}
+        start = perf_counter()
+        
+        _ = runtime_ingredients.pop("warmstart", None)
+
+        # Update matrices, enforcing sparse inputs
+        mat_updates = {}
         for key in ("P", "A", "G"):
-            if key in merged and key not in self._fixed:
-                # Dynamic matrix — extract upper-triangular data for P
-                mat_csc = self._to_csc(merged[key])
+            if key in runtime_ingredients and runtime_ingredients[key] is not None:
+                mat_raw = runtime_ingredients[key]
+                if not issparse(mat_raw):
+                    raise TypeError(f"QOCO backend only supports sparse matrices. Received a dense matrix for '{key}' at runtime.")
+                
+                mat = _store_matrix(mat_raw, self._dtype)
                 if key == "P":
                     from scipy.sparse import triu
-                    mat_csc = triu(mat_csc, format="csc")
-                mat_updates[key] = mat_csc.data.astype(self._dtype)
+                    mat = triu(mat, format="csc")
+                mat_updates[key] = mat.data
 
         if mat_updates:
             self._solver.update_matrix_data(
@@ -655,13 +652,10 @@ class QOCOBackend(SolverBackend):
             )
 
         # Update vectors
-        vec_updates: dict[str, Optional[ndarray]] = {}
-        if "q" in merged and "q" not in self._fixed:
-            vec_updates["c"] = self._to_vec(merged["q"])
-        if "b" in merged and "b" not in self._fixed:
-            vec_updates["b"] = self._to_vec(merged["b"])
-        if "h" in merged and "h" not in self._fixed:
-            vec_updates["h"] = self._to_vec(merged["h"])
+        vec_updates = {}
+        if "q" in runtime_ingredients: vec_updates["c"] = _store_vector(runtime_ingredients["q"], self._dtype)
+        if "b" in runtime_ingredients: vec_updates["b"] = _store_vector(runtime_ingredients["b"], self._dtype)
+        if "h" in runtime_ingredients: vec_updates["h"] = _store_vector(runtime_ingredients["h"], self._dtype)
 
         if vec_updates:
             self._solver.update_vector_data(
@@ -669,59 +663,28 @@ class QOCOBackend(SolverBackend):
                 b=vec_updates.get("b"),
                 h=vec_updates.get("h"),
             )
+            
+        t["problem_setup"] = perf_counter() - start
 
-        t["qoco_update"] = perf_counter() - start
-        return t
-
-    def solve(
-        self,
-        **kwargs: ndarray,
-    ) -> tuple[Optional[ndarray], Optional[ndarray], Optional[ndarray], dict[str, float]]:
-        """Merge fixed + runtime elements, solve with QOCO.
-
-        On the first call the full QOCO setup is performed.
-        Subsequent calls update only the changed data and re-solve.
-        """
-        t: dict[str, float] = {}
-
-        # Pop warmstart (QOCO does not support external warmstart,
-        # but we accept the key for API compatibility).
-        _: Optional[ndarray] = kwargs.pop("warmstart", None)
-
-        # Merge fixed + runtime
-        merged = {**self._fixed, **kwargs}
-
-        assert "P" in merged and "q" in merged, (
-            "P and q are required. "
-            "Provide them via fixed_elements or as dynamic arguments."
-        )
-
-        # ── Setup or update ──────────────────────────────────────────
-        if not self._setup_done:
-            t.update(self._do_qoco_setup(merged))
-        else:
-            t.update(self._update_data(merged))
-
-        # ── Solve ────────────────────────────────────────────────────
+        # Solve
         start = perf_counter()
-        result = self._solver.solve()  # type: ignore[union-attr]
+        result = self._solver.solve()
         t["solver"] = perf_counter() - start
 
+        # Integrate dump_failed logic
         if result.status not in ("QOCO_SOLVED", "QOCO_SOLVED_INACCURATE"):
+            if self._dump_failed:
+                full_problem = self._fixed | {k: v for k, v in runtime_ingredients.items() if v is not None}
+                full_problem["status"] = result.status
+                _dump_problem(full_problem)
             return None, None, None, t
 
         x = np.array(result.x, dtype=self._dtype)
-
-        # QOCO returns y for equality duals, z for inequality (cone) duals
-        y: Optional[ndarray] = None
-        z: Optional[ndarray] = None
-
-        if self._n_eq > 0 and result.y is not None and len(result.y) > 0:
-            y = np.array(result.y, dtype=self._dtype)
-        if self._n_ineq > 0 and result.z is not None and len(result.z) > 0:
-            z = np.array(result.z, dtype=self._dtype)
+        y = np.array(result.y, dtype=self._dtype) if self._n_eq > 0 and result.y is not None else None
+        z = np.array(result.z, dtype=self._dtype) if self._n_ineq > 0 and result.z is not None else None
 
         return x, y, z, t
+
 
 # =====================================================================
 # Registry and factory
