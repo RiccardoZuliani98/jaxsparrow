@@ -202,6 +202,13 @@ def ensure_csc(matrix):
     # Fallback for unsupported types
     raise TypeError(f"Input must be a SciPy csc_matrix or JAX BCOO. Got {type(matrix).__name__}.")
 
+def _dump_problem(problem):
+    """Dump failed QP to a joblib file, with a timestamp."""
+    import joblib
+    from datetime import datetime
+    filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
+    joblib.dump(problem, f"failed_qp_{filename_timestamp}.joblib")
+
 
 # =====================================================================
 # qpsolvers backend (stateless, default)
@@ -228,6 +235,9 @@ class QpSolversBackend(SolverBackend):
 
         # Fixed elements stored at setup time
         self._fixed: SparseIngredientsNP = {}
+
+        # check if failed QP ingredients should be dumped
+        self._dump_failed = options.get("dump_failed",True)
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -293,6 +303,10 @@ class QpSolversBackend(SolverBackend):
         t["solver"] = perf_counter() - start
 
         if not sol.found:
+            if self._dump_failed:
+                full_problem = dict(merged)
+                full_problem["status"] = None
+                _dump_problem(full_problem)
             return None, None, None, t
 
         return sol.x, sol.y, sol.z, t
@@ -436,12 +450,9 @@ class PIQPBackend(SolverBackend):
         # # In PIQP, status == 1 indicates PIQP_SOLVED
         if status != 1:
             if self._dump_failed:
-                import joblib
-                from datetime import datetime
                 full_problem = self._fixed |  {key:val for key,val in runtime_ingredients.items() if val is not None}
                 full_problem["status"] = status
-                filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
-                joblib.dump(full_problem, f"failed_qp_{filename_timestamp}.joblib")
+                _dump_problem(full_problem)
             return None, None, None, t
 
         result = self._solver.result
