@@ -136,6 +136,10 @@ def create_dense_solver(
     assert "dtype" in options_parsed
     _dtype: type[np.floating] = options_parsed["dtype"]
 
+    # ensure sparse is set to false
+    if "sparse" in options_parsed:
+        options_parsed["sparse"] = False
+
     # ── Create backend ───────────────────────────────────────────────
     backend: SolverBackend = get_backend(
         backend_name,
