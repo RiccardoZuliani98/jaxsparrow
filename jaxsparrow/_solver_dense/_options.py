@@ -19,6 +19,8 @@ Each solver backend has its own options class and defaults:
   ``DEFAULT_DENSE_QPSOLVERS_OPTIONS``
 - ``"qoco"`` → :class:`DenseQOCOSolverOptions` /
   ``DEFAULT_DENSE_QOCO_OPTIONS``
+- ``"piqp"`` → :class:`DensePIQPSolverOptions` /
+  ``DEFAULT_DENSE_PIQP_OPTIONS``
 
 The ``"backend"`` and ``"dtype"`` fields are declared on the common
 base classes :class:`~jaxsparrow._options_common.SolverOptions` and
@@ -193,8 +195,10 @@ class DenseQpSolverOptions(SolverOptions):
     Attributes:
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
     """
     solver_name:    str
+    dump_failed:    bool
 
 
 class DenseQpSolverOptionsFull(SolverOptions, total=True):
@@ -210,16 +214,72 @@ class DenseQpSolverOptionsFull(SolverOptions, total=True):
             Redeclared here to make it required in the resolved form.
         solver_name: Backend solver name passed to ``qpsolvers``
             (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
     """
     backend:        str
     dtype:          type[np.floating]
     solver_name:    str
+    dump_failed:    bool
 
 
 DEFAULT_DENSE_QPSOLVERS_OPTIONS: DenseQpSolverOptionsFull = {
     "backend": "qpsolvers",
     "dtype": np.float64,
     "solver_name": "piqp",
+    "dump_failed": False,
+}
+
+# ----------------------------------------------------------------------
+# PIQP backend options
+# ----------------------------------------------------------------------
+
+class DensePIQPSolverOptions(SolverOptions):
+    """Partial solver options for the ``piqp`` backend (dense).
+
+    All keys are optional; missing keys are filled from
+    ``DEFAULT_DENSE_PIQP_OPTIONS`` via :func:`parse_options`.
+
+    The ``backend`` and ``dtype`` fields are inherited from
+    :class:`SolverOptions`.
+
+    Attributes:
+        verbose: Enable solver output.
+        sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    """
+    verbose:        bool
+    sparse:         bool
+    dump_failed:    bool
+
+
+class DensePIQPSolverOptionsFull(SolverOptions, total=True):
+    """Complete solver options for the ``piqp`` backend (dense).
+
+    All keys are required.  This is the resolved form after merging
+    user-supplied options with defaults.
+
+    Attributes:
+        backend: Solver backend protocol name (``"piqp"``).
+            Redeclared here to make it required in the resolved form.
+        dtype: NumPy floating-point dtype for all arrays.
+            Redeclared here to make it required in the resolved form.
+        verbose: Enable solver output.
+        sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    """
+    backend:        str
+    dtype:          type[np.floating]
+    verbose:        bool
+    sparse:         bool
+    dump_failed:    bool
+
+
+DEFAULT_DENSE_PIQP_OPTIONS: DensePIQPSolverOptionsFull = {
+    "backend":      "piqp",
+    "dtype":        np.float64,
+    "verbose":      False,
+    "sparse":       False,
+    "dump_failed":  False,
 }
 
 
@@ -243,12 +303,10 @@ class DenseQOCOSolverOptions(SolverOptions):
 
     Attributes:
         verbose: Verbosity level passed to QOCO (0 = silent).
-        abstol: Absolute feasibility tolerance.
-        reltol: Relative feasibility tolerance.
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
     """
-    verbose:    int
-    abstol:     float
-    reltol:     float
+    verbose:        int
+    dump_failed:    bool
 
 
 class DenseQOCOSolverOptionsFull(SolverOptions, total=True):
@@ -263,22 +321,19 @@ class DenseQOCOSolverOptionsFull(SolverOptions, total=True):
         dtype: NumPy floating-point dtype for all arrays.
             Redeclared here to make it required in the resolved form.
         verbose: Verbosity level passed to QOCO (0 = silent).
-        abstol: Absolute feasibility tolerance.
-        reltol: Relative feasibility tolerance.
+        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
     """
-    backend:    str
-    dtype:      type[np.floating]
-    verbose:    int
-    abstol:     float
-    reltol:     float
+    backend:        str
+    dtype:          type[np.floating]
+    verbose:        int
+    dump_failed:    bool
 
 
 DEFAULT_DENSE_QOCO_OPTIONS: DenseQOCOSolverOptionsFull = {
-    "backend":  "qoco",
-    "dtype":    np.float64,
-    "verbose":  0,
-    "abstol":   1e-7,
-    "reltol":   1e-7,
+    "backend":      "qoco",
+    "dtype":        np.float64,
+    "verbose":      0,
+    "dump_failed":  False,
 }
 
 # ----------------------------------------------------------------------
@@ -287,6 +342,7 @@ DEFAULT_DENSE_QOCO_OPTIONS: DenseQOCOSolverOptionsFull = {
 SOLVER_OPTIONS_DEFAULTS: dict[str, SolverOptions] = {
     "qpsolvers": DEFAULT_DENSE_QPSOLVERS_OPTIONS, #type: ignore
     "qoco":      DEFAULT_DENSE_QOCO_OPTIONS,      #type: ignore
+    "piqp":      DEFAULT_DENSE_PIQP_OPTIONS,      #type: ignore
 }
 """Look-up table used by the factory functions in ``_solvers.py``
 to select the correct defaults for the chosen solver backend."""
@@ -336,6 +392,7 @@ ALL_DENSE_SOLVER_OPTIONS = {
             "backend": "Solver backend protocol name (fixed to 'qpsolvers' in resolved form).",
             "dtype": "NumPy floating-point dtype for all arrays.",
             "solver_name": "Backend solver name passed to qpsolvers (e.g. 'piqp', 'osqp', 'clarabel').",
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
         }
     },
     "qoco": {
@@ -345,8 +402,18 @@ ALL_DENSE_SOLVER_OPTIONS = {
             "backend": "Solver backend protocol name (fixed to 'qoco' in resolved form).",
             "dtype": "NumPy floating-point dtype for all arrays.",
             "verbose": "Verbosity level passed to QOCO (0 = silent).",
-            "abstol": "Absolute feasibility tolerance for QOCO.",
-            "reltol": "Relative feasibility tolerance for QOCO.",
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
         }
-    }
+    },
+    "piqp": {
+        "option": DensePIQPSolverOptions,
+        "default": DEFAULT_DENSE_PIQP_OPTIONS,
+        "description": {
+            "backend": "Solver backend protocol name (fixed to 'piqp' in resolved form).",
+            "dtype": "NumPy floating-point dtype for all arrays.",
+            "verbose": "Whether to enable solver output.",
+            "sparse": "Flag to use PIQP's sparse solver (True) or dense solver (False).",
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False)."
+        },
+    },
 }
