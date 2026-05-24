@@ -401,17 +401,21 @@ class PIQPBackend(SolverBackend):
         for key in ['P', 'A', 'G']:
             if key in self._fixed:
                 setup_args[key] = self._fixed[key]
-            elif self._is_sparse and key in sparsity_pattern:
-                dummy = _store_matrix(ensure_csc(sparsity_pattern[key]), dtype=self._dtype).copy()
-                setup_args[key] = dummy
+            elif key in sparsity_pattern:
+                if self._is_sparse:
+                    dummy = _store_matrix(ensure_csc(sparsity_pattern[key]), dtype=self._dtype).copy()
+                    setup_args[key] = dummy
+                else:
+                    setup_args[key] = sparsity_pattern[key]
             else:
-                setup_args[key] = None
+                raise KeyError(f"Key {key} is missing from fixed dictionary and sparsity pattern dictionary")
 
         # Populate vectors
         setup_args['c'] = self._fixed.get('q', np.zeros(n, dtype=self._dtype) if n > 0 else None)
         setup_args['b'] = self._fixed.get('b', np.zeros(p, dtype=self._dtype) if p > 0 and setup_args.get('A') is not None else None)
         setup_args['h_u'] = self._fixed.get('h', np.zeros(m, dtype=self._dtype) if m > 0 and setup_args.get('G') is not None else None)
-        setup_args['h_l'] = None  
+
+        setup_args = {key:val for key,val in setup_args.items() if val is not None}
 
         self._solver.setup(**setup_args)
         
@@ -431,14 +435,17 @@ class PIQPBackend(SolverBackend):
         
         # Extract strictly from runtime elements to avoid updating fixed ones
         P = runtime_ingredients.get('P')
-        q = runtime_ingredients.get('q') 
+        q = runtime_ingredients.get('q')
         A = runtime_ingredients.get('A')
         b = runtime_ingredients.get('b')
         G = runtime_ingredients.get('G')
-        h = runtime_ingredients.get('h')  
+        h = runtime_ingredients.get('h')
+
+        solver_args = {"P":P, "c":q, "A":A, "b":b, "G":G, "h_u":h}
+        solver_args = {key:val for key,val in solver_args.items() if val is not None}
 
         # Update numerical values (None arguments are ignored by the solver)
-        self._solver.update(P=P, c=q, A=A, b=b, G=G, h_u=h)
+        self._solver.update(**solver_args)
 
         t["problem_setup"] = perf_counter() - start
 

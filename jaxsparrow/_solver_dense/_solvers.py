@@ -142,12 +142,33 @@ def create_dense_solver(
         options=options_parsed,
     )
 
+    # ── Infer problem size to pass dummy sparsity patterns ───────────
+    sparsity_pattern: dict[str, ndarray] = {}
+    n_var = 0
+    if fixed_elements is not None:
+        if "P" in fixed_elements:
+            n_var = fixed_elements["P"].shape[0]
+        elif "q" in fixed_elements:
+            n_var = fixed_elements["q"].shape[0]
+        elif "A" in fixed_elements:
+            n_var = fixed_elements["A"].shape[1]
+        elif "G" in fixed_elements:
+            n_var = fixed_elements["G"].shape[1]
+
+    if n_var > 0:
+        sparsity_pattern["P"] = np.empty((n_var, n_var), dtype=_dtype)
+        if n_eq > 0:
+            sparsity_pattern["A"] = np.empty((n_eq, n_var), dtype=_dtype)
+        if n_ineq > 0:
+            sparsity_pattern["G"] = np.empty((n_ineq, n_var), dtype=_dtype)
+
     # ── Setup: pass fixed elements to the backend (once, now) ────────
     #
     # The backend owns dtype casting and storage of fixed elements.
 
     _setup_timing: dict[str, float] = backend.setup(
         fixed_elements=fixed_elements,
+        sparsity_pattern=sparsity_pattern
     )
 
     # ─────────────────────────────────────────────────────────────────
