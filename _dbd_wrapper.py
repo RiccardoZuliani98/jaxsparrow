@@ -44,7 +44,7 @@ class RegularizedQPSolver:
             self.rho = jnp.full(self.num_steps, rho)
             
         # Use the first rho value to instantiate any fixed augmented matrices
-        rho_init = self.rho[0]
+        rho_init = float(self.rho[0])
         
         self.fixed_elements = fixed_elements or {}
         sparsity_patterns = sparsity_patterns or {}
@@ -85,7 +85,7 @@ class RegularizedQPSolver:
         # --- Handle G ---
         if "G" in self.fixed_elements:
             G_fixed = to_csc(self.fixed_elements["G"])
-            aug_fixed_elements["G"] = sp.bmat([[G_fixed, rho_init * I_nin, None]], format='csc')
+            aug_fixed_elements["G"] = sp.bmat([[G_fixed, rho_init * I_nin, sp.csc_matrix((n_in, n_eq))]], format='csc')
         else:
             G_pat = sparsity_patterns["G"]
             G_rho_idx = jnp.stack([diag_nin, n_x + diag_nin], axis=-1)
@@ -96,7 +96,7 @@ class RegularizedQPSolver:
         # --- Handle A ---
         if "A" in self.fixed_elements:
             A_fixed = to_csc(self.fixed_elements["A"])
-            aug_fixed_elements["A"] = sp.bmat([[A_fixed, None, rho_init * I_neq]], format='csc')
+            aug_fixed_elements["A"] = sp.bmat([[A_fixed, sp.csc_matrix((n_eq, n_in)), rho_init * I_neq]], format='csc')
         else:
             A_pat = sparsity_patterns["A"]
             A_rho_idx = jnp.stack([diag_neq, n_x + n_in + diag_neq], axis=-1)
