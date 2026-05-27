@@ -4,7 +4,7 @@ from time import perf_counter
 
 import jax
 import jax.numpy as jnp
-from jax import jit, jvp, vjp, vmap
+from jax import jit, jvp, vjp, vmap, block_until_ready
 from jax.experimental.sparse import BCOO
 import matplotlib.pyplot as plt
 import numpy as np
@@ -114,10 +114,10 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
     )
 
     def solve_mpc_sparrow_vjp(x_init):
-        return solver_sparrow_vjp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+        return solver_sparrow_vjp(b=beq(x_init))
 
     def solve_mpc_sparrow_jvp(x_init):
-        return solver_sparrow_jvp(P=P, q=q, A=Aeq, b=beq(x_init), G=G, h=h)
+        return solver_sparrow_jvp(b=beq(x_init))
 
     # --- QPAX Solver (Dense) ---
     def solve_mpc_qpax(x_init):
@@ -231,21 +231,24 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
     for i in range(n_runs):
         xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
         start = perf_counter()
-        solve_and_differentiate_sparrow(xi)
+        result = solve_and_differentiate_sparrow(xi)
+        block_until_ready(result)
         elapsed_sparrow_vjp.append(perf_counter() - start)
 
     # 2. JaxSparrow JVP
     for i in range(n_runs):
         xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
         start = perf_counter()
-        jvp_func_sparrow(xi, e_mat)
+        result = jvp_func_sparrow(xi, e_mat)
+        block_until_ready(result)
         elapsed_sparrow_jvp.append(perf_counter() - start)
 
     # 3. QPAX VJP
     for i in range(n_runs):
         xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
         start = perf_counter()
-        solve_and_differentiate_qpax(xi)
+        result = solve_and_differentiate_qpax(xi)
+        block_until_ready(result)
         elapsed_qpax_vjp.append(perf_counter() - start)
 
     return {
