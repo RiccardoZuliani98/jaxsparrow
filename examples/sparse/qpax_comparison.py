@@ -7,12 +7,13 @@ import jax.numpy as jnp
 from jax import jit, jvp, vjp, vmap
 from jax.experimental.sparse import BCOO
 import matplotlib.pyplot as plt
-
-import qpax
-from jaxsparrow import setup_sparse_solver
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from jaxsparrow import setup_sparse_solver
+import qpax
 
 jax.config.update("jax_enable_x64", True)
 
@@ -22,6 +23,21 @@ horizon     = [10, 15, 20, 25, 30]
 cl_horizon  = 10
 
 def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
+    """Runs a performance benchmark for JaxSparrow and QPAX over a closed-loop MPC rollout.
+
+    This function builds the dense and sparse matrices for an MPC problem instance,
+    warms up the JIT compilation compilation paths, compiles the VJP/JVP differentiation 
+    pipelines, and records execution times across multiple randomized tracking runs.
+
+    Args:
+        n_runs: Number of timed simulation iterations.
+        horizon: The prediction horizon length (N) for the controllers.
+        cl_horizon: The total time steps for the closed-loop simulation rollout.
+
+    Returns:
+        A dictionary containing cost evaluations, gradients, and lists of the 
+        raw execution times for each run to allow statistical processing.
+    """
 
     # =========================================================
     # 1. SETUP MPC
@@ -105,7 +121,6 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
 
     # --- QPAX Solver (Dense) ---
     def solve_mpc_qpax(x_init):
-        # QPAX natively returns only the primal array and is VJP-compatible
         return qpax.solve_qp_primal(P_dense, q, Aeq_dense, beq(x_init), G_dense, h, solver_tol=1e-8)
 
 
@@ -207,7 +222,6 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
     # =========================================================
     # 6. PERFORMANCE BENCHMARK RUNS
     # =========================================================
-    print("\n--- TIMED EVALUATIONS ---")
     elapsed_sparrow_vjp, elapsed_sparrow_jvp, elapsed_qpax_vjp = [], [] , []
 
     solver_sparrow_vjp.timings.reset()
@@ -227,7 +241,7 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
         jvp_func_sparrow(xi, e_mat)
         elapsed_sparrow_jvp.append(perf_counter() - start)
 
-    # 3. QPAX VJP (Warning: Expect a slower step due to dense factorization constraints)
+    # 3. QPAX VJP
     for i in range(n_runs):
         xi = jax.random.uniform(keys[i], shape=(2,), minval=-2.0, maxval=2.0)
         start = perf_counter()
@@ -240,7 +254,66 @@ def main(n_runs:int, horizon:int, cl_horizon:int) -> dict:
         "jaxsparrow_grad":  jac_s,
         "qpax_grad":        jac_q,
         "grad_diff":        jnp.linalg.norm(jac_s - jac_q),
-        "jaxsparrow_vjp":   jnp.sum(jnp.array(elapsed_sparrow_vjp)),
-        "jaxsparrow_jvp":   jnp.sum(jnp.array(elapsed_sparrow_jvp)),
-        "qpax_vjp":         jnp.sum(jnp.array(elapsed_qpax_vjp))
+        "jaxsparrow_vjp":   elapsed_sparrow_vjp,
+        "jaxsparrow_jvp":   elapsed_sparrow_jvp,
+        "qpax_vjp":         elapsed_qpax_vjp
     }
+
+# =========================================================
+# EXPERIMENT EXECUTION & PLOTTING LOOP
+# =========================================================
+if __name__ == "__main__":
+    # Initialize metric containers
+    metrics = {
+        "sparrow_vjp": {"means": [], "vars": []},
+        "sparrow_jvp": {"means": [], "vars": []},
+        "qpax_vjp":    {"means": [], "vars": []}
+    }
+
+    print("--- STARTING HORIZON SIMULATION LOOP ---")
+    for h in horizon:
+        print(f"Executing simulation for horizon length: {h}...")
+        results = main(n_runs=n_runs, horizon=h, cl_horizon=cl_horizon)
+        
+        # Calculate statistical mean & variance for each solver configuration
+        for raw_key, target_key in [("jaxsparrow_vjp", "sparrow_vjp"), 
+                                    ("jaxsparrow_jvp", "sparrow_jvp"), 
+                                    ("qpax_vjp", "qpax_vjp")]:
+            raw_data = np.array(results[raw_key])
+            metrics[target_key]["means"].append(np.mean(raw_data))
+            metrics[target_key]["vars"].append(np.var(raw_data))
+
+    # --- PLOT RESULTS ---
+    plt.figure(figsize=(10, 6))
+    
+    # Plot definitions
+    config = {
+        "sparrow_vjp": {"label": "JaxSparrow VJP", "color": "royalblue", "marker": "o"},
+        "sparrow_jvp": {"label": "JaxSparrow JVP", "color": "forestgreen", "marker": "s"},
+        "qpax_vjp":    {"label": "QPAX VJP",       "color": "crimson",     "marker": "^"}
+    }
+    
+    for key, style in config.items():
+        plt.errorbar(
+            horizon, 
+            metrics[key]["means"], 
+            yerr=metrics[key]["vars"], 
+            label=style["label"],
+            color=style["color"],
+            marker=style["marker"],
+            capsize=5, 
+            linestyle="-", 
+            linewidth=1.5
+        )
+
+    plt.xlabel("Horizon Length (N)")
+    plt.ylabel("Execution Time (seconds)")
+    plt.title("Computational Time (Mean and Variance) Over Horizons")
+    plt.xticks(horizon)
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.legend()
+    plt.tight_layout()
+    
+    # Save visualization to disk
+    plt.savefig("mpc_horizon_benchmark.png", dpi=300)
+    plt.show()
