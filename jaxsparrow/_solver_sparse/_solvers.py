@@ -115,6 +115,11 @@ def create_sparse_solver(
             the backend is responsible for dtype casting and storage.
             Any key present here should *not* be passed again at
             call time.
+        sparsity_pattern: Dict specifying the nonzero structure 
+            of the matrices, allowing for symbolic factorization 
+            even if numerical values are not yet provided. Keys 
+            are a subset of ``{"P", "A", "G"}``. ``None`` is 
+            equivalent to an empty dict.
 
     Returns:
         A callable with signature
