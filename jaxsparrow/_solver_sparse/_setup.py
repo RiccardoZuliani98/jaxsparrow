@@ -247,6 +247,7 @@ def setup_sparse_solver(
         n_ineq=n_ineq,
         options=options_parsed["solver"],
         fixed_elements=fixed_elements,
+        sparsity_pattern=sparsity_patterns
     )
 
     # ── Create differentiators ───────────────────────────────────────

@@ -70,6 +70,7 @@ def create_sparse_solver(
     n_ineq: int,
     options: Optional[SolverOptions] = None,
     fixed_elements: Optional[SparseIngredientsNP] = None,
+    sparsity_pattern: Optional[dict] = None
 ) -> Solver:
     """Build a numpy-level sparse solver closure.
 
@@ -143,6 +144,7 @@ def create_sparse_solver(
 
     _setup_timing: dict[str, float] = backend.setup(
         fixed_elements=fixed_elements,
+        sparsity_pattern=sparsity_pattern
     )
 
     # ─────────────────────────────────────────────────────────────────

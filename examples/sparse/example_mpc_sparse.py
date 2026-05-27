@@ -83,6 +83,7 @@ dx0 = jnp.array([epsilon, 0.0])
 solver = setup_sparse_solver(
     n_var=nz, n_ineq=nineq, n_eq=neq,
     sparsity_patterns=sparsity_patterns,
+    options={"solver":{"backend":"piqp"}}
 )
 
 # ── Solve ────────────────────────────────────────────────────────────
@@ -114,6 +115,7 @@ solver_fixed = setup_sparse_solver(
         "P": sp_csc(np.array(P_dense)),
         "q": np.array(q),
     },
+    options={"solver":{"backend":"qoco"}}
 )
 
 sol1_fixed = solver_fixed(P=P, q=q, A=Aeq, b=beq(x0), G=G, h=h)

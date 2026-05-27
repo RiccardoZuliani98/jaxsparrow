@@ -19,6 +19,12 @@ Backends
 - ``QpSolversBackend``: wraps the ``qpsolvers`` library (stateless,
   rebuilds the ``Problem`` object on every solve). This is the
   default and reproduces the existing behaviour.
+- ``QOCOBackend``: wraps the QOCO solver
+  (https://github.com/qoco-org/qoco-python).  Exploits the
+  setup/solve split: the first call performs a full ``setup`` and
+  subsequent calls use ``update_vector_data`` /
+  ``update_matrix_data`` for efficient re-solves.
+
 
 Future backends (OSQP, PIQP, Clarabel, …) can exploit the
 setup/solve split for significant speedups by reusing symbolic
@@ -34,12 +40,16 @@ from typing import Callable, Optional, Union, cast
 import numpy as np
 from numpy import ndarray
 from scipy.sparse import csc_matrix, issparse
+from scipy import sparse
+from jax.experimental.sparse import BCOO
 
 from qpsolvers import Problem, solve_problem
 
 from jaxsparrow._solver_sparse._types import SparseIngredientsNP
 from jaxsparrow._solver_dense._types import DenseIngredientsNP
 from jaxsparrow._options_common import SolverOptions
+from jaxsparrow._solver_dense._options import DenseQpSolverOptionsFull
+from jaxsparrow._solver_sparse._options import SparseQpSolverOptionsFull
 
 
 # =====================================================================
@@ -87,6 +97,7 @@ class SolverBackend(ABC):
     def setup(
         self,
         fixed_elements: Optional[SparseIngredientsNP | DenseIngredientsNP] = None,
+        sparsity_pattern: Optional[dict] = None
     ) -> dict[str, float]:
         """One-time structural initialization.
 
@@ -101,6 +112,11 @@ class SolverBackend(ABC):
                 a subset of ``{"P", "q", "A", "b", "G", "h"}``.
                 Sparse matrices may arrive in any format; dense
                 vectors may have extra dimensions.  ``None`` is
+                equivalent to an empty dict.
+            sparsity_pattern: Dict specifying the nonzero structure 
+                of the matrices, allowing for symbolic factorization 
+                even if numerical values are not yet provided. Keys 
+                are a subset of ``{"P", "A", "G"}``. ``None`` is 
                 equivalent to an empty dict.
 
         Returns:
@@ -143,12 +159,60 @@ class SolverBackend(ABC):
 
 
 # =====================================================================
-# qpsolvers backend (stateless, default)
+# Helpers to store matrices and vectors
 # =====================================================================
 
-from jaxsparrow._solver_dense._options import DenseQpSolverOptionsFull
-from jaxsparrow._solver_sparse._options import SparseQpSolverOptionsFull
+def _store_matrix(
+    val: Union[ndarray, csc_matrix],
+    dtype
+) -> Union[ndarray, csc_matrix]:
+    """Cast a matrix to the configured dtype, keeping format."""
+    if issparse(val):
+        return csc_matrix(val, dtype=dtype)
+    return np.asarray(val, dtype=dtype)
 
+def _store_vector(val: ndarray, dtype) -> ndarray:
+    """Cast a vector to the configured dtype and squeeze."""
+    return np.atleast_1d(np.asarray(val, dtype=dtype).squeeze())
+
+def ensure_csc(matrix):
+    """
+    Ensures the input is a SciPy csc_matrix.
+    Converts JAX BCOO to SciPy CSC. Returns SciPy CSC as-is.
+    """
+    # If it's already a SciPy CSC matrix, return it immediately
+    if isinstance(matrix, csc_matrix):
+        return matrix
+    
+    # If it's a JAX BCOO array, perform the conversion
+    if isinstance(matrix, BCOO):
+        if matrix.ndim != 2:
+            raise ValueError(f"SciPy sparse matrices must be exactly 2D. Got a {matrix.ndim}D JAX BCOO array.")
+            
+        # Move data to CPU
+        np_data = np.asarray(matrix.data)
+        np_indices = np.asarray(matrix.indices)
+        
+        # Extract rows and columns
+        rows = np_indices[:, 0]
+        cols = np_indices[:, 1]
+        
+        return csc_matrix((np_data, (rows, cols)), shape=matrix.shape)
+    
+    # Fallback for unsupported types
+    raise TypeError(f"Input must be a SciPy csc_matrix or JAX BCOO. Got {type(matrix).__name__}.")
+
+def _dump_problem(problem):
+    """Dump failed QP to a joblib file, with a timestamp."""
+    import joblib
+    from datetime import datetime
+    filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
+    joblib.dump(problem, f"failed_qp_{filename_timestamp}.joblib")
+
+
+# =====================================================================
+# qpsolvers backend (stateless, default)
+# =====================================================================
 
 class QpSolversBackend(SolverBackend):
     """Stateless backend wrapping the ``qpsolvers`` library.
@@ -172,23 +236,15 @@ class QpSolversBackend(SolverBackend):
         # Fixed elements stored at setup time
         self._fixed: SparseIngredientsNP = {}
 
-    def _store_matrix(
-        self, val: Union[ndarray, csc_matrix],
-    ) -> Union[ndarray, csc_matrix]:
-        """Cast a matrix to the configured dtype, keeping format."""
-        if issparse(val):
-            return csc_matrix(val, dtype=self._dtype)
-        return np.asarray(val, dtype=self._dtype)
-
-    def _store_vector(self, val: ndarray) -> ndarray:
-        """Cast a vector to the configured dtype and squeeze."""
-        return np.atleast_1d(np.asarray(val, dtype=self._dtype).squeeze())
+        # check if failed QP ingredients should be dumped
+        self._dump_failed = options.get("dump_failed",True)
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def setup(
         self,
         fixed_elements: Optional[SparseIngredientsNP] = None,
+        sparsity_pattern: Optional[dict] = None
     ) -> dict[str, float]:
         """Cast and store the fixed QP ingredients.
 
@@ -199,9 +255,9 @@ class QpSolversBackend(SolverBackend):
         self._fixed = {}
         for k, v in (fixed_elements or {}).items():
             if issparse(v):
-                self._fixed[k] = self._store_matrix(v) #type: ignore
+                self._fixed[k] = _store_matrix(v,self._dtype) #type: ignore
             else:
-                self._fixed[k] = self._store_vector(v) #type: ignore
+                self._fixed[k] = _store_vector(v,self._dtype) #type: ignore
 
         return {"setup": perf_counter() - start}
 
@@ -247,9 +303,387 @@ class QpSolversBackend(SolverBackend):
         t["solver"] = perf_counter() - start
 
         if not sol.found:
+            if self._dump_failed:
+                full_problem = dict(merged)
+                full_problem["status"] = None
+                _dump_problem(full_problem)
             return None, None, None, t
 
         return sol.x, sol.y, sol.z, t
+
+
+# =====================================================================
+# PIQP backend
+# =====================================================================
+
+class PIQPBackend(SolverBackend):
+    
+    def __init__(self, options: "SolverOptions") -> None:
+
+        # import piqp locally so that we don't import globally
+        try:
+            import piqp
+            self._piqp = piqp
+        except ImportError as e:
+            raise ImportError(
+                "The PIQP backend requires the 'piqp' package. "
+                "Please install it using 'pip install piqp'."
+            ) from e
+
+        self.options = options
+        self._solver = None
+        self._fixed = {}
+
+        # Ensure _dtype is set for _store_matrix and _store_vector compatibility
+        self._dtype = self.options.get("dtype", np.float64)
+        
+        # Determine solver mode
+        self._is_sparse = self.options.get("sparse", True)
+
+        # check if failed QP ingredients should be dumped
+        self._dump_failed = options.get("dump_failed",True)
+
+    def setup(
+        self, 
+        fixed_elements: Optional[dict] = None,
+        sparsity_pattern: Optional[dict] = None
+    ) -> dict[str, float]:
+        """One-time initialization to define the problem structure and allocate workspace."""
+        start = perf_counter()
+        
+        # Ensure _dtype is set for _store_matrix and _store_vector compatibility
+        if not hasattr(self, '_dtype'):
+            self._dtype = self.options.get("dtype", np.float64)
+
+        # store fixed elements
+        self._fixed = {}
+        for k, v in (fixed_elements or {}).items():
+            if issparse(v) or hasattr(v, "indices") or (isinstance(v, np.ndarray) and v.ndim == 2):
+                self._fixed[k] = _store_matrix(v, self._dtype)
+            else:
+                self._fixed[k] = _store_vector(v, self._dtype)
+
+        # store sparsity patterns
+        sparsity_pattern = sparsity_pattern or {}
+
+        # Instantiate solver and apply options
+        if self._is_sparse:
+            self._solver = self._piqp.SparseSolver()
+        else:
+            self._solver = self._piqp.DenseSolver()
+
+        # apply solver-specific options
+        settings_dict = self.options.copy()
+
+        # pop settings that relate to jaxsparrow
+        for elem in ["sparse","dump_failed","dtype"]:
+            settings_dict.pop(elem, None)
+
+        # set the rest
+        for key, value in settings_dict.items():
+            if key != "sparse" and hasattr(self._solver.settings, key):
+                setattr(self._solver.settings, key, value)
+
+        # Determine dimensions (n, p, m) to build vectors if needed
+        P_ref = self._fixed.get('P') if 'P' in self._fixed else sparsity_pattern.get('P')
+        n = P_ref.shape[0] if P_ref is not None else 0
+        
+        A_ref = self._fixed.get('A') if 'A' in self._fixed else sparsity_pattern.get('A')
+        p = A_ref.shape[0] if A_ref is not None else 0
+        
+        G_ref = self._fixed.get('G') if 'G' in self._fixed else sparsity_pattern.get('G')
+        m = G_ref.shape[0] if G_ref is not None else 0
+
+        # Populate and run setup
+        setup_args = {}
+        
+        # Populate matrices
+        for key in ['P', 'A', 'G']:
+            if key in self._fixed:
+                setup_args[key] = self._fixed[key]
+            elif key in sparsity_pattern:
+                if self._is_sparse:
+                    dummy = _store_matrix(ensure_csc(sparsity_pattern[key]), dtype=self._dtype).copy()
+                    setup_args[key] = dummy
+                else:
+                    setup_args[key] = sparsity_pattern[key]
+            else:
+                raise KeyError(f"Key {key} is missing from fixed dictionary and sparsity pattern dictionary")
+
+        # Populate vectors
+        setup_args['c'] = self._fixed.get('q', np.zeros(n, dtype=self._dtype) if n > 0 else None)
+        setup_args['b'] = self._fixed.get('b', np.zeros(p, dtype=self._dtype) if p > 0 and setup_args.get('A') is not None else None)
+        setup_args['h_u'] = self._fixed.get('h', np.zeros(m, dtype=self._dtype) if m > 0 and setup_args.get('G') is not None else None)
+
+        setup_args = {key:val for key,val in setup_args.items() if val is not None}
+
+        self._solver.setup(**setup_args)
+        
+        return {"setup": perf_counter() - start}
+
+    def solve(self, **runtime_ingredients) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], dict[str, float]]:
+        """Update only the non-fixed values for the current iteration and solve."""
+
+        assert self._solver is not None
+
+        t = {}
+        start = perf_counter()
+        
+        # Pop warmstart if passed. PIQP (an IPM) re-uses factorizations across .update()
+        # for structural warm-starting natively, but does not explicitly accept primal init vectors.
+        warmstart = runtime_ingredients.pop("warmstart", None)
+        
+        # Extract strictly from runtime elements to avoid updating fixed ones
+        P = runtime_ingredients.get('P')
+        q = runtime_ingredients.get('q')
+        A = runtime_ingredients.get('A')
+        b = runtime_ingredients.get('b')
+        G = runtime_ingredients.get('G')
+        h = runtime_ingredients.get('h')
+
+        solver_args = {"P":P, "c":q, "A":A, "b":b, "G":G, "h_u":h}
+        solver_args = {key:val for key,val in solver_args.items() if val is not None}
+
+        # Update numerical values (None arguments are ignored by the solver)
+        self._solver.update(**solver_args)
+
+        t["problem_setup"] = perf_counter() - start
+
+        # Solve and return
+        start = perf_counter()
+        status = self._solver.solve()
+        t["solver"] = perf_counter() - start
+        
+        # # In PIQP, status == 1 indicates PIQP_SOLVED
+        if status != 1:
+            if self._dump_failed:
+                full_problem = self._fixed |  {key:val for key,val in runtime_ingredients.items() if val is not None}
+                full_problem["status"] = status
+                _dump_problem(full_problem)
+            return None, None, None, t
+
+        result = self._solver.result
+        return result.x, result.y, result.z_u, t
+
+
+# =====================================================================
+# QOCO backend (stateful, setup/solve split)
+# =====================================================================
+
+class QOCOBackend(SolverBackend):
+    """Backend wrapping the QOCO conic solver for QP problems.
+
+    QOCO solves second-order cone programs with quadratic
+    objectives.  A standard QP (with linear inequality and
+    equality constraints) is a special case where the cone is
+    the non-negative orthant (no second-order cone constraints).
+
+    This backend exploits QOCO's setup/solve split:
+
+    - The **first** call to :meth:`solve` performs a full
+      ``qoco.QOCO.setup()`` which includes symbolic analysis
+      and workspace allocation.
+    - **Subsequent** calls use ``update_vector_data`` and/or
+      ``update_matrix_data`` to update only the numerical
+      values before re-solving, avoiding redundant symbolic
+      work.
+
+    Problem mapping (QP → QOCO)::
+
+        QP standard form           QOCO standard form
+        ─────────────────          ──────────────────
+        min ½ x'Px + q'x          min ½ x'Px + c'x
+        s.t. Ax = b               s.t. Ax = b
+             Gx ≤ h                    Gx ≤_C h
+
+    The cone C is set to R^l_+ (the non-negative orthant with
+    ``l = n_ineq``, ``nsoc = 0``, ``q = []``), so the conic
+    inequality reduces to element-wise ``Gx ≤ h``.
+
+    QOCO names the linear cost vector ``c``; this backend maps
+    the QP ``q`` vector to QOCO's ``c``.
+
+    Args:
+        options: Fully resolved solver options dict.  Expected
+            keys: ``"dtype"`` (NumPy floating dtype).  Optional
+            QOCO settings (e.g. ``"verbose"``, ``"abstol"``,
+            ``"reltol"``) can be passed and are forwarded to
+            ``qoco.QOCO.update_settings``.
+    """
+
+    def __init__(self, options: "SolverOptions") -> None:
+        # Standardized try-except import
+        try:
+            import qoco
+            self._qoco = qoco
+        except ImportError as e:
+            raise ImportError(
+                "The QOCO backend requires the 'qoco' package. "
+                "Please install it using 'pip install qoco'."
+            ) from e
+
+        self.options = options
+        self._dtype = self.options.get("dtype", np.float64)
+        
+        # Check if dense mode was requested and fail early
+        if not self.options.get("sparse", True):
+            raise ValueError("The QOCO backend only supports sparse matrices. Please set 'sparse=True' or use a different solver.")
+        
+        # Check if failed QP ingredients should be dumped
+        self._dump_failed = self.options.get("dump_failed", True)
+
+        # QOCO solver settings forwarded to setup
+        _RESERVED = frozenset({"backend", "solver_name", "dtype", "dump_failed", "sparse"})
+        self._qoco_settings: dict = {
+            k: v for k, v in options.items()
+            if k not in _RESERVED
+        }
+        self._qoco_settings.setdefault("verbose", 0)
+
+        self._fixed = {}
+        self._solver = None
+
+        # Problem dimensions
+        self._n = 0
+        self._n_eq = 0
+        self._n_ineq = 0
+
+    def setup(
+        self,
+        fixed_elements: Optional[dict] = None,
+        sparsity_pattern: Optional[dict] = None
+    ) -> dict[str, float]:
+        """One-time structural initialization (Eager setup)."""
+        start = perf_counter()
+
+        # Store fixed elements and enforce sparsity on matrices
+        self._fixed = {}
+        for k, v in (fixed_elements or {}).items():
+            if k in ("P", "A", "G") and v is not None:
+                if not issparse(v):
+                    raise TypeError(f"QOCO backend only supports sparse matrices. Received a dense matrix for fixed element '{k}'.")
+                self._fixed[k] = _store_matrix(v, self._dtype)
+            else:
+                if issparse(v) or hasattr(v, "indices") or (isinstance(v, np.ndarray) and v.ndim == 2):
+                    self._fixed[k] = _store_matrix(v, self._dtype)
+                else:
+                    self._fixed[k] = _store_vector(v, self._dtype)
+
+        sparsity_pattern = sparsity_pattern or {}
+
+        # Infer dimensions immediately
+        P_ref = self._fixed.get('P') if 'P' in self._fixed else sparsity_pattern.get('P')
+        self._n = P_ref.shape[0] if P_ref is not None else 0
+        
+        A_ref = self._fixed.get('A') if 'A' in self._fixed else sparsity_pattern.get('A')
+        self._n_eq = A_ref.shape[0] if A_ref is not None else 0
+        
+        G_ref = self._fixed.get('G') if 'G' in self._fixed else sparsity_pattern.get('G')
+        self._n_ineq = G_ref.shape[0] if G_ref is not None else 0
+
+        # Build setup args
+        setup_args = {}
+        for key in ['P', 'A', 'G']:
+            mat = None
+            if key in self._fixed:
+                mat = self._fixed[key]
+            elif key in sparsity_pattern:
+                mat = _store_matrix(ensure_csc(sparsity_pattern[key]), dtype=self._dtype).copy()
+                
+            if mat is not None:
+                mat = _store_matrix(mat, dtype=self._dtype)
+                if key == "P":
+                    from scipy.sparse import triu
+                    mat = triu(mat, format="csc")
+                        
+            setup_args[key] = mat
+
+        setup_args['c'] = self._fixed.get('q', np.zeros(self._n, dtype=self._dtype) if self._n > 0 else None)
+        setup_args['b'] = self._fixed.get('b', np.zeros(self._n_eq, dtype=self._dtype) if self._n_eq > 0 else None)
+        setup_args['h'] = self._fixed.get('h', np.zeros(self._n_ineq, dtype=self._dtype) if self._n_ineq > 0 else None)
+
+        self._solver = self._qoco.QOCO()
+        self._solver.setup(
+            n=self._n,
+            m=self._n_ineq,       # total cone dimension = n_ineq
+            p=self._n_eq,
+            P=setup_args.get("P"),
+            c=setup_args.get("c"),
+            A=setup_args.get("A"),
+            b=setup_args.get("b"),
+            G=setup_args.get("G"),
+            h=setup_args.get("h"),
+            l=self._n_ineq,       # non-negative orthant dimension
+            nsoc=0,
+            q=None,
+            **self._qoco_settings,
+        )
+
+        return {"setup": perf_counter() - start}
+
+    def solve(self, **runtime_ingredients) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], dict[str, float]]:
+        """Update only the non-fixed values for the current iteration and solve."""
+        assert self._solver is not None
+
+        t = {}
+        start = perf_counter()
+        
+        _ = runtime_ingredients.pop("warmstart", None)
+
+        # Update matrices, enforcing sparse inputs
+        mat_updates = {}
+        for key in ("P", "A", "G"):
+            if key in runtime_ingredients and runtime_ingredients[key] is not None:
+                mat_raw = runtime_ingredients[key]
+                if not issparse(mat_raw):
+                    raise TypeError(f"QOCO backend only supports sparse matrices. Received a dense matrix for '{key}' at runtime.")
+                
+                mat = _store_matrix(mat_raw, self._dtype)
+                if key == "P":
+                    from scipy.sparse import triu
+                    mat = triu(mat, format="csc")
+                mat_updates[key] = mat.data
+
+        if mat_updates:
+            self._solver.update_matrix_data(
+                P=mat_updates.get("P"),
+                A=mat_updates.get("A"),
+                G=mat_updates.get("G"),
+            )
+
+        # Update vectors
+        vec_updates = {}
+        if "q" in runtime_ingredients: vec_updates["c"] = _store_vector(runtime_ingredients["q"], self._dtype)
+        if "b" in runtime_ingredients: vec_updates["b"] = _store_vector(runtime_ingredients["b"], self._dtype)
+        if "h" in runtime_ingredients: vec_updates["h"] = _store_vector(runtime_ingredients["h"], self._dtype)
+
+        if vec_updates:
+            self._solver.update_vector_data(
+                c=vec_updates.get("c"),
+                b=vec_updates.get("b"),
+                h=vec_updates.get("h"),
+            )
+            
+        t["problem_setup"] = perf_counter() - start
+
+        # Solve
+        start = perf_counter()
+        result = self._solver.solve()
+        t["solver"] = perf_counter() - start
+
+        # Integrate dump_failed logic
+        if result.status not in ("QOCO_SOLVED", "QOCO_SOLVED_INACCURATE"):
+            if self._dump_failed:
+                full_problem = self._fixed | {k: v for k, v in runtime_ingredients.items() if v is not None}
+                full_problem["status"] = result.status
+                _dump_problem(full_problem)
+            return None, None, None, t
+
+        x = np.array(result.x, dtype=self._dtype)
+        y = np.array(result.y, dtype=self._dtype) if self._n_eq > 0 and result.y is not None else None
+        z = np.array(result.z, dtype=self._dtype) if self._n_ineq > 0 and result.z is not None else None
+
+        return x, y, z, t
 
 
 # =====================================================================
@@ -261,7 +695,9 @@ class QpSolversBackend(SolverBackend):
 SolverBackendFactory = Callable[[SolverOptions], SolverBackend]
 
 _BACKEND_REGISTRY: dict[str, SolverBackendFactory] = {
-    "qpsolvers": QpSolversBackend, #type: ignore
+    "qpsolvers": QpSolversBackend,  #type: ignore
+    "qoco": QOCOBackend,            #type: ignore
+    "piqp": PIQPBackend,            #type: ignore
 }
 
 
