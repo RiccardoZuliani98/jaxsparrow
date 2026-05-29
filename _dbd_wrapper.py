@@ -1,45 +1,53 @@
-"""
-test_mpc_sparse_regularized.py
-==============================
-Single-shot MPC solve + JVP correctness check — sparse mode 
-using Differentiable-by-design Tikhonov regularization.
-"""
-
-from time import perf_counter
-
 import numpy as np
 import scipy.sparse as sp
 
 import jax
 import jax.numpy as jnp
-from jax import jit, jvp
 from jax.experimental.sparse import BCOO
 
 from jaxsparrow import setup_sparse_solver
-
-jax.config.update("jax_enable_x64", True)
-
-# ── 1. Regularized QP Solver Class ──────────────────────────────────
+from jaxsparrow._types_common import SolverOutput
 
 class RegularizedQPSolver:
-    """
-    Solves a regularized QP iteratively using Iterative Regularization.
-    Optionally accepts fixed_elements (like P and q) to optimize JIT compilation.
-    """
     
-    def __init__(self, n_x, n_in, n_eq, num_steps=1, sparsity_patterns=None, fixed_elements=None, rho=1e-4, options=None):
+    def __init__(
+        self, 
+        n_x, 
+        n_in, 
+        n_eq, 
+        num_steps=1, 
+        sparsity_patterns=None, 
+        fixed_elements=None, 
+        rho=1e-4, 
+        options=None
+    ) -> None:
         
+        # original state dimension
         self.n_x = n_x
+
+        # number of inequality constraints
         self.n_in = n_in
+
+        # number of equality constraints
         self.n_eq = n_eq
+
+        # total number of variables in the regularized problem
         self.n_z = n_x + n_in + n_eq
+
+        # number of times the regularized problem will be solved
         self.num_steps = num_steps
         
-        # Handle rho as a sequence or a scalar
+        # if rho is passed as a sequence, then it must match the 
+        # number of steps
+        #TODO: is there a more robust way to handle this?
+        # maybe more strict type checking?
         if isinstance(rho, (list, tuple, np.ndarray)):
             self.rho = jnp.array(rho)
             if len(self.rho) != self.num_steps:
-                raise ValueError(f"Length of rho list ({len(self.rho)}) must match num_steps ({self.num_steps}).")
+                raise ValueError(
+                    f"Length of rho list ({len(self.rho)}) must match num_steps ({self.num_steps})."
+                )
+        # otherwise, it must be a scalar and every problem will have the same value
         else:
             self.rho = jnp.full(self.num_steps, rho)
             
@@ -54,12 +62,15 @@ class RegularizedQPSolver:
             if not sp.issparse(mat):
                 return sp.csc_matrix(mat)
             return mat.tocsc()
-            
+        
+        # sparse identity matrices for all variables
         I_nx = sp.eye(n_x, format='csc')
         I_nin = sp.eye(n_in, format='csc')
         I_neq = sp.eye(n_eq, format='csc')
         
+        # preallocate dictionaries for augmented fixed ingredients
         aug_fixed_elements = {}
+        # and for augmented sparsity patterns
         aug_patterns = {}
         
         # Precompute index helpers for dynamic matrices
@@ -73,6 +84,8 @@ class RegularizedQPSolver:
         # --- Handle P ---
         if "P" in self.fixed_elements:
             P_fixed = to_csc(self.fixed_elements["P"])
+            #TODO: should there be a 2 multiplying rho here?
+            # Same below in the other matrices
             aug_fixed_elements["P"] = sp.block_diag(
                 [P_fixed + rho_init * I_nx, rho_init * I_nin, rho_init * I_neq], format='csc'
             )
@@ -114,18 +127,29 @@ class RegularizedQPSolver:
             n_var=self.n_z, n_ineq=n_in, n_eq=n_eq,
             sparsity_patterns=aug_patterns if aug_patterns else None,
             fixed_elements=aug_fixed_elements if aug_fixed_elements else None,
-            options= options or {} | {"diff_mode":"rev"},
+            options = options or {"diff_mode":"rev"},
         )
         
-        # num_steps is no longer required as a dynamic argument
         self.solve = jax.jit(self._solve_impl)
     
-    def _solve_impl(self, bar_x, bar_lam, bar_mu, P=None, q=None, A=None, b=None, G=None, h=None):
-        
-        # Helper to strip AD tracers from both standard arrays and PyTrees (like BCOO)
-        def detach(tree):
-            if tree is None: return None
-            return jax.tree_util.tree_map(jax.lax.stop_gradient, tree)
+    # Helper to strip AD tracers from both standard arrays and PyTrees (like BCOO)
+    @staticmethod
+    def detach(tree):
+        if tree is None: return None
+        return jax.tree_util.tree_map(jax.lax.stop_gradient, tree)
+
+    def _solve_impl(
+        self, 
+        bar_x, 
+        bar_lam, 
+        bar_mu, 
+        P=None, 
+        q=None, 
+        A=None, 
+        b=None, 
+        G=None, 
+        h=None
+    ) -> SolverOutput:
             
         # 1. Resolve Vectors (Differentiable versions)
         q_val = self.q_fixed if q is None else q
@@ -133,24 +157,31 @@ class RegularizedQPSolver:
         b_val = self.b_fixed if b is None else b
 
         # Detach everything for the burn-in phase to prevent AD tracking
-        P_sg, G_sg, A_sg = detach(P), detach(G), detach(A)
-        q_sg, h_sg, b_sg = detach(q_val), detach(h_val), detach(b_val)
+        P_sg, G_sg, A_sg = self.detach(P), self.detach(G), self.detach(A)
+        q_sg, h_sg, b_sg = self.detach(q_val), self.detach(h_val), self.detach(b_val)
         
-        bar_x = detach(bar_x)
-        bar_lam = detach(bar_lam)
-        bar_mu = detach(bar_mu)
-        
-        zero_lam = jnp.zeros_like(bar_lam)
-        zero_mu = jnp.zeros_like(bar_mu)
+        bar_x = self.detach(bar_x)
+        bar_lam = self.detach(bar_lam)
+        bar_mu = self.detach(bar_mu)
         
         # 2. Burn-in Phase (Steps 0 to num_steps - 2)
         # We run these completely detached from the AD graph.
+        # TODO: switch to jax.lax.scan to avoid large tracing time
         for i in range(self.num_steps - 1):
             rho_i = self.rho[i]
             solver_kwargs = {}
-            
+
+            # this is extremely inefficient! each loop rebuilds all matrices
+            # we should only change the rho indices
             if "P" not in self.fixed_elements:
-                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_x, rho_i), jnp.full(self.n_in, rho_i), jnp.full(self.n_eq, rho_i)])
+
+                # stop gradient from passing through P
+                P_sg = self.detach(P)
+
+                # add indices to extended P
+                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_z, rho_i)])
+
+                # store as BCOO
                 solver_kwargs["P"] = BCOO((P_data, self.P_tilde_indices), shape=self.P_tilde_shape)
                 
             if "G" not in self.fixed_elements:
@@ -161,7 +192,7 @@ class RegularizedQPSolver:
                 A_data = jnp.concatenate([A_sg.data, jnp.full(self.n_eq, rho_i)])
                 solver_kwargs["A"] = BCOO((A_data, self.A_tilde_indices), shape=self.A_tilde_shape)
                 
-            solver_kwargs["q"] = jnp.concatenate([q_sg - rho_i * bar_x, zero_lam, zero_mu])
+            solver_kwargs["q"] = jnp.concatenate([q_sg - rho_i * bar_x, jnp.zeros(self.n_eq + self.n_in)])
             solver_kwargs["h"] = h_sg - rho_i * bar_lam
             solver_kwargs["b"] = b_sg - rho_i * bar_mu
             
