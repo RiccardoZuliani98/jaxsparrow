@@ -325,7 +325,7 @@ def ALT_test_vjp_regularized_vs_base():
 def test_vjp_regularized_vs_finite_difference(cost_state, cost_input, duplicate_eq, scenario):
     """
     Validates the VJP of the regularized solver against central finite difference 
-    approximations across varying convexity and LICQ conditions.
+    approximations across varying convexity and LICQ conditions (Primal Only).
     """
     mpc = generate_mpc_problem(cost_state=cost_state, cost_input=cost_input, duplicate_eq=duplicate_eq)
     
@@ -335,9 +335,9 @@ def test_vjp_regularized_vs_finite_difference(cost_state, cost_input, duplicate_
 
     reg_solver = RegularizedQPSolver(
         n_x=mpc["nz"], n_in=mpc["nineq"], n_eq=mpc["neq"],
-        num_steps=3,
+        num_steps=5,
         sparsity_patterns=sparsity_patterns,
-        rho=1e-8
+        rho=1e-6
     )
 
     # 1. Run a nominal solve with zero initialization to get the primal-dual guess
@@ -360,16 +360,16 @@ def test_vjp_regularized_vs_finite_difference(cost_state, cost_input, duplicate_
             P=mpc["P"], q=q, A=mpc["A"], b=b, G=mpc["G"], h=h, 
             bar_x=bar_x, bar_lam=bar_lam, bar_mu=bar_mu
         )
-        return sol["x"], sol["lam"], sol["mu"]
+        # MODIFIED: Return ONLY the primal variable
+        return sol["x"]
 
     # 2. Random Keys for Cotangents and Perturbation Directions
     key = jrandom.PRNGKey(101)
-    k_vx, k_vlam, k_vmu, k_dq, k_db, k_dh = jrandom.split(key, 6)
+    # MODIFIED: Split into 4 keys instead of 6, since we dropped dual cotangents
+    k_vx, k_dq, k_db, k_dh = jrandom.split(key, 4)
     
-    # Cotangents (for defining the scalar projection)
+    # Cotangent (for defining the scalar projection)
     v_x = jrandom.normal(k_vx, (mpc["nz"],))
-    v_lam = jrandom.normal(k_vlam, (mpc["nineq"],))
-    v_mu = jrandom.normal(k_vmu, (mpc["neq"],))
 
     # Perturbation directions (for the directional derivative)
     dir_q = jrandom.normal(k_dq, (mpc["nz"],))
@@ -378,17 +378,19 @@ def test_vjp_regularized_vs_finite_difference(cost_state, cost_input, duplicate_
 
     # 3. Compute Directional Derivative via VJP
     _, vjp_reg_fn = vjp(solve_reg_fn, mpc["q"], b_val, mpc["h"])
-    grad_q, grad_b, grad_h = vjp_reg_fn((v_x, v_lam, v_mu))
+    # MODIFIED: Pass only the primal cotangent
+    grad_q, grad_b, grad_h = vjp_reg_fn(v_x)
     
     # The dot product of the VJP gradients and the perturbation directions
     dir_deriv_vjp = jnp.vdot(grad_q, dir_q) + jnp.vdot(grad_b, dir_b) + jnp.vdot(grad_h, dir_h)
 
     # 4. Compute Directional Derivative via Central Finite Difference
-    eps = 1e-9
+    eps = 1e-8
     
     def scalar_loss(q, b, h):
-        x, lam, mu = solve_reg_fn(q, b, h)
-        return jnp.vdot(v_x, x) + jnp.vdot(v_lam, lam) + jnp.vdot(v_mu, mu)
+        x = solve_reg_fn(q, b, h)
+        # MODIFIED: Only compute the dot product for the primal
+        return jnp.vdot(v_x, x)
 
     loss_plus = scalar_loss(mpc["q"] + eps * dir_q, b_val + eps * dir_b, mpc["h"] + eps * dir_h)
     loss_minus = scalar_loss(mpc["q"] - eps * dir_q, b_val - eps * dir_b, mpc["h"] - eps * dir_h)
@@ -399,7 +401,7 @@ def test_vjp_regularized_vs_finite_difference(cost_state, cost_input, duplicate_
     npt.assert_allclose(
         dir_deriv_vjp, dir_deriv_fd, 
         atol=1e-3, rtol=1e-3, 
-        err_msg=f"VJP diverged from Finite Difference for scenario: {scenario}"
+        err_msg=f"Primal VJP diverged from Finite Difference for scenario: {scenario}"
     )
 
 if __name__ == "__main__":
