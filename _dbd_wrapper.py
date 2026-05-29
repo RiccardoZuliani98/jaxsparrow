@@ -84,8 +84,6 @@ class RegularizedQPSolver:
         # --- Handle P ---
         if "P" in self.fixed_elements:
             P_fixed = to_csc(self.fixed_elements["P"])
-            #TODO: should there be a 2 multiplying rho here?
-            # Same below in the other matrices
             aug_fixed_elements["P"] = sp.block_diag(
                 [P_fixed + rho_init * I_nx, rho_init * I_nin, rho_init * I_neq], format='csc'
             )
@@ -136,7 +134,8 @@ class RegularizedQPSolver:
     @staticmethod
     def detach(tree):
         if tree is None: return None
-        return jax.tree_util.tree_map(jax.lax.stop_gradient, tree)
+        # return jax.tree_util.tree_map(jax.lax.stop_gradient, tree)
+        return tree
 
     def _solve_impl(
         self, 
@@ -171,7 +170,7 @@ class RegularizedQPSolver:
             solver_kwargs = {}
 
             if "P" not in self.fixed_elements:
-                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_z, -rho_i)])
+                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_z, rho_i)])
                 solver_kwargs["P"] = BCOO((P_data, self.P_tilde_indices), shape=self.P_tilde_shape)
                 
             if "G" not in self.fixed_elements:
@@ -205,7 +204,7 @@ class RegularizedQPSolver:
         
         if "P" not in self.fixed_elements:
             # P.data carries the AD tracer here
-            P_data = jnp.concatenate([P.data, jnp.full(self.n_z, -rho_final)])
+            P_data = jnp.concatenate([P.data, jnp.full(self.n_z, rho_final)])
             solver_kwargs_final["P"] = BCOO((P_data, self.P_tilde_indices), shape=self.P_tilde_shape)
             
         if "G" not in self.fixed_elements:
