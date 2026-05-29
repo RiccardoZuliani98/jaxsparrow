@@ -165,39 +165,28 @@ class RegularizedQPSolver:
         bar_mu = self.detach(bar_mu)
         
         # 2. Burn-in Phase (Steps 0 to num_steps - 2)
-        # We run these completely detached from the AD graph.
-        # TODO: switch to jax.lax.scan to avoid large tracing time
         for i in range(self.num_steps - 1):
+
             rho_i = self.rho[i]
             solver_kwargs = {}
 
-            # this is extremely inefficient! each loop rebuilds all matrices
-            # we should only change the rho indices
             if "P" not in self.fixed_elements:
-
-                # stop gradient from passing through P
-                P_sg = self.detach(P)
-
-                # add indices to extended P
-                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_z, rho_i)])
-
-                # store as BCOO
+                P_data = jnp.concatenate([P_sg.data, jnp.full(self.n_z, -rho_i)])
                 solver_kwargs["P"] = BCOO((P_data, self.P_tilde_indices), shape=self.P_tilde_shape)
                 
             if "G" not in self.fixed_elements:
-                G_data = jnp.concatenate([G_sg.data, jnp.full(self.n_in, rho_i)])
+                G_data = jnp.concatenate([G_sg.data, jnp.full(self.n_in, -rho_i)])
                 solver_kwargs["G"] = BCOO((G_data, self.G_tilde_indices), shape=self.G_tilde_shape)
                 
             if "A" not in self.fixed_elements:
-                A_data = jnp.concatenate([A_sg.data, jnp.full(self.n_eq, rho_i)])
+                A_data = jnp.concatenate([A_sg.data, jnp.full(self.n_eq, -rho_i)])
                 solver_kwargs["A"] = BCOO((A_data, self.A_tilde_indices), shape=self.A_tilde_shape)
                 
             solver_kwargs["q"] = jnp.concatenate([q_sg - rho_i * bar_x, jnp.zeros(self.n_eq + self.n_in)])
             solver_kwargs["h"] = h_sg - rho_i * bar_lam
             solver_kwargs["b"] = b_sg - rho_i * bar_mu
             
-            sol = self.solver(**solver_kwargs)
-            z = sol["x"]
+            z = self.solver(**solver_kwargs)["x"]
             
             # Update guesses
             bar_x = z[:self.n_x]
@@ -205,9 +194,9 @@ class RegularizedQPSolver:
             bar_mu = z[self.n_x + self.n_in :]
 
         # Detach the intermediate results one last time to ensure no leaks
-        bar_x = detach(bar_x)
-        bar_lam = detach(bar_lam)
-        bar_mu = detach(bar_mu)
+        bar_x = self.detach(bar_x)
+        bar_lam = self.detach(bar_lam)
+        bar_mu = self.detach(bar_mu)
 
         # 3. Final Step (Differentiable)
         # Now we inject the original, gradient-carrying matrices and vectors.
@@ -216,31 +205,27 @@ class RegularizedQPSolver:
         
         if "P" not in self.fixed_elements:
             # P.data carries the AD tracer here
-            P_data = jnp.concatenate([P.data, jnp.full(self.n_x, rho_final), jnp.full(self.n_in, rho_final), jnp.full(self.n_eq, rho_final)])
+            P_data = jnp.concatenate([P.data, jnp.full(self.n_z, -rho_final)])
             solver_kwargs_final["P"] = BCOO((P_data, self.P_tilde_indices), shape=self.P_tilde_shape)
             
         if "G" not in self.fixed_elements:
-            G_data = jnp.concatenate([G.data, jnp.full(self.n_in, rho_final)])
+            G_data = jnp.concatenate([G.data, jnp.full(self.n_in, -rho_final)])
             solver_kwargs_final["G"] = BCOO((G_data, self.G_tilde_indices), shape=self.G_tilde_shape)
             
         if "A" not in self.fixed_elements:
-            A_data = jnp.concatenate([A.data, jnp.full(self.n_eq, rho_final)])
+            A_data = jnp.concatenate([A.data, jnp.full(self.n_eq, -rho_final)])
             solver_kwargs_final["A"] = BCOO((A_data, self.A_tilde_indices), shape=self.A_tilde_shape)
             
         # q_val, h_val, and b_val carry the AD tracers here
-        solver_kwargs_final["q"] = jnp.concatenate([q_val - rho_final * bar_x, zero_lam, zero_mu])
-        solver_kwargs_final["h"] = h_val + rho_final * bar_lam
-        solver_kwargs_final["b"] = b_val + rho_final * bar_mu
+        solver_kwargs_final["q"] = jnp.concatenate([q_val - rho_final * bar_x, jnp.zeros(self.n_eq + self.n_in)])
+        solver_kwargs_final["h"] = h_val - rho_final * bar_lam
+        solver_kwargs_final["b"] = b_val - rho_final * bar_mu
         
-        sol_final = self.solver(**solver_kwargs_final)
-        z_final = sol_final["x"]
+        z_final = self.solver(**solver_kwargs_final)["x"]
         
         # 4. Format final solution output mapping
-        sol_final["x"] = z_final[:self.n_x]
-        sol_final["lam"] = z_final[self.n_x : self.n_x + self.n_in]
-        sol_final["mu"] = z_final[self.n_x + self.n_in :]
-        
-        if "z" in sol_final: sol_final.pop("z")
-        if "y" in sol_final: sol_final.pop("y")
-        
-        return sol_final
+        x_final = z_final[:self.n_x]
+        lam_final = z_final[self.n_x : self.n_x + self.n_in]
+        mu_final = z_final[self.n_x + self.n_in :]
+
+        return {"x":x_final,"lam":lam_final,"mu":mu_final}
