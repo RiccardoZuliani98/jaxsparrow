@@ -115,6 +115,17 @@ class DifferentiatorBackend(ABC):
         """
         ...
 
+    def __init__(self, options: dict[str, Any]) -> None:
+        """Receive fully resolved differentiator options.
+
+        Args:
+            options: Dictionary containing differentiator options,
+                expected to optionally include 'dump_failed' and 'dump_dir'.
+        """
+        self.options = options
+        self._dump_failed = options.get("dump_failed", False)
+        self._dump_dir = options.get("dump_dir", "")
+
     @abstractmethod
     def differentiate_fwd(
         self,
@@ -226,6 +237,39 @@ class DifferentiatorBackend(ABC):
             RuntimeError: If linear solver fails
         """
         ...
+    
+    def _dump_problem(self, problem: dict[str, Any], exception: Optional[Exception] = None) -> None:
+        """Dump failed QP differentiation ingredients to a joblib file, with a timestamp.
+        
+        Args:
+            problem: Dictionary containing the combined fixed and dynamic QP 
+                ingredients, and ideally the solution point where diff failed.
+            exception: Optional exception caught during differentiation to log.
+        """
+        if not self._dump_failed:
+            return
+
+        import joblib
+        import os
+        from datetime import datetime
+
+        filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
+        filename = f"failed_diff_{filename_timestamp}.joblib"
+        
+        # Resolve the full path
+        filepath = os.path.join(self._dump_dir, filename) if self._dump_dir else filename
+        
+        # Ensure the target directory exists if dump_dir was provided
+        if self._dump_dir:
+            os.makedirs(self._dump_dir, exist_ok=True)
+        
+        # Create a copy to avoid mutating the original dictionary
+        problem_to_dump = dict(problem)
+        if exception is not None:
+            problem_to_dump["exception_str"] = str(exception)
+            problem_to_dump["exception_type"] = type(exception).__name__
+        
+        joblib.dump(problem_to_dump, filepath)
 
 
 # =====================================================================

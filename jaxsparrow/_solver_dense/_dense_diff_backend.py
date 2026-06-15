@@ -13,7 +13,7 @@ Registered as ``"dense_kkt"`` in the differentiator backend registry.
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Optional, Sequence, cast, Any
+from typing import Optional, Sequence, cast
 
 import numpy as np
 from numpy import ndarray
@@ -66,6 +66,8 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_ineq: int,
         options: DenseKKTDiffOptionsFull,
     ) -> None:
+
+        super().__init__(cast(dict,options))
         
         if n_var < 0 or n_eq < 0 or n_ineq < 0:
             raise ValueError(
@@ -395,7 +397,16 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Solve ────────────────────────────────────────────────────
         start = perf_counter()
-        sol = self._solve_linear_system(lhs, -rhs)
+        try:
+            sol = self._solve_linear_system(lhs, -rhs)
+        except Exception as e:
+            # Combine the full problem ingredients and the solution point
+            problem_to_dump = dict(prob_np)
+            problem_to_dump["x"] = x_np
+            problem_to_dump["lam"] = lam_np
+            problem_to_dump["mu"] = mu_np
+            self._dump_problem(problem_to_dump, exception=e)
+            raise  # Re-raise the exception after dumping
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract dx, dlam, dmu ────────────────────────────────────
@@ -498,7 +509,16 @@ class DenseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Solve ────────────────────────────────────────────────────
         start = perf_counter()
-        v = self._solve_linear_system(lhs, rhs)
+        try:
+            v = self._solve_linear_system(lhs, rhs)
+        except Exception as e:
+            # Combine the full problem ingredients and the solution point
+            problem_to_dump = dict(prob_np)
+            problem_to_dump["x"] = x_np
+            problem_to_dump["lam"] = lam_np
+            problem_to_dump["mu"] = mu_np
+            self._dump_problem(problem_to_dump, exception=e)
+            raise  # Re-raise the exception after dumping
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract adjoint variables ────────────────────────────────

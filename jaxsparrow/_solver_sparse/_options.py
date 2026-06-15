@@ -26,8 +26,8 @@ common to all solver backends via :class:`SolverOptions`.
 
 from jaxsparrow._options_common import DifferentiatorOptions, SolverOptions
 import numpy as np
-from typing import Literal
-
+from typing import Literal, TypedDict
+import os
 
 # ======================================================================
 # Differentiator options
@@ -39,8 +39,14 @@ class SparseKKTDiffOptions(DifferentiatorOptions):
     All keys are optional; missing keys are filled from
     ``DEFAULT_SPARSE_KKT_DIFF_OPTIONS`` via :func:`parse_options`.
 
-    The ``backend`` field is inherited from
-    :class:`DifferentiatorOptions`.
+    backend: Differentiator backend name (``"sparse_kkt"``).
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    dtype: NumPy floating-point dtype for all computations.
+    bool_dtype: NumPy boolean dtype for active-set masks.
+    cst_tol: Tolerance for determining active inequality
+        constraints (``|G x - h| <= cst_tol``).
+    linear_solver: Name of the sparse linear solver backend.
     """
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
@@ -48,22 +54,26 @@ class SparseKKTDiffOptions(DifferentiatorOptions):
     linear_solver:  str
 
 
-class SparseKKTDiffOptionsFull(DifferentiatorOptions, total=True):
+class SparseKKTDiffOptionsFull(TypedDict, total=True):
     """Complete differentiator options for the ``sparse_kkt`` backend.
 
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    Attributes:
-        backend: Differentiator backend name (``"sparse_kkt"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all computations.
-        bool_dtype: NumPy boolean dtype for active-set masks.
-        cst_tol: Tolerance for determining active inequality
-            constraints (``|G x - h| <= cst_tol``).
-        linear_solver: Name of the sparse linear solver backend.
+    Attributes
+    ----------
+    backend: Differentiator backend name (``"sparse_kkt"``).
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    dtype: NumPy floating-point dtype for all computations.
+    bool_dtype: NumPy boolean dtype for active-set masks.
+    cst_tol: Tolerance for determining active inequality
+        constraints (``|G x - h| <= cst_tol``).
+    linear_solver: Name of the sparse linear solver backend.
     """
     backend:        str
+    dump_failed:    bool
+    dump_dir:       str | os.PathLike
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
@@ -75,6 +85,8 @@ class SparseKKTDiffOptionsFull(DifferentiatorOptions, total=True):
 
 DEFAULT_SPARSE_KKT_DIFF_OPTIONS: SparseKKTDiffOptionsFull = {
     "backend":       "sparse_kkt",
+    "dump_failed":  False,
+    "dump_dir":     "",
     "dtype":         np.float64,
     "bool_dtype":    np.bool_,
     "cst_tol":       1e-8,
@@ -95,9 +107,18 @@ class SparseDBDDiffOptions(DifferentiatorOptions):
     The ``backend`` field is inherited from
     :class:`DifferentiatorOptions`.
 
-    Attributes:
-        rho: Regularisation strength for the DBD perturbation.
-            Must be ``> 0``.
+    Attributes
+    ----------
+    backend: Differentiator backend name (``"sparse_dbd"``).
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    dtype: NumPy floating-point dtype for all computations.
+    bool_dtype: NumPy boolean dtype for active-set masks.
+    cst_tol: Tolerance for determining active inequality
+        constraints (``|G x - h| <= cst_tol``).
+    linear_solver: Name of the sparse linear solver backend.
+    rho: Regularisation strength for the DBD perturbation
+        (scalar ``> 0``).
     """
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
@@ -106,24 +127,28 @@ class SparseDBDDiffOptions(DifferentiatorOptions):
     rho:            float
 
 
-class SparseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
+class SparseDBDDiffOptionsFull(TypedDict, total=True):
     """Complete differentiator options for the ``sparse_dbd`` backend.
 
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    Attributes:
-        backend: Differentiator backend name (``"sparse_dbd"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all computations.
-        bool_dtype: NumPy boolean dtype for active-set masks.
-        cst_tol: Tolerance for determining active inequality
-            constraints (``|G x - h| <= cst_tol``).
-        linear_solver: Name of the sparse linear solver backend.
-        rho: Regularisation strength for the DBD perturbation
-            (scalar ``> 0``).
+    Attributes
+    ----------
+    backend: Differentiator backend name (``"sparse_dbd"``).
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    dtype: NumPy floating-point dtype for all computations.
+    bool_dtype: NumPy boolean dtype for active-set masks.
+    cst_tol: Tolerance for determining active inequality
+        constraints (``|G x - h| <= cst_tol``).
+    linear_solver: Name of the sparse linear solver backend.
+    rho: Regularisation strength for the DBD perturbation
+        (scalar ``> 0``).
     """
     backend:        str
+    dump_failed:    bool
+    dump_dir:       str | os.PathLike
     dtype:          type[np.floating]
     bool_dtype:     type[np.bool]
     cst_tol:        float
@@ -136,6 +161,8 @@ class SparseDBDDiffOptionsFull(DifferentiatorOptions, total=True):
 
 DEFAULT_SPARSE_DBD_DIFF_OPTIONS: SparseDBDDiffOptionsFull = {
     "backend":       "sparse_dbd",
+    "dump_failed":  False,
+    "dump_dir":     "",
     "dtype":         np.float64,
     "bool_dtype":    np.bool_,
     "cst_tol":       1e-8,
@@ -175,43 +202,47 @@ class SparseQpSolverOptions(SolverOptions):
     All keys are optional; missing keys are filled from
     ``DEFAULT_SPARSE_QPSOLVERS_OPTIONS`` via :func:`parse_options`.
 
-    The ``backend`` and ``dtype`` fields are inherited from
-    :class:`SolverOptions`.
+    The ``backend``, ``dtype``, ``dump_failed``, and ``dump_dir``
+    fields are inherited from :class:`SolverOptions`.
 
-    Attributes:
-        solver_name: Backend solver name passed to ``qpsolvers``
-            (e.g. ``"piqp"``, ``"osqp"``, ``"clarabel"``).
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"qpsolvers"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    solver_name: Backend solver name passed to ``qpsolvers``.
     """
     solver_name:    str
-    dump_failed:    bool
 
 
-class SparseQpSolverOptionsFull(SolverOptions, total=True):
+class SparseQpSolverOptionsFull(TypedDict, total=True):
     """Complete solver options for the ``qpsolvers`` backend (sparse).
 
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    Attributes:
-        backend: Solver backend protocol name (``"qpsolvers"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all arrays.
-            Redeclared here to make it required in the resolved form.
-        solver_name: Backend solver name passed to ``qpsolvers``.
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"qpsolvers"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    solver_name: Backend solver name passed to ``qpsolvers``.
     """
     backend:        str
     dtype:          type[np.floating]
-    solver_name:    str
     dump_failed:    bool
+    dump_dir:       str | os.PathLike
+    solver_name:    str
 
 
 DEFAULT_SPARSE_QPSOLVERS_OPTIONS: SparseQpSolverOptionsFull = {
     "backend":      "qpsolvers",
     "dtype":        np.float64,
+    "dump_failed":  False,
+    "dump_dir":     "",
     "solver_name":  "piqp",
-    "dump_failed":  False
 }
 
 # ----------------------------------------------------------------------
@@ -224,47 +255,52 @@ class SparsePIQPSolverOptions(SolverOptions):
     All keys are optional; missing keys are filled from
     ``DEFAULT_SPARSE_PIQP_OPTIONS`` via :func:`parse_options`.
 
-    The ``backend`` and ``dtype`` fields are inherited from
-    :class:`SolverOptions`.
+    The ``backend``, ``dtype``, ``dump_failed``, and ``dump_dir``
+    fields are inherited from :class:`SolverOptions`.
 
-    Attributes:
-        verbose: Enable solver output.
-        sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"qpsolvers"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False). 
+    dump_dir: directory where failed QPs are stored.
+    verbose: Enable solver output.
+    sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
     """
     verbose:    bool
     sparse:     bool
-    dump_failed:    bool
 
 
-class SparsePIQPSolverOptionsFull(SolverOptions, total=True):
+class SparsePIQPSolverOptionsFull(TypedDict, total=True):
     """Complete solver options for the ``piqp`` backend (sparse).
 
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    Attributes:
-        backend: Solver backend protocol name (``"piqp"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all arrays.
-            Redeclared here to make it required in the resolved form.
-        verbose: Enable solver output.
-        sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"piqp"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    dump_dir: directory where failed QPs are stored.
+    verbose: Enable solver output.
+    sparse: Whether to use the SparseSolver (True) or DenseSolver (False).
     """
     backend:        str
     dtype:          type[np.floating]
+    dump_failed:    bool
+    dump_dir:       str | os.PathLike
     verbose:        bool
     sparse:         bool
-    dump_failed:    bool
 
 
 DEFAULT_SPARSE_PIQP_OPTIONS: SparsePIQPSolverOptionsFull = {
     "backend":  "piqp",
     "dtype":    np.float64,
+    "dump_failed": False,
+    "dump_dir":     "",
     "verbose":  False,
     "sparse":   True,
-    "dump_failed": False
 }
 
 # ----------------------------------------------------------------------
@@ -277,42 +313,47 @@ class SparseQOCOSolverOptions(SolverOptions):
     All keys are optional; missing keys are filled from
     ``DEFAULT_SPARSE_QOCO_OPTIONS`` via :func:`parse_options`.
 
-    The ``backend`` and ``dtype`` fields are inherited from
-    :class:`SolverOptions`.
+    The ``backend``, ``dtype``, ``dump_failed``, and ``dump_dir``
+    fields are inherited from :class:`SolverOptions`.
 
-    Attributes:
-        verbose: Verbosity level passed to QOCO (0 = silent).
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"qoco"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    dump_dir: directory where failed QPs are stored.
+    verbose: Verbosity level passed to QOCO (0 = silent).
     """
     verbose:    int
-    dump_failed:    bool
 
 
-class SparseQOCOSolverOptionsFull(SolverOptions, total=True):
+class SparseQOCOSolverOptionsFull(TypedDict, total=True):
     """Complete solver options for the ``qoco`` backend (sparse).
 
     All keys are required.  This is the resolved form after merging
     user-supplied options with defaults.
 
-    Attributes:
-        backend: Solver backend protocol name (``"qoco"``).
-            Redeclared here to make it required in the resolved form.
-        dtype: NumPy floating-point dtype for all arrays.
-            Redeclared here to make it required in the resolved form.
-        verbose: Verbosity level passed to QOCO (0 = silent).
-        dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    Attributes
+    ----------
+    backend: Solver backend protocol name (``"qoco"``).
+    dtype: NumPy floating-point dtype for all arrays.
+    verbose: Verbosity level passed to QOCO (0 = silent).
+    dump_failed: Ingredients of failed QPs are dumped to be analyzed (False).
+    dump_dir: directory where failed QPs are stored.
     """
     backend:        str
     dtype:          type[np.floating]
-    verbose:        int
     dump_failed:    bool
+    dump_dir:       str | os.PathLike
+    verbose:        int
 
 
 DEFAULT_SPARSE_QOCO_OPTIONS: SparseQOCOSolverOptionsFull = {
-    "backend":  "qoco",
-    "dtype":    np.float64,
-    "verbose":  0,
-    "dump_failed": False
+    "backend":      "qoco",
+    "dtype":        np.float64,
+    "dump_failed":  False,
+    "dump_dir":     "",
+    "verbose":      0,
 }
 
 # ----------------------------------------------------------------------
@@ -348,6 +389,8 @@ ALL_SPARSE_DIFF_OPTIONS = {
             "bool_dtype": "NumPy boolean dtype for active-set masks.",
             "cst_tol": "Tolerance for determining active inequality constraints.",
             "linear_solver": "Name of the sparse linear solver backend.",
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
+            "dump_dir": "Directory where dumped QPs are stored ('')."
         },
     },
     "sparse_dbd": {
@@ -360,6 +403,8 @@ ALL_SPARSE_DIFF_OPTIONS = {
             "cst_tol": "Tolerance for determining active inequality constraints.",
             "linear_solver": "Name of the sparse linear solver backend.",
             "rho": "Regularisation strength for the DBD perturbation (> 0).",
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
+            "dump_dir": "Directory where dumped QPs are stored ('')."
         },
     },
 }
@@ -373,7 +418,8 @@ ALL_SPARSE_SOLVER_OPTIONS = {
             "backend": "Solver backend protocol name (fixed to 'qpsolvers' in resolved form).",
             "dtype": "NumPy floating-point dtype for all arrays.",
             "solver_name": "Backend solver name passed to qpsolvers (e.g., 'piqp', 'osqp', 'clarabel').",
-            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False)."
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
+            "dump_dir": "Directory where dumped QPs are stored ('')."
         },
     },
     "qoco": {
@@ -383,7 +429,8 @@ ALL_SPARSE_SOLVER_OPTIONS = {
             "backend": "Solver backend protocol name (fixed to 'qoco' in resolved form).",
             "dtype": "NumPy floating-point dtype for all arrays.",
             "verbose": "Verbosity level passed to QOCO (0 = silent).",
-            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False)."
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
+            "dump_dir": "Directory where dumped QPs are stored ('')."
         },
     },
     "piqp": {
@@ -394,7 +441,8 @@ ALL_SPARSE_SOLVER_OPTIONS = {
             "dtype": "NumPy floating-point dtype for all arrays.",
             "verbose": "Whether to enable solver output.",
             "sparse": "Flag to use PIQP's sparse solver (True) or dense solver (False).",
-            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False)."
+            "dump_failed": "Ingredients of failed QPs are dumped to be analyzed (False).",
+            "dump_dir": "Directory where dumped QPs are stored ('')."
         },
     },
 }

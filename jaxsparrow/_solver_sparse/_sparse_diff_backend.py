@@ -122,6 +122,9 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
         n_ineq: int,
         options: SparseKKTDiffOptionsFull,
     ) -> None:
+
+        super().__init__(cast(dict,options))
+
         if n_var < 0 or n_eq < 0 or n_ineq < 0:
             raise ValueError(
                 f"Dimensions must be non-negative: "
@@ -527,7 +530,16 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Sparse solve ─────────────────────────────────────────────
         start = perf_counter()
-        sol = self._solve_linear_system(lhs, -rhs)
+        try:
+            sol = self._solve_linear_system(lhs, -rhs)
+        except Exception as e:
+            # Combine the full problem ingredients and the solution point
+            problem_to_dump = dict(prob)
+            problem_to_dump["x"] = x_np
+            problem_to_dump["lam"] = lam_np
+            problem_to_dump["mu"] = mu_np
+            self._dump_problem(problem_to_dump, exception=e)
+            raise  # Re-raise the exception after dumping
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract dx, dlam, dmu ────────────────────────────────────
@@ -642,7 +654,16 @@ class SparseKKTDifferentiatorBackend(DifferentiatorBackend):
 
         # ── Sparse solve ─────────────────────────────────────────────
         start = perf_counter()
-        v = self._solve_linear_system(lhs, rhs)
+        try:
+            v = self._solve_linear_system(lhs, rhs)
+        except Exception as e:
+            # Combine the full problem ingredients and the solution point
+            problem_to_dump = dict(prob)
+            problem_to_dump["x"] = x_np
+            problem_to_dump["lam"] = lam_np
+            problem_to_dump["mu"] = mu_np
+            self._dump_problem(problem_to_dump, exception=e)
+            raise  # Re-raise the exception after dumping
         t["lin_solve"] = perf_counter() - start
 
         # ── Extract adjoint variables ────────────────────────────────
