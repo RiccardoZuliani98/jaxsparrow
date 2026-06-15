@@ -40,7 +40,6 @@ from typing import Callable, Optional, Union, cast
 import numpy as np
 from numpy import ndarray
 from scipy.sparse import csc_matrix, issparse
-from scipy import sparse
 from jax.experimental.sparse import BCOO
 
 from qpsolvers import Problem, solve_problem
@@ -91,7 +90,9 @@ class SolverBackend(ABC):
                 Concrete backends should narrow this type to their
                 own ``*OptionsFull`` TypedDict.
         """
-        ...
+        self.options = options
+        self._dump_failed = options.get("dump_failed", True)
+        self._dump_dir = options.get("dump_dir", "")
 
     @abstractmethod
     def setup(
@@ -157,6 +158,36 @@ class SolverBackend(ABC):
         """
         ...
 
+    def _dump_problem(self, problem: dict, status: Optional[Union[str, int]] = None) -> None:
+        """Dump failed QP to a joblib file, with a timestamp.
+        
+        Args:
+            problem: Dictionary containing the full QP ingredients.
+            status: Optional solver status code or string to include in the dump.
+        """
+        if not self._dump_failed:
+            return
+
+        import joblib
+        import os
+        from datetime import datetime
+        
+        filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
+        filename = f"failed_qp_{filename_timestamp}.joblib"
+        
+        # Resolve the full path
+        filepath = os.path.join(self._dump_dir, filename) if self._dump_dir else filename
+        
+        # Ensure the target directory exists if dump_dir was provided
+        if self._dump_dir:
+            os.makedirs(self._dump_dir, exist_ok=True)
+        
+        # Create a copy to avoid mutating the original dictionary
+        problem_to_dump = dict(problem)
+        problem_to_dump["status"] = status
+        
+        joblib.dump(problem_to_dump, filepath)
+
 
 # =====================================================================
 # Helpers to store matrices and vectors
@@ -202,13 +233,6 @@ def ensure_csc(matrix):
     # Fallback for unsupported types
     raise TypeError(f"Input must be a SciPy csc_matrix or JAX BCOO. Got {type(matrix).__name__}.")
 
-def _dump_problem(problem):
-    """Dump failed QP to a joblib file, with a timestamp."""
-    import joblib
-    from datetime import datetime
-    filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
-    joblib.dump(problem, f"failed_qp_{filename_timestamp}.joblib")
-
 
 # =====================================================================
 # qpsolvers backend (stateless, default)
@@ -230,14 +254,13 @@ class QpSolversBackend(SolverBackend):
     """
 
     def __init__(self, options: DenseQpSolverOptionsFull | SparseQpSolverOptionsFull) -> None:
+
+        super().__init__(cast(SolverOptions,options))
         self._solver_name: str = options["solver_name"]
         self._dtype: type[np.floating] = options["dtype"] #type: ignore
 
         # Fixed elements stored at setup time
         self._fixed: SparseIngredientsNP = {}
-
-        # check if failed QP ingredients should be dumped
-        self._dump_failed = options.get("dump_failed",True)
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -303,10 +326,7 @@ class QpSolversBackend(SolverBackend):
         t["solver"] = perf_counter() - start
 
         if not sol.found:
-            if self._dump_failed:
-                full_problem = dict(merged)
-                full_problem["status"] = None
-                _dump_problem(full_problem)
+            self._dump_problem(cast(dict,merged), status=None)
             return None, None, None, t
 
         return sol.x, sol.y, sol.z, t
@@ -319,6 +339,8 @@ class QpSolversBackend(SolverBackend):
 class PIQPBackend(SolverBackend):
     
     def __init__(self, options: "SolverOptions") -> None:
+
+        super().__init__(options)
 
         # import piqp locally so that we don't import globally
         try:
@@ -339,9 +361,6 @@ class PIQPBackend(SolverBackend):
         
         # Determine solver mode
         self._is_sparse = self.options.get("sparse", True)
-
-        # check if failed QP ingredients should be dumped
-        self._dump_failed = options.get("dump_failed",True)
 
     def setup(
         self, 
@@ -376,7 +395,7 @@ class PIQPBackend(SolverBackend):
         settings_dict = self.options.copy()
 
         # pop settings that relate to jaxsparrow
-        for elem in ["sparse","dump_failed","dtype"]:
+        for elem in ["backend", "solver_name", "dtype", "dump_failed", "sparse", "dump_dir"]:
             settings_dict.pop(elem, None)
 
         # set the rest
@@ -454,12 +473,10 @@ class PIQPBackend(SolverBackend):
         status = self._solver.solve()
         t["solver"] = perf_counter() - start
         
-        # # In PIQP, status == 1 indicates PIQP_SOLVED
+        # In PIQP, status == 1 indicates PIQP_SOLVED
         if status != 1:
-            if self._dump_failed:
-                full_problem = self._fixed |  {key:val for key,val in runtime_ingredients.items() if val is not None}
-                full_problem["status"] = status
-                _dump_problem(full_problem)
+            full_problem = self._fixed | {key:val for key,val in runtime_ingredients.items() if val is not None}
+            self._dump_problem(full_problem, status=status)
             return None, None, None, t
 
         result = self._solver.result
@@ -512,6 +529,9 @@ class QOCOBackend(SolverBackend):
     """
 
     def __init__(self, options: "SolverOptions") -> None:
+
+        super().__init__(options)
+
         # Standardized try-except import
         try:
             import qoco
@@ -529,11 +549,8 @@ class QOCOBackend(SolverBackend):
         if not self.options.get("sparse", True):
             raise ValueError("The QOCO backend only supports sparse matrices. Please set 'sparse=True' or use a different solver.")
         
-        # Check if failed QP ingredients should be dumped
-        self._dump_failed = self.options.get("dump_failed", True)
-
         # QOCO solver settings forwarded to setup
-        _RESERVED = frozenset({"backend", "solver_name", "dtype", "dump_failed", "sparse"})
+        _RESERVED = frozenset({"backend", "solver_name", "dtype", "dump_failed", "sparse", "dump_dir"})
         self._qoco_settings: dict = {
             k: v for k, v in options.items()
             if k not in _RESERVED
@@ -673,10 +690,8 @@ class QOCOBackend(SolverBackend):
 
         # Integrate dump_failed logic
         if result.status not in ("QOCO_SOLVED", "QOCO_SOLVED_INACCURATE"):
-            if self._dump_failed:
-                full_problem = self._fixed | {k: v for k, v in runtime_ingredients.items() if v is not None}
-                full_problem["status"] = result.status
-                _dump_problem(full_problem)
+            full_problem = self._fixed | {k: v for k, v in runtime_ingredients.items() if v is not None}
+            self._dump_problem(full_problem, status=result.status)
             return None, None, None, t
 
         x = np.array(result.x, dtype=self._dtype)
