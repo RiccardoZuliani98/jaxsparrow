@@ -78,14 +78,21 @@ class QPLicqResult:
         Indices of the inequality constraints that are linearly dependent.
     error : str, optional
         Error message if the evaluation could not be performed (e.g., missing solution).
+    redundancy_details : list of dict
+        A detailed breakdown of each redundant constraint. Each dictionary contains:
+        - 'dependent_constraint': dict with 'type' ('eq' or 'ineq') and its original 'index'.
+        - 'involved_variables': list of column indices corresponding to non-zero entries in the constraint.
+        - 'spanned_by': list of dicts detailing the independent constraints ('type', 'index') 
+          and their 'coefficient' in the linear combination that reconstructs the dependent row.
     """
-    evaluated: bool = False
-    licq_satisfied: bool = True
-    num_active_total: int = 0
-    rank: int = 0
-    dependent_eq_indices: List[int] = field(default_factory=list)
+    evaluated:              bool = False
+    licq_satisfied:         bool = True
+    num_active_total:       int = 0
+    rank:                   int = 0
+    dependent_eq_indices:   List[int] = field(default_factory=list)
     dependent_ineq_indices: List[int] = field(default_factory=list)
-    error: Optional[str] = None
+    error:                  Optional[str] = None
+    redundancy_details:     List[Dict[str, Any]] = field(default_factory=list)
 
     def summary(self, registries=None):
         """Print summary of LICQ information."""
@@ -109,6 +116,34 @@ class QPLicqResult:
                 print(f"    -> Redundant Equality: '{_get_name(registries, 'eq_names', idx, 'Eq Row')}'")
             for idx in self.dependent_ineq_indices:
                 print(f"    -> Redundant Active Inequality: '{_get_name(registries, 'ineq_names', idx, 'Ineq Row')}'")
+                
+            if self.redundancy_details:
+                print("\n  --- Detailed Redundancy Breakdown ---")
+                for detail in self.redundancy_details:
+                    # Dependent constraint name resolution
+                    dep = detail["dependent_constraint"]
+                    dep_key = 'eq_names' if dep['type'] == 'eq' else 'ineq_names'
+                    dep_prefix = 'Eq Row' if dep['type'] == 'eq' else 'Ineq Row'
+                    dep_name = _get_name(registries, dep_key, dep['index'], dep_prefix)
+                    
+                    print(f"\n  Dependent Constraint: '{dep_name}'")
+                    
+                    # Variable name resolution
+                    var_names = [_get_name(registries, 'var_names', v, 'Var') for v in detail['involved_variables']]
+                    print(f"    Involved Variables: [{', '.join(var_names)}]")
+                    
+                    # Spanning constraint name resolution
+                    print("    Spanned by Linear Combination:")
+                    if not detail["spanned_by"]:
+                        print("      (Zero row / No spanning constraints)")
+                    else:
+                        for span in detail["spanned_by"]:
+                            span_key = 'eq_names' if span['type'] == 'eq' else 'ineq_names'
+                            span_prefix = 'Eq Row' if span['type'] == 'eq' else 'Ineq Row'
+                            span_name = _get_name(registries, span_key, span['index'], span_prefix)
+                            
+                            coeff_str = f"{span['coefficient']:>8.5f}"
+                            print(f"      {coeff_str} * '{span_name}'")
 
 @dataclass
 class InfeasibilityReport:
@@ -1114,16 +1149,54 @@ def analyze_licq(A, G, h, x_val, tol=1e-5):
     if rank_J < num_active_total:
         result.licq_satisfied = False
         
-        # 4. Identify dependent rows using QR pivoting on J^T
-        _, _, P_idx = la.qr(J.T, pivoting=True) # type: ignore
+        # 4. Identify dependent and independent rows using QR pivoting on J^T
+        _, _, P_idx = la.qr(J.T, pivoting=True)
+        indep_indices = P_idx[:rank_J]
         dep_indices = P_idx[rank_J:]
         
-        # 5. Map J rows back to original A and G row indices
-        for idx in dep_indices:
+        J_indep = J[indep_indices, :]
+        
+        # Helper to map J row indices back to A or G
+        def map_to_original(idx):
             if idx < num_eq:
-                result.dependent_eq_indices.append(int(idx))
+                return "eq", int(idx)
+            return "ineq", int(active_ineq_indices[idx - num_eq])
+
+        # 5. Extract dependencies
+        for idx in dep_indices:
+            orig_type, orig_idx = map_to_original(idx)
+            
+            if orig_type == "eq":
+                result.dependent_eq_indices.append(orig_idx)
             else:
-                result.dependent_ineq_indices.append(int(active_ineq_indices[idx - num_eq]))
+                result.dependent_ineq_indices.append(orig_idx)
+            
+            # --- NEW CAPABILITY ---
+            
+            # Variables involved in this specific redundant constraint
+            involved_vars = np.where(np.abs(J[idx]) > tol)[0].tolist()
+            
+            spanning_constraints = []
+            
+            # Find the linear combination of independent rows that span this dependent row.
+            # We solve: J_indep^T * c = J[idx]^T
+            if rank_J > 0:
+                c, _, _, _ = la.lstsq(J_indep.T, J[idx].T)
+                
+                for i, coeff in enumerate(c):
+                    if np.abs(coeff) > tol:
+                        span_type, span_idx = map_to_original(indep_indices[i])
+                        spanning_constraints.append({
+                            "type": span_type,
+                            "index": span_idx,
+                            "coefficient": round(float(coeff), 5)
+                        })
+            
+            result.redundancy_details.append({
+                "dependent_constraint": {"type": orig_type, "index": orig_idx},
+                "involved_variables": involved_vars,
+                "spanned_by": spanning_constraints
+            })
                 
     return result
 
