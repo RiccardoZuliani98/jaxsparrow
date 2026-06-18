@@ -11,37 +11,41 @@ def fmt_times(t: dict[str, float]) -> str:
     """
     return "  ".join(f"{k}={v:.3e}s" for k, v in t.items())
 
-def format_array_to_string(data, index_names=None, column_names=None, is_vector=False):
+import numpy as np
+
+def save_array_to_csv(data, filepath, index_names=None, column_names=None, is_vector=False):
     """
     Converts array-like or sparse matrix data to a dense NumPy array, wraps it 
-    in a pandas DataFrame, and formats it as a vertically aligned string.
+    in a pandas DataFrame, and saves it as a structured CSV file.
 
     Parameters
     ----------
     data : array_like, sparse matrix, or None
         The input matrix or vector to format. Can be a JAX array, SciPy sparse 
-        matrix, JAX BCOO matrix, or standard NumPy array. If None, an empty 
-        string is returned.
+        matrix, JAX BCOO matrix, or standard NumPy array. If None, the function 
+        returns without creating a file.
+    filepath : str
+        The full destination path and filename for the resulting CSV file.
     index_names : list of str, optional
         Names for the rows (DataFrame index). If None, numeric indices are used.
     column_names : list of str, optional
         Names for the columns. If None, numeric indices are used.
     is_vector : bool, default False
         If True, the input data is flattened to a strictly 1D array using 
-        `np.ravel()`. This is useful for column vectors.
+        `np.ravel()`. This ensures vectors are saved as a single column rather 
+        than a single row.
 
     Returns
     -------
-    str
-        A formatted string representation of the data using scientific notation 
-        (15 characters wide, 4 decimal places). Returns an empty string if 
-        `data` is None.
+    None
+        Writes the DataFrame directly to the specified `filepath` in CSV format 
+        using scientific notation (4 decimal places).
     """
 
     import pandas as pd
 
     if data is None:
-        return ""
+        return
         
     # Safely convert various array/matrix formats to dense numpy arrays
     if hasattr(data, 'toarray'):
@@ -61,25 +65,22 @@ def format_array_to_string(data, index_names=None, column_names=None, is_vector=
     # Create the DataFrame
     df = pd.DataFrame(dense_data, index=index_names, columns=column_names)
     
-    # Define the exponential formatter
-    formatter = lambda x: f"{x:15.4e}"
-    
-    # Apply the formatter to all columns and return the string
-    return df.to_string(formatters=[formatter] * df.shape[1])
+    # Save directly to CSV using pandas, applying the exponential float format
+    df.to_csv(filepath, float_format="%.4e")
 
 
-def print_qp_ingredients(
+def export_qp_ingredients_csv(
     P=None, q=None, A=None, b=None, G=None, h=None, 
     var_names=None, eq_names=None, ineq_names=None, 
-    filename="qp_elements.txt"
+    file_prefix="qp_data"
 ):
     """
     Extracts Quadratic Program (QP) ingredients, safely converts them to dense 
-    NumPy arrays, and writes them to a formatted, vertically aligned text file.
+    NumPy arrays, and writes each provided matrix/vector to its own CSV file.
     
     This function handles mixed array types gracefully, extracting data from 
     JAX arrays, JAX BCOO sparse matrices, SciPy sparse matrices, and standard 
-    NumPy arrays. Only the explicitly provided matrices/vectors are printed.
+    NumPy arrays. Only the explicitly provided matrices/vectors are exported.
 
     Parameters
     ----------
@@ -104,43 +105,49 @@ def print_qp_ingredients(
     ineq_names : list of str, optional
         Names of the inequality constraints. Used for labeling rows in G and h. 
         If None, numeric indices are used.
-    filename : str
-        Name of the txt file where the ingredients are printed.
+    file_prefix : str, default "qp_data"
+        The prefix used for the generated CSV files. For example, if "qp_data" 
+        is provided, the Hessian will be saved as "qp_data_P_hessian.csv".
 
     Returns
     -------
     None
-        Writes directly to a file named `qp_elements.txt` (or provided filename) 
-        in the current working directory.
+        Writes the provided matrices and vectors to individual CSV files in the 
+        current working directory.
     """
-    with open(filename, "w") as f:
+    
+    if P is not None:
+        save_array_to_csv(
+            P, f"{file_prefix}_P_hessian.csv", 
+            index_names=var_names, column_names=var_names
+        )
         
-        if P is not None:
-            f.write("=== Matrix P (Hessian) ===\n")
-            f.write(format_array_to_string(P, index_names=var_names, column_names=var_names))
-            f.write("\n\n")
-            
-        if A is not None:
-            f.write("=== Matrix A (Equalities) ===\n")
-            f.write(format_array_to_string(A, index_names=eq_names, column_names=var_names))
-            f.write("\n\n")
-            
-        if G is not None:
-            f.write("=== Matrix G (Inequalities) ===\n")
-            f.write(format_array_to_string(G, index_names=ineq_names, column_names=var_names))
-            f.write("\n\n")
+    if A is not None:
+        save_array_to_csv(
+            A, f"{file_prefix}_A_equalities.csv", 
+            index_names=eq_names, column_names=var_names
+        )
+        
+    if G is not None:
+        save_array_to_csv(
+            G, f"{file_prefix}_G_inequalities.csv", 
+            index_names=ineq_names, column_names=var_names
+        )
 
-        if q is not None:
-            f.write("=== Vector q (Linear Cost) ===\n")
-            f.write(format_array_to_string(q, index_names=var_names, column_names=["Cost_q"], is_vector=True))
-            f.write("\n\n")
-            
-        if b is not None:
-            f.write("=== Vector b (Equality Bounds) ===\n")
-            f.write(format_array_to_string(b, index_names=eq_names, column_names=["Eq_Bound_b"], is_vector=True))
-            f.write("\n\n")
-            
-        if h is not None:
-            f.write("=== Vector h (Inequality Bounds) ===\n")
-            f.write(format_array_to_string(h, index_names=ineq_names, column_names=["Ineq_Bound_h"], is_vector=True))
-            f.write("\n")
+    if q is not None:
+        save_array_to_csv(
+            q, f"{file_prefix}_q_cost.csv", 
+            index_names=var_names, column_names=["Cost_q"], is_vector=True
+        )
+        
+    if b is not None:
+        save_array_to_csv(
+            b, f"{file_prefix}_b_eq_bounds.csv", 
+            index_names=eq_names, column_names=["Eq_Bound_b"], is_vector=True
+        )
+        
+    if h is not None:
+        save_array_to_csv(
+            h, f"{file_prefix}_h_ineq_bounds.csv", 
+            index_names=ineq_names, column_names=["Ineq_Bound_h"], is_vector=True
+        )
