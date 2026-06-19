@@ -108,7 +108,7 @@ def show_options(
     type: Literal["solver","diff"], 
     mode: Literal["dense","sparse"], 
     backend: Literal[
-        "dense_kkt",
+        "sparse_kkt",
         "dense_dbd",
         "sparse_dbd",
         "dense_kkt",
