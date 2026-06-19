@@ -10,6 +10,7 @@ import cvxpy as cp
 import scipy.linalg as la
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
+from jaxsparrow._utils._printing_utils import save_array_to_csv
 
 # =============================================================================
 # SECTION 0: DATA STRUCTURE FOR OUTPUT
@@ -58,6 +59,24 @@ class QPSolution:
             print(f"  Solver Message: {self.message}")
 
 @dataclass
+class DependentSubmatrix:
+    """
+    Container for a submatrix alongside its semantic row and column labels.
+    
+    Attributes
+    ----------
+    matrix : numpy.ndarray
+        The 2D dense numerical data.
+    row_names : list of str
+        The semantic names for each row.
+    col_names : list of str
+        The semantic names for each column.
+    """
+    matrix: np.ndarray
+    row_names: List[str]
+    col_names: List[str]
+
+@dataclass
 class QPLicqResult:
     """
     Container for Linear Independence Constraint Qualification (LICQ) results.
@@ -84,6 +103,9 @@ class QPLicqResult:
         - 'involved_variables': list of column indices corresponding to non-zero entries in the constraint.
         - 'spanned_by': list of dicts detailing the independent constraints ('type', 'index') 
           and their 'coefficient' in the linear combination that reconstructs the dependent row.
+    dependent_submatrix : DependentSubmatrix, optional
+        A structured container holding the dense 2D submatrix of the dependent constraints,
+        filtered to remove globally zero columns, along with semantic row and column labels.
     """
     evaluated:              bool = False
     licq_satisfied:         bool = True
@@ -93,6 +115,7 @@ class QPLicqResult:
     dependent_ineq_indices: List[int] = field(default_factory=list)
     error:                  Optional[str] = None
     redundancy_details:     List[Dict[str, Any]] = field(default_factory=list)
+    dependent_submatrix:    Optional[DependentSubmatrix] = None
 
     def summary(self, registries=None):
         """Print summary of LICQ information."""
@@ -327,6 +350,9 @@ class QPData:
         Results of the LICQ analysis evaluated at the full problem's optimal solution.
     infeasibility_info : InfeasibilityReport, optional
         Results of the elastic Phase 1 conflict analysis if the problem is infeasible.
+    registries : Optional[dict[str,List[str]]]
+        Dictionary with keys "var_names", "eq_names", and "ineq_names", containing a list
+        of strings providing descriptive names to each variable / constraint.
     """
     P: Any
     q: Any
@@ -339,14 +365,17 @@ class QPData:
     solution_full: Optional[QPSolution] = None
     licq_info: Optional[QPLicqResult] = None
     infeasibility_info: Optional[InfeasibilityReport] = None
+    registries: Optional[dict[str,List[str]]] = None
 
-    def summary(self, registries=None, title="QP DIAGNOSTIC REPORT"):
+    def summary(self, title="QP DIAGNOSTIC REPORT"):
         """
         Formats the analysis dataclasses into a human-readable terminal report.
         Delegates segment printing to the respective sub-dataclasses.
         """
-        if registries is None:
+        if self.registries is None:
             registries = {}
+        else:
+            registries = self.registries
 
         print("\n" + "=" * 60)
         print(f" {title} ".center(60, "="))
@@ -406,6 +435,32 @@ class QPData:
             print("  Status: SKIPPED (No LICQ data available)")
             
         print("\n" + "=" * 60 + "\n")
+
+    def export_dependent_submatrix(self, filepath: str = "./dependent_submatrix.csv"):
+        """
+        Exports the dependent constraints submatrix to a CSV file if it exists.
+        
+        Parameters
+        ----------
+        filepath : str
+            The full destination path and filename for the resulting CSV file.
+        """
+        if self.licq_info is None or getattr(self.licq_info, 'dependent_submatrix', None) is None:
+            print("  Status: SKIPPED (No dependent submatrix available to export)")
+            return
+
+        submatrix = self.licq_info.dependent_submatrix
+
+        # Calls the imported function
+        if submatrix is not None:
+            save_array_to_csv(
+                data=submatrix.matrix,
+                filepath=filepath,
+                index_names=submatrix.row_names,
+                column_names=submatrix.col_names,
+                is_vector=False
+            )
+            print(f"  Exported dependent submatrix to: {filepath}")
 
 @dataclass
 class QPScaling:
@@ -1200,15 +1255,92 @@ def analyze_licq(A, G, h, x_val, tol=1e-5):
                 
     return result
 
+def build_dependent_submatrix(
+    licq_result: QPLicqResult, 
+    A, 
+    G, 
+    registries=None, 
+    tol=1e-5
+) -> Optional[DependentSubmatrix]:
+    """
+    Extracts dependent rows based on LICQ analysis, removes globally zero columns, 
+    assigns semantic names, and returns a DependentSubmatrix object.
+    
+    Parameters
+    ----------
+    licq_result : QPLicqResult
+        The result object returned by `analyze_licq`.
+    A : scipy.sparse matrix or numpy.ndarray, optional
+        Equality constraint matrix.
+    G : scipy.sparse matrix or numpy.ndarray, optional
+        Inequality constraint matrix.
+    registries : dict, optional
+        Dictionary containing 'eq_names', 'ineq_names', and 'var_names'.
+    tol : float, optional
+        Tolerance for identifying zero columns.
+        
+    Returns
+    -------
+    DependentSubmatrix or None
+        The structured submatrix container, or None if there are no dependent constraints.
+    """
+    if not licq_result or not licq_result.redundancy_details:
+        return None
+        
+    if registries is None:
+        registries = {}
+
+    dependent_rows = []
+    row_names = []
+
+    # 1. Extract the raw rows and construct row labels
+    for detail in licq_result.redundancy_details:
+        for dep in [detail["dependent_constraint"]] + detail["spanned_by"]:
+            idx = dep["index"]
+            if dep["type"] == "eq" and A is not None:
+                row_data = A[[idx], :] if sp.issparse(A) else A[idx, :]
+                name = _get_name(registries, 'eq_names', idx, 'Eq Row')
+            elif dep["type"] == "ineq" and G is not None:
+                row_data = G[[idx], :] if sp.issparse(G) else G[idx, :]
+                name = _get_name(registries, 'ineq_names', idx, 'Ineq Row')
+            else:
+                continue
+            dependent_rows.append(row_data)
+            row_names.append(name)
+
+    if not dependent_rows:
+        return None
+
+    # 2. Stack into a single 2D matrix safely
+    if sp.issparse(dependent_rows[0]):
+        D = sp.vstack(dependent_rows).toarray()
+    else:
+        D = np.vstack(dependent_rows)
+
+    # 3. Identify and filter out globally zero columns
+    non_zero_cols = np.where(np.max(np.abs(D), axis=0) > tol)[0]
+    D_filtered = D[:, non_zero_cols]
+
+    # 4. Generate column names for the kept variables
+    col_names = [_get_name(registries, 'var_names', c, 'Var') for c in non_zero_cols]
+
+    # 5. Return the structured container
+    return DependentSubmatrix(
+        matrix=D_filtered,
+        row_names=row_names,
+        col_names=col_names
+    )
+
 # =============================================================================
 # SECTION 4: REPORTING & ORCHESTRATION
 # =============================================================================
 def run_qp_diagnostics(
-    P, q, A=None, b=None, G=None, h=None, solver=cp.GUROBI,
-    psd_tol=1e-10, cond_tol=1e-12, 
-    conflict_tol=1e-5, licq_tol=1e-5,
-    scaling_mode:str="diagonal", 
-    scaling_options:Optional[dict] = None
+    P, q, A = None, b = None, G = None, h = None, solver = cp.GUROBI,
+    psd_tol = 1e-10, cond_tol = 1e-12, 
+    conflict_tol = 1e-5, licq_tol = 1e-5,
+    scaling_mode : str = "diagonal", 
+    scaling_options : Optional[dict] = None,
+    registries : Optional[dict[str,List[str]]] = None
 ):
     """
     Executes a full diagnostic, scaling, and testing pipeline on a Quadratic Program.
@@ -1247,6 +1379,9 @@ def run_qp_diagnostics(
         Tolerance used when evaluating LICQ. Default is 1e-5.
     scaling_mode : str, optional
         Type of scaling ("diagonal" or "full").
+    registries : Optional[dict[str,List[str]]]
+        Dictionary with keys "var_names", "eq_names", and "ineq_names", containing a list
+        of strings providing descriptive names to each variable / constraint.
 
     Returns
     -------
@@ -1289,6 +1424,8 @@ def run_qp_diagnostics(
             P, q, A, b, G, h,
             tol=scaling_options["tol"]
         )
+    else:
+        raise ValueError("Unknown scaling mode.")
     
     # 4. Normalize scaled empty inputs
     A_s_safe = A_s if A_s is not None else np.array([])
@@ -1325,13 +1462,31 @@ def run_qp_diagnostics(
     licq_orig = analyze_licq(A_safe, G_safe, h_safe, sol_orig_full.x_value, tol=licq_tol)
     licq_scaled = analyze_licq(A_s_safe, G_s_safe, h_s_safe, sol_scaled_full.x_value, tol=licq_tol)
 
+    # 8. Extract the Dependent Submatrix directly into the LICQ result objects
+    licq_orig.dependent_submatrix = build_dependent_submatrix(
+        licq_result=licq_orig, 
+        A=A_safe, 
+        G=G_safe, 
+        tol=licq_tol,
+        registries=registries
+    )
+    
+    licq_scaled.dependent_submatrix = build_dependent_submatrix(
+        licq_result=licq_scaled, 
+        A=A_s_safe, 
+        G=G_s_safe, 
+        tol=licq_tol,
+        registries=registries
+    )
+
     qp_original = QPData(
         P=P, q=q, A=A, b=b, G=G, h=h,
         scaling_reports=sanity_results,
         convexity_report=convexity_results,
         solution_full=sol_orig_full,
         licq_info=licq_orig,
-        infeasibility_info=infeas_orig
+        infeasibility_info=infeas_orig,
+        registries=registries
     )
     
     qp_scaled = QPData(
@@ -1340,7 +1495,8 @@ def run_qp_diagnostics(
         convexity_report=convexity_results_scaled,
         solution_full=sol_scaled_full,
         licq_info=licq_scaled,
-        infeasibility_info=infeas_scaled
+        infeasibility_info=infeas_scaled,
+        registries=registries
     )
     
     scaling = QPScaling(T=T, D_A=D_A, D_G=D_G)
