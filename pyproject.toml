@@ -14,20 +14,20 @@ authors = [
 ]
 keywords = ["jax", "optimization", "qp", "sensitivity", "mpc", "autodiff"]
 dependencies = [
-    "jax>=0.10.0",
-    "piqp>=0.6.3",
-    "qpsolvers>=4.12.0",
-    "cvxpy>=1.9.2",
-    "jaxtyping>=0.3.11"
+    "jax",
+    "piqp",
+    "qpsolvers",
+    "cvxpy",
+    "jaxtyping"
 ]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=9.0"]
-plot = ["matplotlib>=3.10"]
-dev = ["pytest>=9.0", "matplotlib>=3.10"]
+test = ["pytest"]
+plot = ["matplotlib"]
+dev = ["pytest", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/RiccardoZuliani98/jaxsparrow"
