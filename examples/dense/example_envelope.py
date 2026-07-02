@@ -7,7 +7,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import jax.numpy as jnp
 import jax
 from jax import jit, value_and_grad
-from jaxsparrow import qp_value
+from jaxsparrow.utils import qp_value
 
 jax.config.update("jax_enable_x64", True)
 
