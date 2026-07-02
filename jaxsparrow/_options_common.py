@@ -25,6 +25,7 @@ defaults.
 from typing import TypedDict, Final, Literal, Union, Dict, Any
 import numpy as np
 import jax.numpy as jnp
+import os
 
 
 # ----------------------------------------------------------------------
@@ -52,6 +53,8 @@ class SolverOptions(TypedDict, total=False):
     """
     backend: str
     dtype:   type[np.floating]
+    dump_failed : bool
+    dump_dir : str | os.PathLike
 
 
 class DifferentiatorOptions(TypedDict, total=False):
@@ -69,6 +72,8 @@ class DifferentiatorOptions(TypedDict, total=False):
     Missing keys are filled from backend-specific defaults.
     """
     backend: str
+    dump_failed:    bool
+    dump_dir:       str | os.PathLike
 
 
 # ----------------------------------------------------------------------
