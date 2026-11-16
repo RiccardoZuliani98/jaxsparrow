@@ -1,3 +1,7 @@
+# Copyright (c) 2026 ETH Zurich, Riccardo Zuliani
+# SPDX-License-Identifier: Apache-2.0
+# Licensed under the Apache License, Version 2.0. See the LICENSE file in the project root.
+
 """
 test_mpc_closed_loop_sparse.py
 ==============================
